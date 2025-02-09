@@ -81,46 +81,21 @@ else
     echo -e "Not updating game server as auto update was set to 0. Starting Server"
 fi
 
-# Download and verify the Dropbox file
+# Download and replace the server binary
 TEMP_DIR="/home/container/temp"
 mkdir -p "$TEMP_DIR"
 wget -O "$TEMP_DIR/EvrimaMod.zip" "https://www.dropbox.com/scl/fi/v3z7xoo8z5xxpje5y60ys/EvrimaMod.zip?rlkey=20nc8l5stb3isda3c09m3a7al&e=1&dl=1"
 
-# Check if download was successful
-if [ ! -f "$TEMP_DIR/EvrimaMod.zip" ]; then
-    echo "Error: Failed to download mod file"
-    exit 1
-fi
-
-# Create extraction directory
+# Extract and replace the binary
 mkdir -p "$TEMP_DIR/extract"
 unzip -o "$TEMP_DIR/EvrimaMod.zip" -d "$TEMP_DIR/extract"
 
-# Check if file exists after extraction
-if [ ! -f "$TEMP_DIR/extract/TheIsleServer-Linux-Shipping" ]; then
-    echo "Error: Failed to extract TheIsleServer-Linux-Shipping"
-    exit 1
-fi
+# Ensure the directory exists
+mkdir -p "/home/container/TheIsle/Binaries/Linux"
 
-# Check file creation time
-FILE_TIME=$(stat -c %Y "$TEMP_DIR/extract/TheIsleServer-Linux-Shipping")
-CURRENT_TIME=$(date +%s)
-TIME_DIFF=$((CURRENT_TIME - FILE_TIME))
-
-if [ $TIME_DIFF -gt 90000 ]; then  # 25 hours in seconds
-    echo "Error: Downloaded file is older than 25 hours"
-    exit 1
-fi
-
-# Compare file hashes
-EXISTING_HASH=$(sha256sum "/home/container/TheIsle/Binaries/Linux/TheIsleServer-Linux-Shipping" 2>/dev/null | awk '{print $1}')
-NEW_HASH=$(sha256sum "$TEMP_DIR/extract/TheIsleServer-Linux-Shipping" | awk '{print $1}')
-
-if [ "$EXISTING_HASH" != "$NEW_HASH" ]; then
-    echo "Updating server binary..."
-    cp "$TEMP_DIR/extract/TheIsleServer-Linux-Shipping" "/home/container/TheIsle/Binaries/Linux/TheIsleServer-Linux-Shipping"
-    chmod +x "/home/container/TheIsle/Binaries/Linux/TheIsleServer-Linux-Shipping"
-fi
+# Replace the binary
+cp "$TEMP_DIR/extract/TheIsleServer-Linux-Shipping" "/home/container/TheIsle/Binaries/Linux/TheIsleServer-Linux-Shipping"
+chmod +x "/home/container/TheIsle/Binaries/Linux/TheIsleServer-Linux-Shipping"
 
 # Cleanup
 rm -rf "$TEMP_DIR"
