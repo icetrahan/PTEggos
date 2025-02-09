@@ -24,6 +24,7 @@ RUN         dpkg --add-architecture i386 \
 				telnet \
 				tini \
 				tzdata \
+				unzip \
 				wget \
 				xvfb \
 				lib32gcc-s1 \
