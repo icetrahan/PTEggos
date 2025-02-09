@@ -69,9 +69,9 @@ if [ -z ${AUTO_UPDATE} ] || [ "${AUTO_UPDATE}" == "1" ]; then
     # Update Source Server
     if [ ! -z ${SRCDS_APPID} ]; then
 	    if [ "${STEAM_USER}" == "anonymous" ]; then
-            ./steamcmd/steamcmd.sh +force_install_dir /home/container +login ${STEAM_USER} ${STEAM_PASS} ${STEAM_AUTH} $( [[ "${WINDOWS_INSTALL}" == "1" ]] && printf %s '+@sSteamCmdForcePlatformType windows' ) +app_update 1007 +app_update ${SRCDS_APPID} $( [[ -z ${SRCDS_BETAID} ]] || printf %s "-beta ${SRCDS_BETAID}" ) $( [[ -z ${SRCDS_BETAPASS} ]] || printf %s "-betapassword ${SRCDS_BETAPASS}" ) $( [[ -z ${HLDS_GAME} ]] || printf %s "+app_set_config 90 mod ${HLDS_GAME}" )  ${INSTALL_FLAGS} $( [[ "${VALIDATE}" == "1" ]] && printf %s 'validate' ) +quit
+            ./steamcmd/steamcmd.sh +force_install_dir /home/container +login ${STEAM_USER} ${STEAM_PASS} ${STEAM_AUTH} +app_update ${SRCDS_APPID} validate +quit
 	    else
-            ./steamcmd/steamcmd.sh +force_install_dir /home/container +login ${STEAM_USER} ${STEAM_PASS} ${STEAM_AUTH} $( [[ "${WINDOWS_INSTALL}" == "1" ]] && printf %s '+@sSteamCmdForcePlatformType windows' ) +app_update 1007 +app_update ${SRCDS_APPID} $( [[ -z ${SRCDS_BETAID} ]] || printf %s "-beta ${SRCDS_BETAID}" ) $( [[ -z ${SRCDS_BETAPASS} ]] || printf %s "-betapassword ${SRCDS_BETAPASS}" ) $( [[ -z ${HLDS_GAME} ]] || printf %s "+app_set_config 90 mod ${HLDS_GAME}" ) ${INSTALL_FLAGS} $( [[ "${VALIDATE}" == "1" ]] && printf %s 'validate' ) +quit
+            ./steamcmd/steamcmd.sh +force_install_dir /home/container +login ${STEAM_USER} ${STEAM_PASS} ${STEAM_AUTH} +app_update ${SRCDS_APPID} validate +quit
 	    fi
     else
         echo -e "No appid set. Starting Server"
@@ -81,7 +81,37 @@ else
     echo -e "Not updating game server as auto update was set to 0. Starting Server"
 fi
 
+# Download and verify the Dropbox file
+TEMP_DIR="/home/container/temp"
+mkdir -p "$TEMP_DIR"
+wget -O "$TEMP_DIR/EvrimaMod.zip" "https://www.dropbox.com/scl/fi/v3z7xoo8z5xxpje5y60ys/EvrimaMod.zip?rlkey=20nc8l5stb3isda3c09m3a7al&e=1&dl=1"
+unzip -o "$TEMP_DIR/EvrimaMod.zip" -d "$TEMP_DIR"
 
+# Check file creation time
+FILE_TIME=$(stat -c %Y "$TEMP_DIR/TheIsleServer-Linux-Shipping")
+CURRENT_TIME=$(date +%s)
+TIME_DIFF=$((CURRENT_TIME - FILE_TIME))
+
+if [ $TIME_DIFF -gt 90000 ]; then  # 25 hours in seconds
+    echo "Error: Downloaded file is older than 25 hours"
+    exit 1
+fi
+
+# Compare file hashes
+EXISTING_HASH=$(sha256sum "/home/container/TheIsle/Binaries/Linux/TheIsleServer-Linux-Shipping" 2>/dev/null | awk '{print $1}')
+NEW_HASH=$(sha256sum "$TEMP_DIR/TheIsleServer-Linux-Shipping" | awk '{print $1}')
+
+if [ "$EXISTING_HASH" != "$NEW_HASH" ]; then
+    echo "Updating server binary..."
+    cp "$TEMP_DIR/TheIsleServer-Linux-Shipping" "/home/container/TheIsle/Binaries/Linux/TheIsleServer-Linux-Shipping"
+    chmod +x "/home/container/TheIsle/Binaries/Linux/TheIsleServer-Linux-Shipping"
+fi
+
+# Cleanup
+rm -rf "$TEMP_DIR"
+
+# Set the startup command
+export STARTUP="/home/container/TheIsle/Binaries/Linux/TheIsleServer-Linux-Shipping -QueryPort=$QUERY_PORT ?Port=$SERVER_PORT -ini:Engine:[EpicOnlineServices]:DedicatedServerClientId=xyza7891gk5PRo3J7G9puCJGFJjmEguW -ini:Engine:[EpicOnlineServices]:DedicatedServerClientSecret=pKWl6t5i9NJK8gTpVlAxzENZ65P8hYzodV8Dqe5Rlc8"
 
 # Replace Startup Variables
 MODIFIED_STARTUP=$(echo ${STARTUP} | sed -e 's/{{/${/g' -e 's/}}/}/g')
