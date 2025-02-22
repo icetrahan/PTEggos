@@ -82,23 +82,27 @@ else
 fi
 
 # Download and replace the server binary
-TEMP_DIR="/home/container/temp"
-mkdir -p "$TEMP_DIR"
-wget -O "$TEMP_DIR/EvrimaMod.zip" "https://www.dropbox.com/scl/fi/v3z7xoo8z5xxpje5y60ys/EvrimaMod.zip?rlkey=20nc8l5stb3isda3c09m3a7al&e=1&dl=1"
 
-# Extract and replace the binary
-mkdir -p "$TEMP_DIR/extract"
-unzip -o "$TEMP_DIR/EvrimaMod.zip" -d "$TEMP_DIR/extract"
+# Check if MODDED parameter is set to true
+if [ "${MODDED}" = "1" ] || [ "${MODDED}" = "true" ]; then
+    echo "MODDED is enabled"
+    TEMP_DIR="/home/container/temp"
+    mkdir -p "$TEMP_DIR"
+    wget -O "$TEMP_DIR/EvrimaMod.zip" "https://www.dropbox.com/scl/fi/v3z7xoo8z5xxpje5y60ys/EvrimaMod.zip?rlkey=20nc8l5stb3isda3c09m3a7al&e=1&dl=1"
 
-# Ensure the directory exists
-mkdir -p "/home/container/TheIsle/Binaries/Linux"
+    # Extract and replace the binary
+    mkdir -p "$TEMP_DIR/extract"
+    unzip -o "$TEMP_DIR/EvrimaMod.zip" -d "$TEMP_DIR/extract"
 
-# Replace the binary
-cp "$TEMP_DIR/extract/TheIsleServer-Linux-Shipping" "/home/container/TheIsle/Binaries/Linux/TheIsleServer-Linux-Shipping"
-chmod +x "/home/container/TheIsle/Binaries/Linux/TheIsleServer-Linux-Shipping"
+    # Ensure the directory exists
+    mkdir -p "/home/container/TheIsle/Binaries/Linux"
 
-# Cleanup
-rm -rf "$TEMP_DIR"
+    # Replace the binary
+    cp "$TEMP_DIR/extract/TheIsleServer-Linux-Shipping" "/home/container/TheIsle/Binaries/Linux/TheIsleServer-Linux-Shipping"
+    chmod +x "/home/container/TheIsle/Binaries/Linux/TheIsleServer-Linux-Shipping"
+
+    # Cleanup
+    rm -rf "$TEMP_DIR"
 
 # Set the startup command
 export STARTUP="/home/container/TheIsle/Binaries/Linux/TheIsleServer-Linux-Shipping -QueryPort=$QUERY_PORT ?Port=$SERVER_PORT -ini:Engine:[EpicOnlineServices]:DedicatedServerClientId=xyza7891gk5PRo3J7G9puCJGFJjmEguW -ini:Engine:[EpicOnlineServices]:DedicatedServerClientSecret=pKWl6t5i9NJK8gTpVlAxzENZ65P8hYzodV8Dqe5Rlc8"
