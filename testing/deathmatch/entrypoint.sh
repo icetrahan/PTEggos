@@ -103,9 +103,10 @@ if [ "${MODDED}" = "1" ] || [ "${MODDED}" = "true" ]; then
 
     # Cleanup
     rm -rf "$TEMP_DIR"
+fi
 
 # Set the startup command
-export STARTUP="/home/container/TheIsle/Binaries/Linux/TheIsleServer-Linux-Shipping -QueryPort=$QUERY_PORT ?Port=$SERVER_PORT -ini:Engine:[EpicOnlineServices]:DedicatedServerClientId=xyza7891gk5PRo3J7G9puCJGFJjmEguW -ini:Engine:[EpicOnlineServices]:DedicatedServerClientSecret=pKWl6t5i9NJK8gTpVlAxzENZ65P8hYzodV8Dqe5Rlc8"
+export STARTUP="/home/container/TheIsle/Binaries/Linux/TheIsleServer-Linux-Shipping -QueryPort=$QUERY_PORT ?Port=$SERVER_PORT"
 
 # Replace Startup Variables
 MODIFIED_STARTUP=$(echo ${STARTUP} | sed -e 's/{{/${/g' -e 's/}}/}/g')
