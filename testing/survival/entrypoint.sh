@@ -82,7 +82,8 @@ else
 fi
 
 # Check if MODDED parameter is set to true
-if [ "${MODDED}" = "true" ]; then
+if [ "${MODDED}" = "1" ] || [ "${MODDED}" = "true" ]; then
+    echo "MODDED is enabled"
     # Download and replace the server binary
     TEMP_DIR="/home/container/temp"
     mkdir -p "$TEMP_DIR"
