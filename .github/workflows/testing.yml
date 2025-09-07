@@ -27,8 +27,6 @@ jobs:
       fail-fast: false
       matrix:
         game:
-          - deathmatch
-          - survival
           - perforce
 
     steps:

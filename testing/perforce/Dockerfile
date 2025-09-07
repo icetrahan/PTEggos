@@ -25,15 +25,15 @@ RUN         apt-get update \
             && apt-get clean \
             && rm -rf /var/lib/apt/lists/*
 
-# Add Perforce package repository
-RUN         wget -qO - https://package.perforce.com/perforce.pubkey | apt-key add - \
-            && echo "deb http://package.perforce.com/apt/ubuntu/ $(lsb_release -cs) release" > /etc/apt/sources.list.d/perforce.list
-
-# Install Perforce server
-RUN         apt-get update \
-            && apt-get install -y helix-p4d \
-            && apt-get clean \
-            && rm -rf /var/lib/apt/lists/*
+# Download and install Perforce server directly
+RUN         cd /tmp \
+            && wget -O p4d https://cdist2.perforce.com/perforce/r23.2/bin.linux26x86_64/p4d \
+            && wget -O p4 https://cdist2.perforce.com/perforce/r23.2/bin.linux26x86_64/p4 \
+            && chmod +x p4d p4 \
+            && mv p4d /usr/local/bin/ \
+            && mv p4 /usr/local/bin/ \
+            && cd / \
+            && rm -rf /tmp/*
 
 # Set the locale
 RUN         sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen && \
