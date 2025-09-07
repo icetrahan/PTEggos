@@ -29,6 +29,7 @@ jobs:
         game:
           - deathmatch
           - survival
+          - perforce
 
     steps:
       - name: Checkout repository
