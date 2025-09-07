@@ -1,0 +1,154 @@
+{
+    "_comment": "DO NOT EDIT: FILE GENERATED AUTOMATICALLY BY PTERODACTYL PANEL - PTERODACTYL.IO",
+    "meta": {
+        "version": "PTDL_v2",
+        "update_url": null
+    },
+    "exported_at": "2025-09-07T12:00:00+00:00",
+    "name": "Perforce Helix Core",
+    "author": "matthew@pterodactyl.io",
+    "description": "Perforce Helix Core version control server. A centralized version control system designed for enterprise-scale development teams.",
+    "features": [
+        "eula"
+    ],
+    "docker_images": {
+        "ghcr.io/pterodactyl/yolks:perforce": "ghcr.io/pterodactyl/yolks:perforce"
+    },
+    "file_denylist": [],
+    "startup": "bash /entrypoint.sh",
+    "config": {
+        "files": "{}",
+        "startup": "{\r\n    \"done\": \"Perforce server info:\"\r\n}",
+        "logs": "{}",
+        "stop": "^C"
+    },
+    "scripts": {
+        "installation": {
+            "script": "#!/bin/bash\n# Perforce Installation Script\ncd /mnt/server\n\n# Create necessary directories\nmkdir -p p4root\necho \"Perforce server directory structure created.\"\necho \"Server will initialize on first startup.\"",
+            "container": "debian:bookworm-slim",
+            "entrypoint": "bash"
+        }
+    },
+    "variables": [
+        {
+            "name": "Server Port",
+            "description": "The port the Perforce server will listen on.",
+            "env_variable": "P4PORT",
+            "default_value": "1666",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:1024,65535",
+            "field_type": "text"
+        },
+        {
+            "name": "Server Root Directory",
+            "description": "The root directory for the Perforce server data.",
+            "env_variable": "P4ROOT",
+            "default_value": "/home/container/p4root",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|max:255",
+            "field_type": "text"
+        },
+        {
+            "name": "Default User",
+            "description": "The default Perforce user name.",
+            "env_variable": "P4USER",
+            "default_value": "perforce",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|max:64",
+            "field_type": "text"
+        },
+        {
+            "name": "Server Name",
+            "description": "The name identifier for this Perforce server instance.",
+            "env_variable": "P4NAME",
+            "default_value": "master",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|max:64",
+            "field_type": "text"
+        },
+        {
+            "name": "Case Sensitivity",
+            "description": "Enable case-sensitive server mode (0=insensitive, 1=sensitive).",
+            "env_variable": "P4CASE",
+            "default_value": "0",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|boolean",
+            "field_type": "text"
+        },
+        {
+            "name": "Unicode Mode",
+            "description": "Enable Unicode mode for international character support (0=disabled, 1=enabled).",
+            "env_variable": "P4UNICODE",
+            "default_value": "0",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|boolean",
+            "field_type": "text"
+        },
+        {
+            "name": "Admin Username",
+            "description": "Initial admin user to create (optional). Leave empty to skip admin user creation.",
+            "env_variable": "P4ADMIN_USER",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:64",
+            "field_type": "text"
+        },
+        {
+            "name": "Admin Password",
+            "description": "Password for the admin user (required if Admin Username is set).",
+            "env_variable": "P4ADMIN_PASSWORD",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:255",
+            "field_type": "text"
+        },
+        {
+            "name": "Admin Email",
+            "description": "Email address for the admin user (optional).",
+            "env_variable": "P4ADMIN_EMAIL",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|email|max:255",
+            "field_type": "text"
+        },
+        {
+            "name": "Admin Full Name",
+            "description": "Full name for the admin user (optional).",
+            "env_variable": "P4ADMIN_FULLNAME",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:255",
+            "field_type": "text"
+        },
+        {
+            "name": "Additional P4D Arguments",
+            "description": "Additional command-line arguments to pass to the p4d server (optional).",
+            "env_variable": "P4D_ARGS",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:512",
+            "field_type": "text"
+        },
+        {
+            "name": "Timezone",
+            "description": "Timezone for the server.",
+            "env_variable": "TZ",
+            "default_value": "UTC",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|max:64",
+            "field_type": "text"
+        }
+    ]
+}
