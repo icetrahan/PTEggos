@@ -81,7 +81,7 @@ else
     echo -e "Not updating game server as auto update was set to 0. Starting Server"
 fi
 
-# Mod Update Check (runs after normal Steam update)
+# Mod Update Check (ALWAYS runs, regardless of AUTO_UPDATE setting)
 # This checks the Norden Cloud API for mod binary updates
 echo -e "Checking for mod updates..."
 
