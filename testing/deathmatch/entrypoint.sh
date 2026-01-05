@@ -81,32 +81,52 @@ else
     echo -e "Not updating game server as auto update was set to 0. Starting Server"
 fi
 
-# Download and replace the server binary
+# Mod Update Check (runs after normal Steam update)
+# This checks the Norden Cloud API for mod binary updates
+echo -e "Checking for mod updates..."
 
-# Check if MODDED parameter is set to true
-if [ "${MODDED}" = "1" ] || [ "${MODDED}" = "true" ]; then
-    echo "MODDED is enabled"
-    TEMP_DIR="/home/container/temp"
-    mkdir -p "$TEMP_DIR"
-    wget -O "$TEMP_DIR/EvrimaMod.zip" "https://www.dropbox.com/scl/fi/v3z7xoo8z5xxpje5y60ys/EvrimaMod.zip?rlkey=20nc8l5stb3isda3c09m3a7al&e=1&dl=1"
+MOD_API_URL="https://manage.norden.cloud/api/884851/1020410"
+MOD_FILE_PATH="/home/container/TheIsle/Binaries/Linux/TheIsleServer-Linux-Shipping"
 
-    # Extract and replace the binary
-    mkdir -p "$TEMP_DIR/extract"
-    unzip -o "$TEMP_DIR/EvrimaMod.zip" -d "$TEMP_DIR/extract"
+# Function to compute MD5 hash of a file
+get_file_hash() {
+    md5sum "$1" | awk '{ print $1 }'
+}
 
-    # Ensure the directory exists
-    mkdir -p "/home/container/TheIsle/Binaries/Linux"
-
-    # Replace the binary
-    cp "$TEMP_DIR/extract/TheIsleServer-Linux-Shipping" "/home/container/TheIsle/Binaries/Linux/TheIsleServer-Linux-Shipping"
-    chmod +x "/home/container/TheIsle/Binaries/Linux/TheIsleServer-Linux-Shipping"
-
-    # Cleanup
-    rm -rf "$TEMP_DIR"
+# Read current file hash if file exists
+if [ -f "$MOD_FILE_PATH" ]; then
+    CURRENT_HASH=$(get_file_hash "$MOD_FILE_PATH")
+else
+    CURRENT_HASH=""
 fi
 
+# Send POST request with hash to check for updates
+RESPONSE_HEADERS=$(mktemp)
+RESPONSE_CODE=$(curl -s -w "%{http_code}" -D "$RESPONSE_HEADERS" -o /home/container/response.bin -X POST "$MOD_API_URL" \
+    -H "Content-Type: application/json" \
+    -d "{\"os\":\"linux\", \"currentHash\":\"$CURRENT_HASH\"}")
+
+# Handle response
+if [ "$RESPONSE_CODE" == "200" ]; then
+    echo -e "⬇️  New mod version available. Downloading..."
+    mkdir -p "$(dirname "$MOD_FILE_PATH")"
+    mv /home/container/response.bin "$MOD_FILE_PATH"
+    chmod +x "$MOD_FILE_PATH"
+    echo -e "✅ Mod binary downloaded and updated."
+elif [ "$RESPONSE_CODE" == "204" ]; then
+    echo -e "✅ Mod binary is already up to date."
+else
+    echo -e "❌ Mod update check failed with response code: $RESPONSE_CODE"
+    if [ -f /home/container/response.bin ]; then
+        cat /home/container/response.bin
+    fi
+fi
+
+# Cleanup
+rm -f "$RESPONSE_HEADERS" /home/container/response.bin
+
 # Set the startup command
-export STARTUP="/home/container/TheIsle/Binaries/Linux/TheIsleServer-Linux-Shipping -QueryPort=$QUERY_PORT ?Port=$SERVER_PORT"
+export STARTUP="/home/container/TheIsle/Binaries/Linux/TheIsleServer-Linux-Shipping -QueryPort=$SERVER_PORT -Port=$SERVER_PORT  -ini:Engine:[EpicOnlineServices]:DedicatedServerClientId=xyza7891gk5PRo3J7G9puCJGFJjmEguW -ini:Engine:[EpicOnlineServices]:DedicatedServerClientSecret=pKWl6t5i9NJK8gTpVlAxzENZ65P8hYzodV8Dqe5Rlc8"
 
 # Replace Startup Variables
 MODIFIED_STARTUP=$(echo ${STARTUP} | sed -e 's/{{/${/g' -e 's/}}/}/g')
