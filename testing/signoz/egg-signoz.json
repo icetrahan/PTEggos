@@ -1,0 +1,94 @@
+{
+    "_comment": "DO NOT EDIT: FILE ACTIVE IN PRODUCTION",
+    "meta": {
+        "version": "PTDL_v2",
+        "update_url": null
+    },
+    "exported_at": "2026-01-09T12:00:00+00:00",
+    "name": "SigNoz",
+    "author": "primalheaven@example.com",
+    "description": "SigNoz is an open-source observability platform with distributed tracing, metrics, and logs in a single application. This all-in-one container bundles ClickHouse, OTEL Collector, Query Service, and the Web Frontend.",
+    "features": [
+        "eula"
+    ],
+    "docker_images": {
+        "ghcr.io/YOUR_ORG/signoz-pterodactyl:latest": "ghcr.io/YOUR_ORG/signoz-pterodactyl:latest"
+    },
+    "file_denylist": [],
+    "startup": "/entrypoint.sh",
+    "config": {
+        "files": "{}",
+        "startup": "{\r\n    \"done\": \"SigNoz is ready!\"\r\n}",
+        "logs": "{}",
+        "stop": "^^C"
+    },
+    "scripts": {
+        "installation": {
+            "script": "#!/bin/bash\r\ncd /mnt/server\r\necho \"SigNoz container is pre-built. No installation required.\"\r\nmkdir -p data logs\r\necho \"Created data and logs directories.\"\r\necho \"Installation complete.\"",
+            "container": "ghcr.io/parkervcp/installers:alpine",
+            "entrypoint": "bash"
+        }
+    },
+    "variables": [
+        {
+            "name": "Timezone",
+            "description": "The timezone to use for the container (e.g., America/New_York, UTC, Europe/London)",
+            "env_variable": "TZ",
+            "default_value": "UTC",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Web UI Port",
+            "description": "The port for the SigNoz web interface. Must match your primary port allocation.",
+            "env_variable": "SIGNOZ_PORT",
+            "default_value": "3301",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:1024,65535",
+            "field_type": "text"
+        },
+        {
+            "name": "OTLP gRPC Port",
+            "description": "The port for receiving traces/logs/metrics via gRPC (OpenTelemetry Protocol)",
+            "env_variable": "OTLP_GRPC_PORT",
+            "default_value": "4317",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:1024,65535",
+            "field_type": "text"
+        },
+        {
+            "name": "OTLP HTTP Port",
+            "description": "The port for receiving traces/logs/metrics via HTTP (alternative to gRPC)",
+            "env_variable": "OTLP_HTTP_PORT",
+            "default_value": "4318",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:1024,65535",
+            "field_type": "text"
+        },
+        {
+            "name": "Data Retention (Days)",
+            "description": "How many days to retain trace/log/metric data. Increase for more history, decrease to save disk space.",
+            "env_variable": "RETENTION_DAYS",
+            "default_value": "15",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:1,365",
+            "field_type": "text"
+        },
+        {
+            "name": "Disable SigNoz Telemetry",
+            "description": "Disable anonymous usage telemetry sent to SigNoz developers",
+            "env_variable": "SIGNOZ_TELEMETRY_DISABLED",
+            "default_value": "true",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|boolean",
+            "field_type": "text"
+        }
+    ]
+}

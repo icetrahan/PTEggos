@@ -1,0 +1,38 @@
+# OpenTelemetry Collector Configuration for SigNoz
+# This is a template - actual config is generated at runtime by entrypoint.sh
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    send_batch_size: 10000
+    timeout: 10s
+
+exporters:
+  clickhousetraces:
+    datasource: tcp://localhost:9000/signoz_traces
+  clickhouselogs:
+    datasource: tcp://localhost:9000/signoz_logs
+  clickhousemetricswrite:
+    endpoint: tcp://localhost:9000/signoz_metrics
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [clickhousetraces]
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [clickhouselogs]
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [clickhousemetricswrite]
