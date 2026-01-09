@@ -235,8 +235,8 @@ export TELEMETRY_ENABLED=false
 
 /opt/signoz/bin/query-service >> /home/container/logs/query-service.log 2>&1 &
 
-# Start Nginx
-nginx -c /home/container/nginx.conf &
+# Start Nginx (use -e to override default error log path before config is read)
+nginx -c /home/container/nginx.conf -e /home/container/logs/nginx-error.log &
 
 echo ""
 echo "==========================================="
