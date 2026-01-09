@@ -303,7 +303,8 @@ cat > /home/container/clickhouse-config.xml << EOF
     <thread_pool_queue_size>1000</thread_pool_queue_size>
     
     <!-- Background pools - reduced from defaults (512!) to fit container limits -->
-    <background_pool_size>4</background_pool_size>
+    <!-- Must be >= 10 so that pool_size * 2 >= 20 (number_of_free_entries_in_pool_to_execute_mutation default) -->
+    <background_pool_size>16</background_pool_size>
     <background_move_pool_size>2</background_move_pool_size>
     <background_schedule_pool_size>4</background_schedule_pool_size>
     <background_fetches_pool_size>2</background_fetches_pool_size>
