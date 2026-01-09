@@ -191,18 +191,18 @@ error_log /home/container/logs/nginx-error.log;
 pid /home/container/nginx.pid;
 daemon off;
 
-# Temp paths in container home
-client_body_temp_path /home/container/nginx/body;
-proxy_temp_path /home/container/nginx/proxy;
-fastcgi_temp_path /home/container/nginx/fastcgi;
-uwsgi_temp_path /home/container/nginx/uwsgi;
-scgi_temp_path /home/container/nginx/scgi;
-
 events {
     worker_connections 1024;
 }
 
 http {
+    # Temp paths in container home
+    client_body_temp_path /home/container/nginx/body;
+    proxy_temp_path /home/container/nginx/proxy;
+    fastcgi_temp_path /home/container/nginx/fastcgi;
+    uwsgi_temp_path /home/container/nginx/uwsgi;
+    scgi_temp_path /home/container/nginx/scgi;
+
     include /etc/nginx/mime.types;
     default_type application/octet-stream;
     access_log /home/container/logs/nginx-access.log;
