@@ -177,12 +177,26 @@ EOF
 echo "[3/4] Starting OTEL Collector..."
 /opt/signoz/bin/otel-collector --config=/home/container/otel-config.yaml >> /home/container/logs/otel.log 2>&1 &
 
+# Create nginx temp directories
+mkdir -p /home/container/nginx/body
+mkdir -p /home/container/nginx/proxy
+mkdir -p /home/container/nginx/fastcgi
+mkdir -p /home/container/nginx/uwsgi
+mkdir -p /home/container/nginx/scgi
+
 # Nginx config for frontend
 cat > /home/container/nginx.conf << EOF
 worker_processes 1;
 error_log /home/container/logs/nginx-error.log;
 pid /home/container/nginx.pid;
 daemon off;
+
+# Temp paths in container home
+client_body_temp_path /home/container/nginx/body;
+proxy_temp_path /home/container/nginx/proxy;
+fastcgi_temp_path /home/container/nginx/fastcgi;
+uwsgi_temp_path /home/container/nginx/uwsgi;
+scgi_temp_path /home/container/nginx/scgi;
 
 events {
     worker_connections 1024;
