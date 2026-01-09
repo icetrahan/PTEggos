@@ -170,10 +170,13 @@ processors:
 exporters:
   clickhousetraces:
     datasource: tcp://127.0.0.1:${CLICKHOUSE_PORT}/signoz_traces
+    cluster_name: ""
   clickhouselogsexporter:
     dsn: tcp://127.0.0.1:${CLICKHOUSE_PORT}/signoz_logs
+    cluster_name: ""
   clickhousemetricswrite:
     endpoint: tcp://127.0.0.1:${CLICKHOUSE_PORT}/signoz_metrics
+    cluster_name: ""
 
 service:
   pipelines:
@@ -193,6 +196,7 @@ EOF
 
 # Start OTEL Collector
 echo "[3/4] Starting OTEL Collector..."
+export CLICKHOUSE_CLUSTER=""
 /opt/signoz/bin/otel-collector --config=/home/container/otel-config.yaml >> /home/container/logs/otel.log 2>&1 &
 
 # Create nginx temp directories
@@ -263,6 +267,9 @@ export STORAGE=clickhouse
 export SIGNOZ_LOCAL_DB_PATH=/home/container/data/signoz/signoz.db
 export TELEMETRY_ENABLED=false
 export SIGNOZ_JWT_SECRET="pterodactyl-signoz-secret-change-me"
+# Disable cluster mode for single-node deployment
+export ClickHouseCluster=""
+export DEPLOYMENT_TYPE="docker-standalone"
 
 /opt/signoz/bin/query-service >> /home/container/logs/query-service.log 2>&1 &
 
