@@ -34,10 +34,10 @@ ARG         SIGNOZ_VERSION=0.38.0
 RUN         mkdir -p /opt/signoz/bin \
             && cd /opt/signoz/bin \
             # Query Service
-            && wget -q "https://github.com/SigNoz/signoz/releases/download/v${SIGNOZ_VERSION}/query-service-linux-amd64" -O query-service \
+            && wget "https://github.com/SigNoz/signoz/releases/download/v${SIGNOZ_VERSION}/query-service-linux-amd64" -O query-service \
             && chmod +x query-service \
             # OTEL Collector  
-            && wget -q "https://github.com/SigNoz/signoz-otel-collector/releases/download/v0.88.11/signoz-otel-collector_0.88.11_linux_amd64.tar.gz" -O otel.tar.gz \
+            && wget "https://github.com/SigNoz/signoz-otel-collector/releases/download/v0.88.11/signoz-otel-collector_0.88.11_linux_amd64.tar.gz" -O otel.tar.gz \
             && tar -xzf otel.tar.gz \
             && mv signoz-otel-collector otel-collector \
             && chmod +x otel-collector \
@@ -46,7 +46,7 @@ RUN         mkdir -p /opt/signoz/bin \
 # Download SigNoz Frontend
 RUN         mkdir -p /opt/signoz/frontend \
             && cd /opt/signoz/frontend \
-            && wget -q "https://github.com/SigNoz/signoz/releases/download/v${SIGNOZ_VERSION}/frontend.tar.gz" -O frontend.tar.gz \
+            && wget "https://github.com/SigNoz/signoz/releases/download/v${SIGNOZ_VERSION}/frontend.tar.gz" -O frontend.tar.gz \
             && tar -xzf frontend.tar.gz \
             && rm frontend.tar.gz
 
