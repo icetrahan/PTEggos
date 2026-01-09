@@ -22,9 +22,10 @@ mkdir -p /home/container/data/clickhouse/coordination/snapshots
 mkdir -p /home/container/data/signoz
 mkdir -p /home/container/logs
 
-# Get container's internal IP for Keeper RAFT
-CONTAINER_IP=$(hostname -i 2>/dev/null || echo "127.0.0.1")
-echo "Container IP for Keeper: ${CONTAINER_IP}"
+# SINGLE-NODE: Use localhost for all internal communication
+# This avoids any DNS resolution issues with container IPs
+CONTAINER_IP="127.0.0.1"
+echo "Using localhost for single-node Keeper/Cluster config"
 
 echo "==========================================="
 echo " SigNoz Observability Platform"
