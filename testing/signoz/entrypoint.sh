@@ -113,7 +113,33 @@ cat > /home/container/clickhouse-config.xml << EOF
         <replica>1</replica>
     </macros>
     
-    <!-- Allow ON CLUSTER without Zookeeper for single-node -->
+    <!-- ClickHouse Keeper embedded (simpler config) -->
+    <keeper_server>
+        <tcp_port>9181</tcp_port>
+        <server_id>1</server_id>
+        <log_storage_path>/home/container/data/clickhouse/coordination/log</log_storage_path>
+        <snapshot_storage_path>/home/container/data/clickhouse/coordination/snapshots</snapshot_storage_path>
+        <coordination_settings>
+            <operation_timeout_ms>10000</operation_timeout_ms>
+            <session_timeout_ms>30000</session_timeout_ms>
+            <force_sync>false</force_sync>
+        </coordination_settings>
+        <raft_configuration>
+            <server>
+                <id>1</id>
+                <hostname>localhost</hostname>
+                <port>9234</port>
+            </server>
+        </raft_configuration>
+    </keeper_server>
+    
+    <zookeeper>
+        <node>
+            <host>localhost</host>
+            <port>9181</port>
+        </node>
+    </zookeeper>
+    
     <distributed_ddl>
         <path>/clickhouse/task_queue/ddl</path>
         <cleanup_delay_period>60</cleanup_delay_period>
@@ -147,8 +173,10 @@ EOF
 echo "[1/4] Starting ClickHouse..."
 clickhouse-server --config-file=/home/container/clickhouse-config.xml &
 
-sleep 3
-for i in {1..30}; do
+# Wait for Keeper to elect itself (single-node takes a few seconds)
+echo "      Waiting for ClickHouse Keeper..."
+sleep 10
+for i in {1..60}; do
     if clickhouse-client --port=${CLICKHOUSE_PORT} --query="SELECT 1" 2>/dev/null; then
         echo "      ClickHouse ready!"
         break
