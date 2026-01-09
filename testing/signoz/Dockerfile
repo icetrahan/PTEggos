@@ -17,7 +17,7 @@ RUN         apt-get update && apt-get upgrade -y \
                 net-tools \
                 iproute2 \
                 tini \
-                openjdk-11-jre-headless \
+                docker-compose \
             && apt-get clean \
             && rm -rf /var/lib/apt/lists/*
 
@@ -29,32 +29,13 @@ RUN         curl -fsSL https://packages.clickhouse.com/rpm/lts/repodata/repomd.x
             && apt-get clean \
             && rm -rf /var/lib/apt/lists/*
 
-# Download SigNoz binaries
-ARG         SIGNOZ_VERSION=0.38.0
-RUN         mkdir -p /opt/signoz/bin \
-            && cd /opt/signoz/bin \
-            # Query Service
-            && wget "https://github.com/SigNoz/signoz/releases/download/v${SIGNOZ_VERSION}/query-service-linux-amd64" -O query-service \
-            && chmod +x query-service \
-            # OTEL Collector  
-            && wget "https://github.com/SigNoz/signoz-otel-collector/releases/download/v0.88.11/signoz-otel-collector_0.88.11_linux_amd64.tar.gz" -O otel.tar.gz \
-            && tar -xzf otel.tar.gz \
-            && mv signoz-otel-collector otel-collector \
-            && chmod +x otel-collector \
-            && rm otel.tar.gz
-
-# Download SigNoz Frontend
-RUN         mkdir -p /opt/signoz/frontend \
-            && cd /opt/signoz/frontend \
-            && wget "https://github.com/SigNoz/signoz/releases/download/v${SIGNOZ_VERSION}/frontend.tar.gz" -O frontend.tar.gz \
-            && tar -xzf frontend.tar.gz \
-            && rm frontend.tar.gz
-
-# Install nginx for frontend
-RUN         apt-get update \
-            && apt-get install -y nginx \
-            && apt-get clean \
-            && rm -rf /var/lib/apt/lists/*
+# Download SigNoz docker-compose setup
+ARG         SIGNOZ_VERSION=0.106.0
+RUN         mkdir -p /opt/signoz \
+            && cd /opt/signoz \
+            && wget "https://github.com/SigNoz/signoz/archive/refs/tags/v${SIGNOZ_VERSION}.tar.gz" -O signoz.tar.gz \
+            && tar -xzf signoz.tar.gz --strip-components=1 \
+            && rm signoz.tar.gz
 
 # Set the locale
 RUN         apt-get update && apt-get install -y locales \
@@ -67,19 +48,13 @@ ENV         LANGUAGE=en_US:en
 ENV         LC_ALL=en_US.UTF-8
 
 # Create config directory
-RUN         mkdir -p /opt/signoz/config
-
-# Copy configuration files
-COPY        config/otel-collector-config.yaml /opt/signoz/config/otel-collector-config.yaml
-COPY        config/clickhouse-config.xml /opt/signoz/config/clickhouse-config.xml
-COPY        config/nginx.conf /opt/signoz/config/nginx.conf
+RUN         mkdir -p /opt/signoz/config /opt/signoz/data
 
 ## Setup user and working directory
 RUN         useradd -m -d /home/container -s /bin/bash container \
             && chown -R container:container /opt/signoz \
             && mkdir -p /var/lib/clickhouse /var/log/clickhouse-server \
-            && chown -R container:container /var/lib/clickhouse /var/log/clickhouse-server \
-            && chown -R container:container /var/log/nginx /var/lib/nginx
+            && chown -R container:container /var/lib/clickhouse /var/log/clickhouse-server
 
 USER        container
 ENV         USER=container HOME=/home/container
