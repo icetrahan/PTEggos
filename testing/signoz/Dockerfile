@@ -1,4 +1,8 @@
-FROM        --platform=$TARGETOS/$TARGETARCH ubuntu:22.04
+FROM        signoz/query-service:0.55.0 AS query-source
+FROM        signoz/signoz-otel-collector:0.102.12 AS otel-source
+FROM        signoz/frontend:0.55.0 AS frontend-source
+
+FROM        ubuntu:22.04
 
 LABEL       author="Primal Heaven" maintainer="primalheaven@example.com"
 LABEL       org.opencontainers.image.source="https://github.com/YOUR_ORG/signoz-pterodactyl"
@@ -36,39 +40,20 @@ RUN         curl -fsSL https://packages.clickhouse.com/rpm/lts/repodata/repomd.x
             && apt-get clean \
             && rm -rf /var/lib/apt/lists/*
 
-# Download SigNoz Query Service binary
-ARG         SIGNOZ_VERSION=0.55.0
-ARG         TARGETARCH
-RUN         mkdir -p /opt/signoz/bin \
-            && cd /opt/signoz/bin \
-            && if [ "$TARGETARCH" = "arm64" ]; then \
-                 wget -q "https://github.com/SigNoz/signoz/releases/download/v${SIGNOZ_VERSION}/query-service_${SIGNOZ_VERSION}_linux_arm64.tar.gz" -O query-service.tar.gz; \
-               else \
-                 wget -q "https://github.com/SigNoz/signoz/releases/download/v${SIGNOZ_VERSION}/query-service_${SIGNOZ_VERSION}_linux_amd64.tar.gz" -O query-service.tar.gz; \
-               fi \
-            && tar -xzf query-service.tar.gz \
-            && rm query-service.tar.gz \
-            && chmod +x query-service
+# Copy binaries from SigNoz official images
+RUN         mkdir -p /opt/signoz/bin /opt/signoz/frontend
 
-# Download SigNoz OTEL Collector binary
-ARG         OTEL_VERSION=0.102.12
-RUN         cd /opt/signoz/bin \
-            && if [ "$TARGETARCH" = "arm64" ]; then \
-                 wget -q "https://github.com/SigNoz/signoz-otel-collector/releases/download/v${OTEL_VERSION}/signoz-otel-collector_${OTEL_VERSION}_linux_arm64.tar.gz" -O otel.tar.gz; \
-               else \
-                 wget -q "https://github.com/SigNoz/signoz-otel-collector/releases/download/v${OTEL_VERSION}/signoz-otel-collector_${OTEL_VERSION}_linux_amd64.tar.gz" -O otel.tar.gz; \
-               fi \
-            && tar -xzf otel.tar.gz \
-            && rm otel.tar.gz \
-            && mv signoz-otel-collector otel-collector || mv signoz-otel-collector_* otel-collector || true \
-            && chmod +x otel-collector
+# Copy query-service binary
+COPY        --from=query-source /root/query-service /opt/signoz/bin/query-service
 
-# Download SigNoz Frontend
-RUN         mkdir -p /opt/signoz/frontend \
-            && cd /opt/signoz/frontend \
-            && wget -q "https://github.com/SigNoz/signoz/releases/download/v${SIGNOZ_VERSION}/frontend-${SIGNOZ_VERSION}.tar.gz" -O frontend.tar.gz \
-            && tar -xzf frontend.tar.gz \
-            && rm frontend.tar.gz
+# Copy OTEL collector binary
+COPY        --from=otel-source /signoz-collector /opt/signoz/bin/otel-collector
+
+# Copy frontend static files
+COPY        --from=frontend-source /usr/share/nginx/html /opt/signoz/frontend
+
+# Make binaries executable
+RUN         chmod +x /opt/signoz/bin/query-service /opt/signoz/bin/otel-collector
 
 # Create directories and set permissions
 RUN         mkdir -p /opt/signoz/config /opt/signoz/data \
