@@ -113,7 +113,7 @@ cat > /home/container/clickhouse-config.xml << EOF
         <replica>1</replica>
     </macros>
     
-    <!-- ClickHouse Keeper embedded (simpler config) -->
+    <!-- ClickHouse Keeper embedded - single node optimized -->
     <keeper_server>
         <tcp_port>9181</tcp_port>
         <server_id>1</server_id>
@@ -123,11 +123,20 @@ cat > /home/container/clickhouse-config.xml << EOF
             <operation_timeout_ms>10000</operation_timeout_ms>
             <session_timeout_ms>30000</session_timeout_ms>
             <force_sync>false</force_sync>
+            <auto_forwarding>false</auto_forwarding>
+            <quorum_reads>false</quorum_reads>
+            <raft_logs_level>information</raft_logs_level>
+            <dead_session_check_period_ms>500</dead_session_check_period_ms>
+            <heart_beat_interval_ms>250</heart_beat_interval_ms>
+            <election_timeout_lower_bound_ms>500</election_timeout_lower_bound_ms>
+            <election_timeout_upper_bound_ms>1000</election_timeout_upper_bound_ms>
+            <reserved_log_items>100</reserved_log_items>
+            <snapshot_distance>10000</snapshot_distance>
         </coordination_settings>
         <raft_configuration>
             <server>
                 <id>1</id>
-                <hostname>localhost</hostname>
+                <hostname>127.0.0.1</hostname>
                 <port>9234</port>
             </server>
         </raft_configuration>
@@ -135,7 +144,7 @@ cat > /home/container/clickhouse-config.xml << EOF
     
     <zookeeper>
         <node>
-            <host>localhost</host>
+            <host>127.0.0.1</host>
             <port>9181</port>
         </node>
     </zookeeper>
