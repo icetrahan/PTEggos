@@ -29,7 +29,7 @@ echo " OTLP HTTP: 0.0.0.0:${OTLP_HTTP_PORT}"
 echo "==========================================="
 echo ""
 
-# ClickHouse config
+# ClickHouse config - tuned for Pterodactyl's limited resources
 cat > /home/container/clickhouse-config.xml << EOF
 <?xml version="1.0"?>
 <clickhouse>
@@ -37,18 +37,43 @@ cat > /home/container/clickhouse-config.xml << EOF
         <level>warning</level>
         <log>/home/container/logs/clickhouse.log</log>
         <errorlog>/home/container/logs/clickhouse-error.log</errorlog>
+        <size>100M</size>
+        <count>3</count>
     </logger>
+    
     <http_port>${CLICKHOUSE_HTTP_PORT}</http_port>
     <tcp_port>${CLICKHOUSE_PORT}</tcp_port>
     <listen_host>0.0.0.0</listen_host>
+    
     <path>/home/container/data/clickhouse/</path>
     <tmp_path>/home/container/data/clickhouse/tmp/</tmp_path>
     <user_files_path>/home/container/data/clickhouse/user_files/</user_files_path>
-    <max_connections>4096</max_connections>
-    <max_concurrent_queries>100</max_concurrent_queries>
+    
+    <!-- Reduced for Pterodactyl -->
+    <max_connections>256</max_connections>
+    <max_concurrent_queries>20</max_concurrent_queries>
+    
+    <!-- CRITICAL: Thread pool settings to prevent "Not enough threads" crash -->
+    <max_thread_pool_size>100</max_thread_pool_size>
+    <max_thread_pool_free_size>10</max_thread_pool_free_size>
+    <thread_pool_queue_size>1000</thread_pool_queue_size>
+    
+    <!-- Background pools - reduced from defaults (512!) to fit container limits -->
+    <background_pool_size>4</background_pool_size>
+    <background_move_pool_size>2</background_move_pool_size>
+    <background_schedule_pool_size>4</background_schedule_pool_size>
+    <background_fetches_pool_size>2</background_fetches_pool_size>
+    <background_common_pool_size>4</background_common_pool_size>
+    <background_buffer_flush_schedule_pool_size>2</background_buffer_flush_schedule_pool_size>
+    <background_message_broker_schedule_pool_size>2</background_message_broker_schedule_pool_size>
+    <background_distributed_schedule_pool_size>2</background_distributed_schedule_pool_size>
+    
+    <max_server_memory_usage_to_ram_ratio>0.8</max_server_memory_usage_to_ram_ratio>
+    
     <default_profile>default</default_profile>
     <default_database>default</default_database>
     <timezone>UTC</timezone>
+    
     <users>
         <default>
             <password></password>
@@ -58,11 +83,15 @@ cat > /home/container/clickhouse-config.xml << EOF
             <access_management>1</access_management>
         </default>
     </users>
+    
     <profiles>
         <default>
-            <max_memory_usage>10000000000</max_memory_usage>
+            <max_memory_usage>4000000000</max_memory_usage>
+            <max_threads>8</max_threads>
+            <max_insert_threads>2</max_insert_threads>
         </default>
     </profiles>
+    
     <quotas>
         <default>
             <interval>
@@ -75,6 +104,12 @@ cat > /home/container/clickhouse-config.xml << EOF
             </interval>
         </default>
     </quotas>
+    
+    <merge_tree>
+        <max_suspicious_broken_parts>5</max_suspicious_broken_parts>
+        <parts_to_throw_insert>300</parts_to_throw_insert>
+        <parts_to_delay_insert>150</parts_to_delay_insert>
+    </merge_tree>
 </clickhouse>
 EOF
 
