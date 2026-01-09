@@ -12,7 +12,7 @@
         "eula"
     ],
     "docker_images": {
-        "ghcr.io/icetrahan/testing:signoz": "ghcr.io/icetrahan/testing:signoz"
+        "ghcr.io/YOUR_ORG/signoz-pterodactyl:latest": "ghcr.io/YOUR_ORG/signoz-pterodactyl:latest"
     },
     "file_denylist": [],
     "startup": "/entrypoint.sh",
@@ -24,9 +24,9 @@
     },
     "scripts": {
         "installation": {
-            "script": "#!/bin/ash\r\ncd /mnt/server\r\necho \"SigNoz container is pre-built. No installation required.\"\r\nmkdir -p data logs\r\necho \"Created data and logs directories.\"\r\necho \"Installation complete.\"",
+            "script": "#!/bin/bash\r\ncd /mnt/server\r\necho \"SigNoz container is pre-built. No installation required.\"\r\nmkdir -p data logs\r\necho \"Created data and logs directories.\"\r\necho \"Installation complete.\"",
             "container": "ghcr.io/parkervcp/installers:alpine",
-            "entrypoint": "ash"
+            "entrypoint": "bash"
         }
     },
     "variables": [

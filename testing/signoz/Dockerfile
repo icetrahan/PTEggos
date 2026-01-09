@@ -1,7 +1,7 @@
 FROM        --platform=$TARGETOS/$TARGETARCH ubuntu:22.04
 
 LABEL       author="Primal Heaven" maintainer="primalheaven@example.com"
-LABEL       org.opencontainers.image.source="https://github.com/icetrahan/PTEggos"
+LABEL       org.opencontainers.image.source="https://github.com/YOUR_ORG/signoz-pterodactyl"
 LABEL       org.opencontainers.image.licenses=MIT
 
 ENV         DEBIAN_FRONTEND=noninteractive
@@ -17,9 +17,16 @@ RUN         apt-get update && apt-get upgrade -y \
                 net-tools \
                 iproute2 \
                 tini \
-                docker-compose \
+                nginx \
+                locales \
+            && sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen \
+            && locale-gen \
             && apt-get clean \
             && rm -rf /var/lib/apt/lists/*
+
+ENV         LANG=en_US.UTF-8
+ENV         LANGUAGE=en_US:en
+ENV         LC_ALL=en_US.UTF-8
 
 # Install ClickHouse
 RUN         curl -fsSL https://packages.clickhouse.com/rpm/lts/repodata/repomd.xml.key | gpg --dearmor -o /usr/share/keyrings/clickhouse-keyring.gpg \
@@ -29,32 +36,47 @@ RUN         curl -fsSL https://packages.clickhouse.com/rpm/lts/repodata/repomd.x
             && apt-get clean \
             && rm -rf /var/lib/apt/lists/*
 
-# Download SigNoz docker-compose setup
-ARG         SIGNOZ_VERSION=0.106.0
-RUN         mkdir -p /opt/signoz \
-            && cd /opt/signoz \
-            && wget "https://github.com/SigNoz/signoz/archive/refs/tags/v${SIGNOZ_VERSION}.tar.gz" -O signoz.tar.gz \
-            && tar -xzf signoz.tar.gz --strip-components=1 \
-            && rm signoz.tar.gz
+# Download SigNoz Query Service binary
+ARG         SIGNOZ_VERSION=0.55.0
+ARG         TARGETARCH
+RUN         mkdir -p /opt/signoz/bin \
+            && cd /opt/signoz/bin \
+            && if [ "$TARGETARCH" = "arm64" ]; then \
+                 wget -q "https://github.com/SigNoz/signoz/releases/download/v${SIGNOZ_VERSION}/query-service_${SIGNOZ_VERSION}_linux_arm64.tar.gz" -O query-service.tar.gz; \
+               else \
+                 wget -q "https://github.com/SigNoz/signoz/releases/download/v${SIGNOZ_VERSION}/query-service_${SIGNOZ_VERSION}_linux_amd64.tar.gz" -O query-service.tar.gz; \
+               fi \
+            && tar -xzf query-service.tar.gz \
+            && rm query-service.tar.gz \
+            && chmod +x query-service
 
-# Set the locale
-RUN         apt-get update && apt-get install -y locales \
-            && sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen \
-            && locale-gen \
-            && apt-get clean \
-            && rm -rf /var/lib/apt/lists/*
-ENV         LANG=en_US.UTF-8
-ENV         LANGUAGE=en_US:en
-ENV         LC_ALL=en_US.UTF-8
+# Download SigNoz OTEL Collector binary
+ARG         OTEL_VERSION=0.102.12
+RUN         cd /opt/signoz/bin \
+            && if [ "$TARGETARCH" = "arm64" ]; then \
+                 wget -q "https://github.com/SigNoz/signoz-otel-collector/releases/download/v${OTEL_VERSION}/signoz-otel-collector_${OTEL_VERSION}_linux_arm64.tar.gz" -O otel.tar.gz; \
+               else \
+                 wget -q "https://github.com/SigNoz/signoz-otel-collector/releases/download/v${OTEL_VERSION}/signoz-otel-collector_${OTEL_VERSION}_linux_amd64.tar.gz" -O otel.tar.gz; \
+               fi \
+            && tar -xzf otel.tar.gz \
+            && rm otel.tar.gz \
+            && mv signoz-otel-collector otel-collector || mv signoz-otel-collector_* otel-collector || true \
+            && chmod +x otel-collector
 
-# Create config directory
-RUN         mkdir -p /opt/signoz/config /opt/signoz/data
+# Download SigNoz Frontend
+RUN         mkdir -p /opt/signoz/frontend \
+            && cd /opt/signoz/frontend \
+            && wget -q "https://github.com/SigNoz/signoz/releases/download/v${SIGNOZ_VERSION}/frontend-${SIGNOZ_VERSION}.tar.gz" -O frontend.tar.gz \
+            && tar -xzf frontend.tar.gz \
+            && rm frontend.tar.gz
 
-## Setup user and working directory
-RUN         useradd -m -d /home/container -s /bin/bash container \
+# Create directories and set permissions
+RUN         mkdir -p /opt/signoz/config /opt/signoz/data \
+            && useradd -m -d /home/container -s /bin/bash container \
             && chown -R container:container /opt/signoz \
             && mkdir -p /var/lib/clickhouse /var/log/clickhouse-server \
-            && chown -R container:container /var/lib/clickhouse /var/log/clickhouse-server
+            && chown -R container:container /var/lib/clickhouse /var/log/clickhouse-server \
+            && chown -R container:container /var/log/nginx /var/lib/nginx /run
 
 USER        container
 ENV         USER=container HOME=/home/container
