@@ -1,7 +1,7 @@
 FROM        --platform=$TARGETOS/$TARGETARCH ubuntu:22.04
 
 LABEL       author="Primal Heaven" maintainer="primalheaven@example.com"
-LABEL       org.opencontainers.image.source="https://github.com/YOUR_ORG/signoz-pterodactyl"
+LABEL       org.opencontainers.image.source="https://github.com/icetrahan/PTEggos"
 LABEL       org.opencontainers.image.licenses=MIT
 
 ENV         DEBIAN_FRONTEND=noninteractive

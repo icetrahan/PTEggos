@@ -12,7 +12,7 @@
         "eula"
     ],
     "docker_images": {
-        "ghcr.io/YOUR_ORG/signoz-pterodactyl:latest": "ghcr.io/YOUR_ORG/signoz-pterodactyl:latest"
+        "ghcr.io/icetrahan/testing:signoz": "ghcr.io/icetrahan/testing:signoz"
     },
     "file_denylist": [],
     "startup": "/entrypoint.sh",
