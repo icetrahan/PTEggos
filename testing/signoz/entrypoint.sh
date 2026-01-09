@@ -226,14 +226,24 @@ http {
 }
 EOF
 
+# Create required config files for query-service
+mkdir -p /home/container/config
+cat > /home/container/config/prometheus.yml << PROMEOF
+global:
+  scrape_interval: 60s
+  evaluation_interval: 60s
+PROMEOF
+
 # Start Query Service
 echo "[4/4] Starting Query Service + Frontend..."
+cd /home/container
 export ClickHouseUrl="tcp://127.0.0.1:${CLICKHOUSE_PORT}"
 export STORAGE=clickhouse
 export SIGNOZ_LOCAL_DB_PATH=/home/container/data/signoz/signoz.db
 export TELEMETRY_ENABLED=false
+export SIGNOZ_JWT_SECRET="pterodactyl-signoz-secret-change-me"
 
-/opt/signoz/bin/query-service >> /home/container/logs/query-service.log 2>&1 &
+/opt/signoz/bin/query-service --config /home/container/config/prometheus.yml >> /home/container/logs/query-service.log 2>&1 &
 
 # Start Nginx - use -p to set prefix so nginx doesn't try system paths
 nginx -p /home/container/ -c /home/container/nginx.conf 2>/dev/null &
