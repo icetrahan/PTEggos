@@ -91,8 +91,33 @@ cat > /home/container/clickhouse-config.xml << EOF
             <max_memory_usage>4000000000</max_memory_usage>
             <max_threads>8</max_threads>
             <max_insert_threads>2</max_insert_threads>
+            <allow_experimental_database_replicated>1</allow_experimental_database_replicated>
         </default>
     </profiles>
+    
+    <!-- Fake cluster that doesn't require Zookeeper - just local replica -->
+    <remote_servers>
+        <cluster>
+            <shard>
+                <replica>
+                    <host>localhost</host>
+                    <port>${CLICKHOUSE_PORT}</port>
+                </replica>
+            </shard>
+        </cluster>
+    </remote_servers>
+    
+    <macros>
+        <cluster>cluster</cluster>
+        <shard>1</shard>
+        <replica>1</replica>
+    </macros>
+    
+    <!-- Allow ON CLUSTER without Zookeeper for single-node -->
+    <distributed_ddl>
+        <path>/clickhouse/task_queue/ddl</path>
+        <cleanup_delay_period>60</cleanup_delay_period>
+    </distributed_ddl>
     
     <quotas>
         <default>
