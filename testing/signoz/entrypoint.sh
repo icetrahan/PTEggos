@@ -115,50 +115,6 @@ cat > /home/container/clickhouse-config.xml << EOF
         <number_of_free_entries_in_pool_to_lower_max_size_of_merge>4</number_of_free_entries_in_pool_to_lower_max_size_of_merge>
     </merge_tree>
     
-    <!-- ClickHouse Keeper (built-in, no external Zookeeper needed) -->
-    <keeper_server>
-        <tcp_port>9181</tcp_port>
-        <server_id>1</server_id>
-        <log_storage_path>/home/container/data/clickhouse/coordination/log</log_storage_path>
-        <snapshot_storage_path>/home/container/data/clickhouse/coordination/snapshots</snapshot_storage_path>
-        <coordination_settings>
-            <operation_timeout_ms>10000</operation_timeout_ms>
-            <session_timeout_ms>30000</session_timeout_ms>
-            <raft_logs_level>warning</raft_logs_level>
-        </coordination_settings>
-        <raft_configuration>
-            <server>
-                <id>1</id>
-                <hostname>127.0.0.1</hostname>
-                <port>9234</port>
-            </server>
-        </raft_configuration>
-    </keeper_server>
-    
-    <zookeeper>
-        <node>
-            <host>127.0.0.1</host>
-            <port>9181</port>
-        </node>
-    </zookeeper>
-    
-    <!-- Single-node cluster -->
-    <remote_servers>
-        <cluster>
-            <shard>
-                <replica>
-                    <host>127.0.0.1</host>
-                    <port>${CLICKHOUSE_PORT}</port>
-                </replica>
-            </shard>
-        </cluster>
-    </remote_servers>
-    
-    <macros>
-        <cluster>cluster</cluster>
-        <shard>1</shard>
-        <replica>1</replica>
-    </macros>
 </clickhouse>
 EOF
 
