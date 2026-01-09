@@ -112,6 +112,24 @@ cat > /home/container/clickhouse-config.xml << EOF
         <number_of_free_entries_in_pool_to_execute_mutation>4</number_of_free_entries_in_pool_to_execute_mutation>
         <number_of_free_entries_in_pool_to_lower_max_size_of_merge>4</number_of_free_entries_in_pool_to_lower_max_size_of_merge>
     </merge_tree>
+    
+    <!-- Single-node cluster config for SigNoz -->
+    <remote_servers>
+        <cluster>
+            <shard>
+                <replica>
+                    <host>127.0.0.1</host>
+                    <port>${CLICKHOUSE_PORT}</port>
+                </replica>
+            </shard>
+        </cluster>
+    </remote_servers>
+    
+    <macros>
+        <cluster>cluster</cluster>
+        <shard>1</shard>
+        <replica>1</replica>
+    </macros>
 </clickhouse>
 EOF
 
