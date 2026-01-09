@@ -24,9 +24,9 @@
     },
     "scripts": {
         "installation": {
-            "script": "#!/bin/bash\r\ncd /mnt/server\r\necho \"SigNoz container is pre-built. No installation required.\"\r\nmkdir -p data logs\r\necho \"Created data and logs directories.\"\r\necho \"Installation complete.\"",
+            "script": "#!/bin/ash\r\ncd /mnt/server\r\necho \"SigNoz container is pre-built. No installation required.\"\r\nmkdir -p data logs\r\necho \"Created data and logs directories.\"\r\necho \"Installation complete.\"",
             "container": "ghcr.io/parkervcp/installers:alpine",
-            "entrypoint": "bash"
+            "entrypoint": "ash"
         }
     },
     "variables": [
