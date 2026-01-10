@@ -14,9 +14,15 @@ CLICKHOUSE_PORT=${CLICKHOUSE_PORT:-9000}
 CLICKHOUSE_HTTP_PORT=${CLICKHOUSE_HTTP_PORT:-8123}
 RETENTION_DAYS=${RETENTION_DAYS:-15}
 
+# Server IP for Keeper RAFT - set via Pterodactyl env var or fallback to localhost
+SERVER_IP=${SERVER_IP:-127.0.0.1}
+echo "Using SERVER_IP: ${SERVER_IP} for Keeper RAFT"
+
 # Directories
 mkdir -p /home/container/data/clickhouse/tmp
 mkdir -p /home/container/data/clickhouse/user_files
+mkdir -p /home/container/data/clickhouse/coordination/log
+mkdir -p /home/container/data/clickhouse/coordination/snapshots
 mkdir -p /home/container/data/signoz
 mkdir -p /home/container/logs
 
@@ -113,16 +119,75 @@ cat > /home/container/clickhouse-config.xml << EOF
         <number_of_free_entries_in_pool_to_lower_max_size_of_merge>4</number_of_free_entries_in_pool_to_lower_max_size_of_merge>
     </merge_tree>
     
-    <!-- NO KEEPER, NO CLUSTER, NO ZOOKEEPER - pure single-node -->
+    <!-- Single-node cluster pointing to this server -->
+    <remote_servers>
+        <cluster>
+            <shard>
+                <replica>
+                    <host>127.0.0.1</host>
+                    <port>${CLICKHOUSE_PORT}</port>
+                </replica>
+            </shard>
+        </cluster>
+    </remote_servers>
+    
+    <macros>
+        <cluster>cluster</cluster>
+        <shard>1</shard>
+        <replica>1</replica>
+    </macros>
+    
+    <!-- ClickHouse Keeper - single node using server's public IP -->
+    <keeper_server>
+        <tcp_port>9181</tcp_port>
+        <server_id>1</server_id>
+        <log_storage_path>/home/container/data/clickhouse/coordination/log</log_storage_path>
+        <snapshot_storage_path>/home/container/data/clickhouse/coordination/snapshots</snapshot_storage_path>
+        
+        <coordination_settings>
+            <operation_timeout_ms>10000</operation_timeout_ms>
+            <session_timeout_ms>30000</session_timeout_ms>
+            <force_sync>false</force_sync>
+            <auto_forwarding>false</auto_forwarding>
+            <quorum_reads>false</quorum_reads>
+            <raft_logs_level>warning</raft_logs_level>
+            <!-- Aggressive single-node election -->
+            <heart_beat_interval_ms>500</heart_beat_interval_ms>
+            <election_timeout_lower_bound_ms>1000</election_timeout_lower_bound_ms>
+            <election_timeout_upper_bound_ms>2000</election_timeout_upper_bound_ms>
+            <startup_timeout>60000</startup_timeout>
+        </coordination_settings>
+        
+        <raft_configuration>
+            <server>
+                <id>1</id>
+                <hostname>${SERVER_IP}</hostname>
+                <port>9234</port>
+            </server>
+        </raft_configuration>
+    </keeper_server>
+    
+    <zookeeper>
+        <node>
+            <host>127.0.0.1</host>
+            <port>9181</port>
+        </node>
+        <session_timeout_ms>30000</session_timeout_ms>
+    </zookeeper>
+    
+    <distributed_ddl>
+        <path>/clickhouse/task_queue/ddl</path>
+    </distributed_ddl>
     
 </clickhouse>
 EOF
 
-# Start ClickHouse (simple single-node, no Keeper)
-echo "[1/4] Starting ClickHouse..."
+# Start ClickHouse with Keeper
+echo "[1/4] Starting ClickHouse + Keeper..."
 clickhouse-server --config-file=/home/container/clickhouse-config.xml &
 
 # Wait for ClickHouse to be ready
+echo "      Waiting for ClickHouse..."
 for i in {1..30}; do
     if clickhouse-client --port=${CLICKHOUSE_PORT} --query="SELECT 1" 2>/dev/null; then
         echo "      ClickHouse ready!"
@@ -130,6 +195,10 @@ for i in {1..30}; do
     fi
     sleep 1
 done
+
+# Give Keeper a moment to elect itself as leader
+echo "      Waiting for Keeper leader election..."
+sleep 5
 
 # Init databases
 echo "[2/4] Creating databases..."

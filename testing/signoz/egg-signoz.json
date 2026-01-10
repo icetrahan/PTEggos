@@ -89,6 +89,16 @@
             "user_editable": true,
             "rules": "required|boolean",
             "field_type": "text"
+        },
+        {
+            "name": "Server IP",
+            "description": "The public IP address of this server (e.g., 172.93.100.254). Required for ClickHouse Keeper to work correctly.",
+            "env_variable": "SERVER_IP",
+            "default_value": "127.0.0.1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string",
+            "field_type": "text"
         }
     ]
 }
