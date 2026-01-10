@@ -14,17 +14,15 @@ CLICKHOUSE_PORT=${CLICKHOUSE_PORT:-9000}
 CLICKHOUSE_HTTP_PORT=${CLICKHOUSE_HTTP_PORT:-8123}
 RETENTION_DAYS=${RETENTION_DAYS:-15}
 
-# Server IP for Keeper RAFT - set via Pterodactyl env var
-SERVER_IP=${SERVER_IPA:-127.0.0.1}
-echo "Using SERVER_IP: ${SERVER_IP} for Keeper RAFT"
-
-# Directories
+# Directories - create all required paths
 mkdir -p /home/container/data/clickhouse/tmp
 mkdir -p /home/container/data/clickhouse/user_files
+mkdir -p /home/container/data/clickhouse/format_schemas
 mkdir -p /home/container/data/clickhouse/coordination/log
 mkdir -p /home/container/data/clickhouse/coordination/snapshots
 mkdir -p /home/container/data/signoz
 mkdir -p /home/container/logs
+mkdir -p /home/container/config
 
 echo "==========================================="
 echo " SigNoz Observability Platform"
@@ -35,36 +33,36 @@ echo " OTLP HTTP: 0.0.0.0:${OTLP_HTTP_PORT}"
 echo "==========================================="
 echo ""
 
-# ClickHouse config - SIMPLE SINGLE-NODE (no Keeper, no cluster)
-cat > /home/container/clickhouse-config.xml << EOF
+# ClickHouse config with Keeper - SINGLE NODE using localhost for internal RAFT
+cat > /home/container/clickhouse-config.xml << 'CHEOF'
 <?xml version="1.0"?>
 <clickhouse>
     <logger>
-        <level>warning</level>
+        <level>information</level>
         <log>/home/container/logs/clickhouse.log</log>
         <errorlog>/home/container/logs/clickhouse-error.log</errorlog>
         <size>100M</size>
         <count>3</count>
     </logger>
     
-    <http_port>${CLICKHOUSE_HTTP_PORT}</http_port>
-    <tcp_port>${CLICKHOUSE_PORT}</tcp_port>
+    <http_port>8123</http_port>
+    <tcp_port>9000</tcp_port>
+    <interserver_http_port>9009</interserver_http_port>
+    
     <listen_host>0.0.0.0</listen_host>
     
     <path>/home/container/data/clickhouse/</path>
     <tmp_path>/home/container/data/clickhouse/tmp/</tmp_path>
     <user_files_path>/home/container/data/clickhouse/user_files/</user_files_path>
+    <format_schema_path>/home/container/data/clickhouse/format_schemas/</format_schema_path>
     
-    <!-- Reduced for Pterodactyl -->
     <max_connections>256</max_connections>
     <max_concurrent_queries>20</max_concurrent_queries>
     
-    <!-- Thread pool settings to prevent crashes -->
     <max_thread_pool_size>100</max_thread_pool_size>
     <max_thread_pool_free_size>10</max_thread_pool_free_size>
     <thread_pool_queue_size>1000</thread_pool_queue_size>
     
-    <!-- Background pools -->
     <background_pool_size>16</background_pool_size>
     <background_move_pool_size>2</background_move_pool_size>
     <background_schedule_pool_size>16</background_schedule_pool_size>
@@ -119,13 +117,14 @@ cat > /home/container/clickhouse-config.xml << EOF
         <number_of_free_entries_in_pool_to_lower_max_size_of_merge>4</number_of_free_entries_in_pool_to_lower_max_size_of_merge>
     </merge_tree>
     
-    <!-- Single-node cluster pointing to this server -->
+    <!-- Single-node cluster -->
     <remote_servers>
         <cluster>
             <shard>
+                <internal_replication>true</internal_replication>
                 <replica>
-                    <host>127.0.0.1</host>
-                    <port>${CLICKHOUSE_PORT}</port>
+                    <host>localhost</host>
+                    <port>9000</port>
                 </replica>
             </shard>
         </cluster>
@@ -133,11 +132,11 @@ cat > /home/container/clickhouse-config.xml << EOF
     
     <macros>
         <cluster>cluster</cluster>
-        <shard>1</shard>
-        <replica>1</replica>
+        <shard>01</shard>
+        <replica>replica-01</replica>
     </macros>
     
-    <!-- ClickHouse Keeper - single node using server's public IP -->
+    <!-- ClickHouse Keeper embedded - single node -->
     <keeper_server>
         <tcp_port>9181</tcp_port>
         <server_id>1</server_id>
@@ -147,29 +146,23 @@ cat > /home/container/clickhouse-config.xml << EOF
         <coordination_settings>
             <operation_timeout_ms>10000</operation_timeout_ms>
             <session_timeout_ms>30000</session_timeout_ms>
+            <raft_logs_level>information</raft_logs_level>
             <force_sync>false</force_sync>
-            <auto_forwarding>false</auto_forwarding>
-            <quorum_reads>false</quorum_reads>
-            <raft_logs_level>warning</raft_logs_level>
-            <!-- Aggressive single-node election -->
-            <heart_beat_interval_ms>500</heart_beat_interval_ms>
-            <election_timeout_lower_bound_ms>1000</election_timeout_lower_bound_ms>
-            <election_timeout_upper_bound_ms>2000</election_timeout_upper_bound_ms>
-            <startup_timeout>60000</startup_timeout>
         </coordination_settings>
         
         <raft_configuration>
             <server>
                 <id>1</id>
-                <hostname>${SERVER_IP}</hostname>
+                <hostname>localhost</hostname>
                 <port>9234</port>
             </server>
         </raft_configuration>
     </keeper_server>
     
+    <!-- Connect to embedded Keeper -->
     <zookeeper>
         <node>
-            <host>127.0.0.1</host>
+            <host>localhost</host>
             <port>9181</port>
         </node>
         <session_timeout_ms>30000</session_timeout_ms>
@@ -180,31 +173,51 @@ cat > /home/container/clickhouse-config.xml << EOF
     </distributed_ddl>
     
 </clickhouse>
-EOF
+CHEOF
 
-# Start ClickHouse with Keeper
-echo "[1/4] Starting ClickHouse + Keeper..."
+# Start ClickHouse
+echo "[1/4] Starting ClickHouse with embedded Keeper..."
 clickhouse-server --config-file=/home/container/clickhouse-config.xml &
+CLICKHOUSE_PID=$!
 
-# Wait for ClickHouse to be ready
-echo "      Waiting for ClickHouse..."
-for i in {1..30}; do
-    if clickhouse-client --port=${CLICKHOUSE_PORT} --query="SELECT 1" 2>/dev/null; then
-        echo "      ClickHouse ready!"
+# Wait for ClickHouse TCP port
+echo "      Waiting for ClickHouse to start..."
+for i in {1..60}; do
+    if clickhouse-client --port=9000 --query="SELECT 1" 2>/dev/null; then
+        echo "      ClickHouse TCP ready!"
         break
+    fi
+    if [ $i -eq 60 ]; then
+        echo "      ERROR: ClickHouse failed to start"
+        cat /home/container/logs/clickhouse-error.log 2>/dev/null || true
+        exit 1
     fi
     sleep 1
 done
 
-# Give Keeper a moment to elect itself as leader
-echo "      Waiting for Keeper leader election..."
-sleep 5
+# Wait for Keeper to be ready (check system.zookeeper)
+echo "      Waiting for Keeper to elect leader..."
+for i in {1..30}; do
+    if clickhouse-client --port=9000 --query="SELECT * FROM system.zookeeper WHERE path='/'" 2>/dev/null | grep -q clickhouse; then
+        echo "      Keeper is ready!"
+        break
+    fi
+    if [ $i -eq 30 ]; then
+        echo "      WARNING: Keeper may not be fully ready, continuing anyway..."
+    fi
+    sleep 1
+done
 
-# Init databases
+# Create databases - use ON CLUSTER for distributed DDL
 echo "[2/4] Creating databases..."
-clickhouse-client --port=${CLICKHOUSE_PORT} --query="CREATE DATABASE IF NOT EXISTS signoz_traces"
-clickhouse-client --port=${CLICKHOUSE_PORT} --query="CREATE DATABASE IF NOT EXISTS signoz_logs"
-clickhouse-client --port=${CLICKHOUSE_PORT} --query="CREATE DATABASE IF NOT EXISTS signoz_metrics"
+clickhouse-client --port=9000 --query="CREATE DATABASE IF NOT EXISTS signoz_traces ON CLUSTER 'cluster'" || \
+    clickhouse-client --port=9000 --query="CREATE DATABASE IF NOT EXISTS signoz_traces"
+clickhouse-client --port=9000 --query="CREATE DATABASE IF NOT EXISTS signoz_logs ON CLUSTER 'cluster'" || \
+    clickhouse-client --port=9000 --query="CREATE DATABASE IF NOT EXISTS signoz_logs"
+clickhouse-client --port=9000 --query="CREATE DATABASE IF NOT EXISTS signoz_metrics ON CLUSTER 'cluster'" || \
+    clickhouse-client --port=9000 --query="CREATE DATABASE IF NOT EXISTS signoz_metrics"
+
+echo "      Databases created!"
 
 # OTEL Collector config
 cat > /home/container/otel-config.yaml << EOF
@@ -223,11 +236,11 @@ processors:
 
 exporters:
   clickhousetraces:
-    datasource: tcp://127.0.0.1:${CLICKHOUSE_PORT}/signoz_traces
+    datasource: tcp://127.0.0.1:9000/signoz_traces
   clickhouselogsexporter:
-    dsn: tcp://127.0.0.1:${CLICKHOUSE_PORT}/signoz_logs
+    dsn: tcp://127.0.0.1:9000/signoz_logs
   clickhousemetricswrite:
-    endpoint: tcp://127.0.0.1:${CLICKHOUSE_PORT}/signoz_metrics
+    endpoint: tcp://127.0.0.1:9000/signoz_metrics
 
 service:
   pipelines:
@@ -247,7 +260,6 @@ EOF
 
 # Start OTEL Collector
 echo "[3/4] Starting OTEL Collector..."
-export CLICKHOUSE_CLUSTER=""
 /opt/signoz/bin/otel-collector --config=/home/container/otel-config.yaml >> /home/container/logs/otel.log 2>&1 &
 
 # Create nginx temp directories
@@ -257,7 +269,7 @@ mkdir -p /home/container/nginx/fastcgi
 mkdir -p /home/container/nginx/uwsgi
 mkdir -p /home/container/nginx/scgi
 
-# Nginx config for frontend
+# Nginx config
 cat > /home/container/nginx.conf << EOF
 worker_processes 1;
 error_log /home/container/logs/nginx-error.log;
@@ -269,7 +281,6 @@ events {
 }
 
 http {
-    # Temp paths in container home
     client_body_temp_path /home/container/nginx/body;
     proxy_temp_path /home/container/nginx/proxy;
     fastcgi_temp_path /home/container/nginx/fastcgi;
@@ -299,8 +310,7 @@ http {
 }
 EOF
 
-# Create required config files for query-service (must be at ./config/prometheus.yml relative to CWD)
-mkdir -p /home/container/config
+# Prometheus config for query-service
 cat > /home/container/config/prometheus.yml << PROMEOF
 global:
   scrape_interval: 60s
@@ -313,30 +323,32 @@ mkdir -p /home/container/data/signoz/active-queries
 # Start Query Service
 echo "[4/4] Starting Query Service + Frontend..."
 cd /home/container
-export ClickHouseUrl="tcp://127.0.0.1:${CLICKHOUSE_PORT}"
+export ClickHouseUrl="tcp://127.0.0.1:9000"
 export STORAGE=clickhouse
 export SIGNOZ_LOCAL_DB_PATH=/home/container/data/signoz/signoz.db
 export TELEMETRY_ENABLED=false
-export SIGNOZ_JWT_SECRET="pterodactyl-signoz-secret-change-me"
-# Disable cluster mode for single-node deployment
-export ClickHouseCluster=""
+export SIGNOZ_JWT_SECRET="pterodactyl-signoz-secret-$(date +%s)"
 export DEPLOYMENT_TYPE="docker-standalone"
 
 /opt/signoz/bin/query-service >> /home/container/logs/query-service.log 2>&1 &
 
-# Start Nginx - use -p to set prefix so nginx doesn't try system paths
+# Start Nginx
 nginx -p /home/container/ -c /home/container/nginx.conf 2>/dev/null &
 
 echo ""
 echo "==========================================="
 echo " SigNoz is ready!"
 echo "==========================================="
+echo ""
+echo " Keeper status check:"
+clickhouse-client --port=9000 --query="SELECT * FROM system.zookeeper WHERE path='/'" 2>/dev/null || echo "  (Keeper query failed)"
+echo ""
 
 # Cleanup on exit
 cleanup() {
     echo "Shutting down..."
     pkill -P $$ 2>/dev/null || true
-    pkill clickhouse 2>/dev/null || true
+    kill $CLICKHOUSE_PID 2>/dev/null || true
     pkill nginx 2>/dev/null || true
     exit 0
 }
