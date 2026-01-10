@@ -316,18 +316,18 @@ global:
   evaluation_interval: 60s
 PROMEOF
 
-echo "[4/4] Starting Query Service + Nginx..."
+echo "[4/4] Starting SigNoz + Nginx..."
 cd /home/container
-export ClickHouseUrl="tcp://127.0.0.1:9000"
-export STORAGE=clickhouse
-export SIGNOZ_LOCAL_DB_PATH=/home/container/data/signoz/signoz.db
-export TELEMETRY_ENABLED=false
+export SIGNOZ_CLICKHOUSE_DSN="tcp://127.0.0.1:9000"
+export SIGNOZ_STORAGE_TYPE=clickhouse
+export SIGNOZ_SQLITE_PATH=/home/container/data/signoz/signoz.db
+export SIGNOZ_TELEMETRY_ENABLED=false
 export SIGNOZ_JWT_SECRET="pterodactyl-signoz-secret-key-12345"
-export DEPLOYMENT_TYPE="docker-standalone"
+export SIGNOZ_WEB_PREFIX=/opt/signoz/frontend
 
-/opt/signoz/bin/query-service >> /home/container/logs/query-service.log 2>&1 &
-QUERY_PID=$!
-echo "      Query Service started (PID: $QUERY_PID)!"
+/opt/signoz/bin/signoz >> /home/container/logs/signoz.log 2>&1 &
+SIGNOZ_PID=$!
+echo "      SigNoz started (PID: $SIGNOZ_PID)!"
 
 echo "      Starting Nginx..."
 nginx -p /home/container/ -c /home/container/nginx.conf >> /home/container/logs/nginx-stdout.log 2>&1 &

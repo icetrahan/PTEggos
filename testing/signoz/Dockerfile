@@ -1,6 +1,6 @@
-FROM        signoz/query-service:0.106.0 AS query-source
+# SigNoz unified image (v0.104.0+)
+FROM        signoz/signoz:0.106.0 AS signoz-source
 FROM        signoz/signoz-otel-collector:0.106.0 AS otel-source
-FROM        signoz/frontend:0.106.0 AS frontend-source
 
 FROM        ubuntu:22.04
 
@@ -40,21 +40,21 @@ RUN         curl -fsSL https://packages.clickhouse.com/rpm/lts/repodata/repomd.x
             && apt-get clean \
             && rm -rf /var/lib/apt/lists/*
 
-# Copy binaries from SigNoz official images
+# Copy from unified SigNoz image
 RUN         mkdir -p /opt/signoz/bin /opt/signoz/frontend
 
-# Copy query-service binary
-COPY        --from=query-source /root/query-service /opt/signoz/bin/query-service
+# Copy signoz binary (unified query-service)
+COPY        --from=signoz-source /signoz /opt/signoz/bin/signoz
+
+# Copy frontend static files from unified image
+COPY        --from=signoz-source /etc/signoz/web /opt/signoz/frontend
 
 # Copy OTEL collector binary and migrations
 COPY        --from=otel-source /signoz-collector /opt/signoz/bin/otel-collector
 COPY        --from=otel-source /signoz-collector-migrations /opt/signoz/migrations
 
-# Copy frontend static files
-COPY        --from=frontend-source /usr/share/nginx/html /opt/signoz/frontend
-
 # Make binaries executable
-RUN         chmod +x /opt/signoz/bin/query-service /opt/signoz/bin/otel-collector
+RUN         chmod +x /opt/signoz/bin/signoz /opt/signoz/bin/otel-collector
 
 # Create directories and set permissions
 RUN         mkdir -p /opt/signoz/config /opt/signoz/data \
