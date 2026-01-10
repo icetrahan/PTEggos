@@ -14,8 +14,8 @@ CLICKHOUSE_PORT=${CLICKHOUSE_PORT:-9000}
 CLICKHOUSE_HTTP_PORT=${CLICKHOUSE_HTTP_PORT:-8123}
 RETENTION_DAYS=${RETENTION_DAYS:-15}
 
-# Server IP for Keeper RAFT - set via Pterodactyl env var or fallback to localhost
-SERVER_IP=${SERVER_IP:-127.0.0.1}
+# Server IP for Keeper RAFT - set via Pterodactyl env var
+SERVER_IP=${SERVER_IPA:-127.0.0.1}
 echo "Using SERVER_IP: ${SERVER_IP} for Keeper RAFT"
 
 # Directories
