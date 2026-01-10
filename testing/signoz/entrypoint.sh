@@ -293,11 +293,9 @@ echo "" >> /home/container/logs/signoz.log
 if [ -d /opt/signoz/config ]; then
     echo "=== CONFIG FILES ===" >> /home/container/logs/signoz.log
     ls -la /opt/signoz/config/ >> /home/container/logs/signoz.log 2>&1
-    for f in /opt/signoz/config/*.yaml /opt/signoz/config/*.yml /opt/signoz/config/*.toml 2>/dev/null; do
-        if [ -f "$f" ]; then
-            echo "=== $f ===" >> /home/container/logs/signoz.log
-            cat "$f" >> /home/container/logs/signoz.log 2>&1
-        fi
+    find /opt/signoz/config -maxdepth 1 -type f \( -name "*.yaml" -o -name "*.yml" -o -name "*.toml" \) 2>/dev/null | while read f; do
+        echo "=== $f ===" >> /home/container/logs/signoz.log
+        cat "$f" >> /home/container/logs/signoz.log 2>&1
     done
 fi
 
