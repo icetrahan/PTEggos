@@ -211,19 +211,18 @@ if [ -f /opt/signoz/bin/schema-migrator ]; then
     /opt/signoz/bin/schema-migrator sync --help >> /home/container/logs/migrator.log 2>&1 || true
     echo "" >> /home/container/logs/migrator.log
     echo "=== RUNNING MIGRATIONS ===" >> /home/container/logs/migrator.log
-    # Try with --up flag
+    # Run all up migrations (leave --up empty)
     /opt/signoz/bin/schema-migrator sync \
         --dsn="tcp://127.0.0.1:9000" \
         --replication=false \
         --cluster-name="" \
-        --up \
         >> /home/container/logs/migrator.log 2>&1 || echo "      Migration completed or had warnings"
     echo "      Schema migrations done!"
 else
     echo "      WARNING: schema-migrator not found"
 fi
 
-# OTEL config - with migrations enabled
+# OTEL config - minimal working config for v0.129.12
 cat > /home/container/otel-config.yaml << 'EOF'
 receivers:
   otlp:
@@ -241,28 +240,15 @@ processors:
 exporters:
   clickhousetraces:
     datasource: tcp://127.0.0.1:9000/?database=signoz_traces
-    docker_multi_node_cluster: false
-    use_new_schema: true
-    low_cardinal_exception_grouping: false
-    migrations_folder: /opt/signoz/migrations/traces
     
   clickhouselogsexporter:
     dsn: tcp://127.0.0.1:9000/?database=signoz_logs
-    docker_multi_node_cluster: false
     timeout: 10s
-    migrations_folder: /opt/signoz/migrations/logs
     
   clickhousemetricswrite:
     endpoint: tcp://127.0.0.1:9000/?database=signoz_metrics
-    resource_to_telemetry_conversion:
-      enabled: true
-    enable_exp_histogram: true
-    migrations_folder: /opt/signoz/migrations/metrics
 
 service:
-  telemetry:
-    metrics:
-      address: 0.0.0.0:8888
   pipelines:
     traces:
       receivers: [otlp]
@@ -340,14 +326,24 @@ PROMEOF
 
 echo "[5/5] Starting SigNoz + Nginx..."
 cd /home/container
+
+# Show signoz server help for debugging
+echo "=== SIGNOZ SERVER HELP ===" >> /home/container/logs/signoz.log
+/opt/signoz/bin/signoz server --help >> /home/container/logs/signoz.log 2>&1 || true
+echo "" >> /home/container/logs/signoz.log
+echo "=== STARTING SIGNOZ ===" >> /home/container/logs/signoz.log
+
+# Environment variables for SigNoz
 export SIGNOZ_CLICKHOUSE_DSN="tcp://127.0.0.1:9000"
-export SIGNOZ_STORAGE_TYPE=clickhouse
 export SIGNOZ_SQLITE_PATH=/home/container/data/signoz/signoz.db
 export SIGNOZ_TELEMETRY_ENABLED=false
 export SIGNOZ_JWT_SECRET="pterodactyl-signoz-secret-key-12345"
-export SIGNOZ_WEB_PREFIX=/opt/signoz/frontend
+export SIGNOZ_WEB_DIR=/opt/signoz/frontend
 
-/opt/signoz/bin/signoz >> /home/container/logs/signoz.log 2>&1 &
+# SigNoz needs 'server' subcommand
+/opt/signoz/bin/signoz server \
+    --config /opt/signoz/config/example.yaml \
+    >> /home/container/logs/signoz.log 2>&1 &
 SIGNOZ_PID=$!
 echo "      SigNoz started (PID: $SIGNOZ_PID)!"
 
