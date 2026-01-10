@@ -1,5 +1,7 @@
-# Download binaries from GitHub releases
+# Download SigNoz from GitHub releases, OTEL from Docker image
 # https://github.com/SigNoz/signoz/releases
+FROM        signoz/signoz-otel-collector:latest AS otel-source
+
 FROM        ubuntu:22.04
 
 LABEL       author="Primal Heaven" maintainer="primalheaven@example.com"
@@ -9,8 +11,9 @@ LABEL       org.opencontainers.image.licenses=MIT
 ENV         DEBIAN_FRONTEND=noninteractive
 
 # Versions - update these to upgrade
+# SigNoz: https://github.com/SigNoz/signoz/releases
+# OTEL: Docker image signoz/signoz-otel-collector (see FROM above)
 ARG         SIGNOZ_VERSION=0.106.0
-ARG         OTEL_VERSION=0.111.62
 
 # Install dependencies
 RUN         apt-get update && apt-get upgrade -y \
@@ -46,26 +49,21 @@ RUN         curl -fsSL https://packages.clickhouse.com/rpm/lts/repodata/repomd.x
 RUN         mkdir -p /opt/signoz/bin /opt/signoz/frontend /opt/signoz/migrations
 
 # Download SigNoz binary from GitHub releases
+# Structure: signoz_linux_amd64/signoz (binary), signoz_linux_amd64/web/* (frontend), signoz_linux_amd64/conf/* (config)
 RUN         curl -fsSL "https://github.com/SigNoz/signoz/releases/download/v${SIGNOZ_VERSION}/signoz_linux_amd64.tar.gz" -o /tmp/signoz.tar.gz \
             && mkdir -p /tmp/signoz-extract \
             && tar -xzf /tmp/signoz.tar.gz -C /tmp/signoz-extract \
-            && echo "=== SigNoz tarball contents ===" && find /tmp/signoz-extract -type f | head -50 \
-            && SIGNOZ_BIN=$(find /tmp/signoz-extract -type f -name "signoz*" ! -name "*.txt" ! -name "*.md" | head -1) \
-            && echo "Found signoz binary at: $SIGNOZ_BIN" \
-            && if [ -n "$SIGNOZ_BIN" ]; then cp "$SIGNOZ_BIN" /opt/signoz/bin/signoz && chmod +x /opt/signoz/bin/signoz; fi \
-            && if [ -d /tmp/signoz-extract/web ]; then cp -r /tmp/signoz-extract/web/* /opt/signoz/frontend/; fi \
+            && ls -la /tmp/signoz-extract/signoz_linux_amd64/ \
+            && cp /tmp/signoz-extract/signoz_linux_amd64/signoz /opt/signoz/bin/signoz \
+            && chmod +x /opt/signoz/bin/signoz \
+            && cp -r /tmp/signoz-extract/signoz_linux_amd64/web/* /opt/signoz/frontend/ \
+            && cp -r /tmp/signoz-extract/signoz_linux_amd64/conf /opt/signoz/config \
             && rm -rf /tmp/signoz.tar.gz /tmp/signoz-extract
 
-# Download OTEL Collector from GitHub releases  
-RUN         curl -fsSL "https://github.com/SigNoz/signoz-otel-collector/releases/download/v${OTEL_VERSION}/signoz-collector_linux_amd64.tar.gz" -o /tmp/otel.tar.gz \
-            && mkdir -p /tmp/otel-extract \
-            && tar -xzf /tmp/otel.tar.gz -C /tmp/otel-extract \
-            && echo "=== OTEL tarball contents ===" && find /tmp/otel-extract -type f | head -50 \
-            && OTEL_BIN=$(find /tmp/otel-extract -type f \( -name "*collector*" -o -name "signoz-collector" \) ! -name "*.txt" ! -name "*.md" ! -name "*.yaml" | head -1) \
-            && echo "Found otel binary at: $OTEL_BIN" \
-            && if [ -n "$OTEL_BIN" ]; then cp "$OTEL_BIN" /opt/signoz/bin/otel-collector && chmod +x /opt/signoz/bin/otel-collector; fi \
-            && if [ -d /tmp/otel-extract/migrations ]; then cp -r /tmp/otel-extract/migrations/* /opt/signoz/migrations/; fi \
-            && rm -rf /tmp/otel.tar.gz /tmp/otel-extract
+# Copy OTEL Collector from Docker image
+COPY        --from=otel-source /signoz-collector /opt/signoz/bin/otel-collector
+COPY        --from=otel-source /signoz-collector-migrations /opt/signoz/migrations
+RUN         chmod +x /opt/signoz/bin/otel-collector
 
 # Verify binaries exist
 RUN         ls -la /opt/signoz/bin/ && echo "=== Verifying binaries ===" \
