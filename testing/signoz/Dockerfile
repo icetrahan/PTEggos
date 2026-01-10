@@ -49,21 +49,28 @@ RUN         mkdir -p /opt/signoz/bin /opt/signoz/frontend /opt/signoz/migrations
 RUN         curl -fsSL "https://github.com/SigNoz/signoz/releases/download/v${SIGNOZ_VERSION}/signoz_linux_amd64.tar.gz" -o /tmp/signoz.tar.gz \
             && mkdir -p /tmp/signoz-extract \
             && tar -xzf /tmp/signoz.tar.gz -C /tmp/signoz-extract \
-            && ls -la /tmp/signoz-extract \
-            && find /tmp/signoz-extract -type f -executable -o -name "signoz*" | head -20 \
-            && cp -r /tmp/signoz-extract/* /opt/signoz/ \
-            && rm -rf /tmp/signoz.tar.gz /tmp/signoz-extract \
-            && find /opt/signoz -type f -name "signoz*" -exec chmod +x {} \;
+            && echo "=== SigNoz tarball contents ===" && find /tmp/signoz-extract -type f | head -50 \
+            && SIGNOZ_BIN=$(find /tmp/signoz-extract -type f -name "signoz*" ! -name "*.txt" ! -name "*.md" | head -1) \
+            && echo "Found signoz binary at: $SIGNOZ_BIN" \
+            && if [ -n "$SIGNOZ_BIN" ]; then cp "$SIGNOZ_BIN" /opt/signoz/bin/signoz && chmod +x /opt/signoz/bin/signoz; fi \
+            && if [ -d /tmp/signoz-extract/web ]; then cp -r /tmp/signoz-extract/web/* /opt/signoz/frontend/; fi \
+            && rm -rf /tmp/signoz.tar.gz /tmp/signoz-extract
 
 # Download OTEL Collector from GitHub releases  
 RUN         curl -fsSL "https://github.com/SigNoz/signoz-otel-collector/releases/download/v${OTEL_VERSION}/signoz-collector_linux_amd64.tar.gz" -o /tmp/otel.tar.gz \
             && mkdir -p /tmp/otel-extract \
             && tar -xzf /tmp/otel.tar.gz -C /tmp/otel-extract \
-            && ls -la /tmp/otel-extract \
-            && find /tmp/otel-extract -type f | head -20 \
-            && cp -r /tmp/otel-extract/* /opt/signoz/ \
-            && rm -rf /tmp/otel.tar.gz /tmp/otel-extract \
-            && find /opt/signoz -type f -name "*collector*" -exec chmod +x {} \; || true
+            && echo "=== OTEL tarball contents ===" && find /tmp/otel-extract -type f | head -50 \
+            && OTEL_BIN=$(find /tmp/otel-extract -type f \( -name "*collector*" -o -name "signoz-collector" \) ! -name "*.txt" ! -name "*.md" ! -name "*.yaml" | head -1) \
+            && echo "Found otel binary at: $OTEL_BIN" \
+            && if [ -n "$OTEL_BIN" ]; then cp "$OTEL_BIN" /opt/signoz/bin/otel-collector && chmod +x /opt/signoz/bin/otel-collector; fi \
+            && if [ -d /tmp/otel-extract/migrations ]; then cp -r /tmp/otel-extract/migrations/* /opt/signoz/migrations/; fi \
+            && rm -rf /tmp/otel.tar.gz /tmp/otel-extract
+
+# Verify binaries exist
+RUN         ls -la /opt/signoz/bin/ && echo "=== Verifying binaries ===" \
+            && (test -f /opt/signoz/bin/signoz && echo "✓ signoz binary found" || echo "✗ signoz binary MISSING") \
+            && (test -f /opt/signoz/bin/otel-collector && echo "✓ otel-collector binary found" || echo "✗ otel-collector binary MISSING")
 
 # Create directories and set permissions
 RUN         mkdir -p /opt/signoz/config /opt/signoz/data \
