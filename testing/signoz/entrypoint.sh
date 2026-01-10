@@ -10,6 +10,17 @@ SIGNOZ_PORT=${SIGNOZ_PORT:-3301}
 OTLP_GRPC_PORT=${OTLP_GRPC_PORT:-4317}
 OTLP_HTTP_PORT=${OTLP_HTTP_PORT:-4318}
 
+# Read config.toml for runtime settings
+CONFIG_FILE="/opt/signoz/config/pterodactyl.toml"
+RUN_MIGRATIONS="true"
+if [ -f "$CONFIG_FILE" ]; then
+    # Parse run_migrations from TOML (simple grep approach)
+    if grep -q "run_migrations.*=.*false" "$CONFIG_FILE" 2>/dev/null; then
+        RUN_MIGRATIONS="false"
+        echo "[Config] Migrations disabled via config.toml"
+    fi
+fi
+
 # Directories
 mkdir -p /home/container/data/clickhouse/tmp
 mkdir -p /home/container/data/clickhouse/user_files
@@ -195,24 +206,18 @@ clickhouse-client --port=9000 --query="CREATE DATABASE IF NOT EXISTS signoz_logs
 clickhouse-client --port=9000 --query="CREATE DATABASE IF NOT EXISTS signoz_metrics" || echo "      metrics failed"
 echo "      Databases done!"
 
-echo "[3/5] Running schema migrations..."
-if [ -f /opt/signoz/bin/schema-migrator ]; then
-    echo "      Running migrator (check migrator.log for details)..."
-    # Show migrator help
-    echo "=== MIGRATOR HELP ===" >> /home/container/logs/migrator.log
-    /opt/signoz/bin/schema-migrator --help >> /home/container/logs/migrator.log 2>&1 || true
-    echo "" >> /home/container/logs/migrator.log
-    echo "=== SYNC HELP ===" >> /home/container/logs/migrator.log
-    /opt/signoz/bin/schema-migrator sync --help >> /home/container/logs/migrator.log 2>&1 || true
-    echo "" >> /home/container/logs/migrator.log
+echo "[3/5] Schema migrations..."
+if [ "$RUN_MIGRATIONS" = "false" ]; then
+    echo "      SKIPPED (disabled in config.toml)"
+elif [ -f /opt/signoz/bin/schema-migrator ]; then
+    echo "      Running migrator..."
     echo "=== RUNNING MIGRATIONS ===" >> /home/container/logs/migrator.log
-    # Run all up migrations with cluster name matching ClickHouse config
     /opt/signoz/bin/schema-migrator sync \
         --dsn="tcp://127.0.0.1:9000" \
         --replication=false \
         --cluster-name="cluster" \
         >> /home/container/logs/migrator.log 2>&1 || echo "      Migration completed or had warnings"
-    echo "      Schema migrations done!"
+    echo "      Done!"
 else
     echo "      WARNING: schema-migrator not found"
 fi
@@ -281,51 +286,30 @@ PROMEOF
 echo "[5/5] Starting SigNoz..."
 cd /home/container
 
-# Log signoz binary capabilities
-echo "=== SIGNOZ BINARY INFO ===" >> /home/container/logs/signoz.log
-/opt/signoz/bin/signoz --help >> /home/container/logs/signoz.log 2>&1 || true
-echo "" >> /home/container/logs/signoz.log
-echo "=== SIGNOZ SERVER HELP ===" >> /home/container/logs/signoz.log
-/opt/signoz/bin/signoz server --help >> /home/container/logs/signoz.log 2>&1 || true
-echo "" >> /home/container/logs/signoz.log
+# Environment variables for SigNoz v0.106.0 (using correct env var names from deprecation warnings)
+# Telemetry store (ClickHouse)
+export SIGNOZ_TELEMETRYSTORE_PROVIDER=clickhouse
+export SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_DSN="tcp://127.0.0.1:9000"
+export SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_CLUSTER="cluster"
 
-# Check if there's a config file we can examine
-if [ -d /opt/signoz/config ]; then
-    echo "=== CONFIG FILES ===" >> /home/container/logs/signoz.log
-    ls -la /opt/signoz/config/ >> /home/container/logs/signoz.log 2>&1
-    find /opt/signoz/config -maxdepth 1 -type f \( -name "*.yaml" -o -name "*.yml" -o -name "*.toml" \) 2>/dev/null | while read f; do
-        echo "=== $f ===" >> /home/container/logs/signoz.log
-        cat "$f" >> /home/container/logs/signoz.log 2>&1
-    done
-fi
+# SQLite store
+export SIGNOZ_SQLSTORE_SQLITE_PATH=/home/container/data/signoz/signoz.db
 
-echo "=== STARTING SIGNOZ SERVER ===" >> /home/container/logs/signoz.log
+# Tokenizer (JWT)
+export SIGNOZ_TOKENIZER_JWT_SECRET="pterodactyl-signoz-secret-key-12345"
 
-# Environment variables for SigNoz (try various known env var names)
-export STORAGE=clickhouse
-export ClickHouseUrl="tcp://127.0.0.1:9000"
-export SIGNOZ_LOCAL_DB_PATH=/home/container/data/signoz/signoz.db
-export SIGNOZ_SQLITEDB_PATH=/home/container/data/signoz/signoz.db
-export TELEMETRY_ENABLED=false
-export SIGNOZ_TELEMETRY_ENABLED=false
-export SIGNOZ_JWT_SECRET="pterodactyl-signoz-secret-key-12345"
-export DEPLOYMENT_TYPE="docker-standalone"
+# Analytics/Telemetry
+export SIGNOZ_ANALYTICS_ENABLED=false
 
-# Web/Frontend settings
-export SIGNOZ_WEB_DIR=/opt/signoz/frontend
-export SIGNOZ_WEB_PREFIX=""
+# Web frontend - SigNoz expects files at /etc/signoz/web by default
+export SIGNOZ_WEB_DIRECTORY=/etc/signoz/web
+export SIGNOZ_WEB_ENABLED=true
 
-# HTTP Port settings (try various env var names)
-export SIGNOZ_HTTP_PORT=${SIGNOZ_PORT}
-export HTTP_PORT=${SIGNOZ_PORT}
-export PORT=${SIGNOZ_PORT}
-
-# Active query tracker path
-export ACTIVE_QUERY_TRACKER_PATH=/home/container/data/signoz/active-queries
-
-# Print environment for debugging
-echo "PORT=${SIGNOZ_PORT}" >> /home/container/logs/signoz.log
-echo "SIGNOZ_WEB_DIR=${SIGNOZ_WEB_DIR}" >> /home/container/logs/signoz.log
+# Log config for debugging
+echo "=== SIGNOZ CONFIG ===" >> /home/container/logs/signoz.log
+echo "SIGNOZ_WEB_DIRECTORY=/etc/signoz/web" >> /home/container/logs/signoz.log
+echo "SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_DSN=tcp://127.0.0.1:9000" >> /home/container/logs/signoz.log
+ls -la /etc/signoz/web/ >> /home/container/logs/signoz.log 2>&1 || echo "Web dir not found!" >> /home/container/logs/signoz.log
 
 # Start SigNoz unified binary
 /opt/signoz/bin/signoz server >> /home/container/logs/signoz.log 2>&1 &

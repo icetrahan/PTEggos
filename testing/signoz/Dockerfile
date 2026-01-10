@@ -49,15 +49,19 @@ RUN         curl -fsSL https://packages.clickhouse.com/rpm/lts/repodata/repomd.x
 RUN         mkdir -p /opt/signoz/bin /opt/signoz/frontend /opt/signoz/migrations
 
 # Download SigNoz binary from GitHub releases
-# Structure: signoz_linux_amd64/bin/signoz (binary), signoz_linux_amd64/web/* (frontend), signoz_linux_amd64/conf/* (config)
-RUN         curl -fsSL "https://github.com/SigNoz/signoz/releases/download/v${SIGNOZ_VERSION}/signoz_linux_amd64.tar.gz" -o /tmp/signoz.tar.gz \
+# SigNoz expects web files at /etc/signoz/web by default
+RUN         mkdir -p /etc/signoz \
+            && curl -fsSL "https://github.com/SigNoz/signoz/releases/download/v${SIGNOZ_VERSION}/signoz_linux_amd64.tar.gz" -o /tmp/signoz.tar.gz \
             && mkdir -p /tmp/signoz-extract \
             && tar -xzf /tmp/signoz.tar.gz -C /tmp/signoz-extract \
-            && ls -la /tmp/signoz-extract/signoz_linux_amd64/bin/ \
+            && echo "=== TARBALL CONTENTS ===" \
+            && ls -la /tmp/signoz-extract/signoz_linux_amd64/ \
             && cp /tmp/signoz-extract/signoz_linux_amd64/bin/signoz /opt/signoz/bin/signoz \
             && chmod +x /opt/signoz/bin/signoz \
-            && cp -r /tmp/signoz-extract/signoz_linux_amd64/web/* /opt/signoz/frontend/ \
-            && cp -r /tmp/signoz-extract/signoz_linux_amd64/conf /opt/signoz/config \
+            && cp -r /tmp/signoz-extract/signoz_linux_amd64/web /etc/signoz/web \
+            && cp -r /tmp/signoz-extract/signoz_linux_amd64/conf /opt/signoz/config 2>/dev/null || true \
+            && echo "=== WEB DIR ===" \
+            && ls -la /etc/signoz/web/ \
             && rm -rf /tmp/signoz.tar.gz /tmp/signoz-extract
 
 # Download OTEL Collector from GitHub releases
@@ -95,9 +99,12 @@ RUN         ls -la /opt/signoz/bin/ && echo "=== Verifying binaries ===" \
 # Create directories and set permissions
 RUN         mkdir -p /opt/signoz/config /opt/signoz/data \
             && useradd -m -d /home/container -s /bin/bash container \
-            && chown -R container:container /opt/signoz \
+            && chown -R container:container /opt/signoz /etc/signoz \
             && mkdir -p /var/lib/clickhouse /var/log/clickhouse-server \
             && chown -R container:container /var/lib/clickhouse /var/log/clickhouse-server /run
+
+# Copy config.toml for runtime configuration
+COPY        --chown=container:container config.toml /opt/signoz/config/pterodactyl.toml
 
 USER        container
 ENV         USER=container HOME=/home/container

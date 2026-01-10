@@ -1,0 +1,23 @@
+# SigNoz Pterodactyl Configuration
+# This file controls startup behavior and can be edited via SFTP
+
+[startup]
+# Set to false to skip schema migrations (faster restarts after initial setup)
+run_migrations = true
+
+[signoz]
+# Web port (must match Pterodactyl allocation)
+port = 3301
+
+# JWT secret for authentication
+jwt_secret = "pterodactyl-signoz-secret-key-12345"
+
+[clickhouse]
+# ClickHouse connection
+host = "127.0.0.1"
+port = 9000
+
+[otel]
+# OTLP ports
+grpc_port = 4317
+http_port = 4318
