@@ -1,5 +1,4 @@
 #!/bin/bash
-# Don't use set -e so script continues on errors
 
 TZ=${TZ:-UTC}
 export TZ
@@ -169,25 +168,30 @@ cat > /home/container/clickhouse-config.xml << 'CHEOF'
 CHEOF
 
 echo "[1/4] Starting ClickHouse..."
-clickhouse-server --config-file=/home/container/clickhouse-config.xml &
+clickhouse-server --config-file=/home/container/clickhouse-config.xml >> /home/container/logs/clickhouse-stdout.log 2>&1 &
 CLICKHOUSE_PID=$!
 
-echo "      Waiting for ClickHouse..."
-for i in {1..60}; do
-    if clickhouse-client --port=9000 --query="SELECT 1" 2>/dev/null; then
+echo "      Waiting for ClickHouse (PID: $CLICKHOUSE_PID)..."
+
+# Wait loop using while instead of for with brace expansion
+COUNTER=0
+while [ $COUNTER -lt 60 ]; do
+    if clickhouse-client --port=9000 --query="SELECT 1" > /dev/null 2>&1; then
         echo "      ClickHouse ready!"
         break
     fi
+    COUNTER=$((COUNTER + 1))
     sleep 1
 done
 
-sleep 3
+echo "      Waiting for Keeper election..."
+sleep 5
 
 echo "[2/4] Creating databases..."
-clickhouse-client --port=9000 --query="CREATE DATABASE IF NOT EXISTS signoz_traces" 2>&1 || echo "      (traces db may exist)"
-clickhouse-client --port=9000 --query="CREATE DATABASE IF NOT EXISTS signoz_logs" 2>&1 || echo "      (logs db may exist)"
-clickhouse-client --port=9000 --query="CREATE DATABASE IF NOT EXISTS signoz_metrics" 2>&1 || echo "      (metrics db may exist)"
-echo "      Databases ready!"
+clickhouse-client --port=9000 --query="CREATE DATABASE IF NOT EXISTS signoz_traces" || echo "      traces failed"
+clickhouse-client --port=9000 --query="CREATE DATABASE IF NOT EXISTS signoz_logs" || echo "      logs failed"
+clickhouse-client --port=9000 --query="CREATE DATABASE IF NOT EXISTS signoz_metrics" || echo "      metrics failed"
+echo "      Databases done!"
 
 # OTEL config
 cat > /home/container/otel-config.yaml << EOF
@@ -230,7 +234,7 @@ EOF
 
 echo "[3/4] Starting OTEL Collector..."
 /opt/signoz/bin/otel-collector --config=/home/container/otel-config.yaml >> /home/container/logs/otel.log 2>&1 &
-echo "      OTEL started (check otel.log for errors)"
+echo "      OTEL started!"
 
 # Nginx config
 cat > /home/container/nginx.conf << EOF
@@ -291,32 +295,19 @@ export DEPLOYMENT_TYPE="docker-standalone"
 
 /opt/signoz/bin/query-service >> /home/container/logs/query-service.log 2>&1 &
 QUERY_PID=$!
-echo "      Query Service started (PID: $QUERY_PID)"
-
-sleep 2
+echo "      Query Service started (PID: $QUERY_PID)!"
 
 echo "      Starting Nginx..."
-nginx -p /home/container/ -c /home/container/nginx.conf 2>/dev/null &
+nginx -p /home/container/ -c /home/container/nginx.conf >> /home/container/logs/nginx-stdout.log 2>&1 &
+echo "      Nginx started!"
 
 echo ""
 echo "==========================================="
 echo " SigNoz is ready!"
 echo "==========================================="
 echo ""
-echo "Checking processes..."
-sleep 1
-ps aux | grep -E "(clickhouse|otel|query|nginx)" | grep -v grep || echo "No processes found!"
-echo ""
 
-# Keep running
-cleanup() {
-    echo "Shutting down..."
-    kill $CLICKHOUSE_PID 2>/dev/null
-    kill $QUERY_PID 2>/dev/null
-    pkill nginx 2>/dev/null
-    pkill otel 2>/dev/null
-    exit 0
-}
-trap cleanup SIGTERM SIGINT
-
-wait
+# Keep container running
+while true; do
+    sleep 60
+done
