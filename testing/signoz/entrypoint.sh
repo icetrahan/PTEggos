@@ -194,34 +194,21 @@ fi
 echo "      Waiting for Keeper election..."
 sleep 5
 
-echo "[2/5] Creating databases..."
+echo "[2/4] Creating databases..."
 clickhouse-client --port=9000 --query="CREATE DATABASE IF NOT EXISTS signoz_traces" || echo "      traces failed"
 clickhouse-client --port=9000 --query="CREATE DATABASE IF NOT EXISTS signoz_logs" || echo "      logs failed"
 clickhouse-client --port=9000 --query="CREATE DATABASE IF NOT EXISTS signoz_metrics" || echo "      metrics failed"
 echo "      Databases done!"
 
-echo "[3/5] Running schema migrations..."
-if [ -f /opt/signoz/bin/schema-migrator ]; then
-    /opt/signoz/bin/schema-migrator sync --dsn="tcp://127.0.0.1:9000" >> /home/container/logs/migrator.log 2>&1
-    MIGRATE_EXIT=$?
-    if [ $MIGRATE_EXIT -eq 0 ]; then
-        echo "      Schema migrated!"
-    else
-        echo "      WARNING: Migration returned code $MIGRATE_EXIT (check migrator.log)"
-    fi
-else
-    echo "      WARNING: Schema migrator not found!"
-fi
-
-# OTEL config
-cat > /home/container/otel-config.yaml << EOF
+# OTEL config - with migrations enabled
+cat > /home/container/otel-config.yaml << 'EOF'
 receivers:
   otlp:
     protocols:
       grpc:
-        endpoint: 0.0.0.0:${OTLP_GRPC_PORT}
+        endpoint: 0.0.0.0:4317
       http:
-        endpoint: 0.0.0.0:${OTLP_HTTP_PORT}
+        endpoint: 0.0.0.0:4318
 
 processors:
   batch:
@@ -230,13 +217,29 @@ processors:
 
 exporters:
   clickhousetraces:
-    datasource: tcp://127.0.0.1:9000/signoz_traces
+    datasource: tcp://127.0.0.1:9000/?database=signoz_traces
+    docker_multi_node_cluster: false
+    use_new_schema: true
+    low_cardinal_exception_grouping: false
+    migrations_folder: /opt/signoz/migrations/traces
+    
   clickhouselogsexporter:
-    dsn: tcp://127.0.0.1:9000/signoz_logs
+    dsn: tcp://127.0.0.1:9000/?database=signoz_logs
+    docker_multi_node_cluster: false
+    timeout: 10s
+    migrations_folder: /opt/signoz/migrations/logs
+    
   clickhousemetricswrite:
-    endpoint: tcp://127.0.0.1:9000/signoz_metrics
+    endpoint: tcp://127.0.0.1:9000/?database=signoz_metrics
+    resource_to_telemetry_conversion:
+      enabled: true
+    enable_exp_histogram: true
+    migrations_folder: /opt/signoz/migrations/metrics
 
 service:
+  telemetry:
+    metrics:
+      address: 0.0.0.0:8888
   pipelines:
     traces:
       receivers: [otlp]
@@ -252,21 +255,18 @@ service:
       exporters: [clickhousemetricswrite]
 EOF
 
-echo "[4/5] Starting OTEL Collector..."
-# Use environment variables instead of config file
+echo "[3/4] Starting OTEL Collector..."
 export SIGNOZ_COMPONENT=otel-collector
 export ClickHouseUrl="tcp://127.0.0.1:9000"
-export OTEL_EXPORTER_OTLP_ENDPOINT="127.0.0.1:4317"
 
-# Check if default config exists, otherwise use our custom one
-if [ -f /opt/signoz/config/otel-collector-config.yaml ]; then
-    echo "      Using default SigNoz collector config..."
-    /opt/signoz/bin/otel-collector --config=/opt/signoz/config/otel-collector-config.yaml >> /home/container/logs/otel.log 2>&1 &
-else
-    echo "      Using custom collector config..."
-    /opt/signoz/bin/otel-collector --config=/home/container/otel-config.yaml >> /home/container/logs/otel.log 2>&1 &
-fi
-echo "      OTEL started!"
+echo "      Running migrations and starting collector..."
+/opt/signoz/bin/otel-collector --config=/home/container/otel-config.yaml >> /home/container/logs/otel.log 2>&1 &
+OTEL_PID=$!
+echo "      OTEL started (PID: $OTEL_PID)!"
+
+# Give OTEL time to run migrations
+echo "      Waiting for schema migrations..."
+sleep 10
 
 # Nginx config
 cat > /home/container/nginx.conf << EOF
@@ -316,7 +316,7 @@ global:
   evaluation_interval: 60s
 PROMEOF
 
-echo "[5/5] Starting Query Service + Nginx..."
+echo "[4/4] Starting Query Service + Nginx..."
 cd /home/container
 export ClickHouseUrl="tcp://127.0.0.1:9000"
 export STORAGE=clickhouse

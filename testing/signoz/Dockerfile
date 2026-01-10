@@ -1,6 +1,6 @@
-FROM        signoz/query-service:0.55.0 AS query-source
-FROM        signoz/signoz-otel-collector:0.102.12 AS otel-source
-FROM        signoz/frontend:0.55.0 AS frontend-source
+FROM        signoz/query-service:0.106.0 AS query-source
+FROM        signoz/signoz-otel-collector:0.106.0 AS otel-source
+FROM        signoz/frontend:0.106.0 AS frontend-source
 
 FROM        ubuntu:22.04
 
@@ -46,17 +46,15 @@ RUN         mkdir -p /opt/signoz/bin /opt/signoz/frontend
 # Copy query-service binary
 COPY        --from=query-source /root/query-service /opt/signoz/bin/query-service
 
-# Copy OTEL collector binary
+# Copy OTEL collector binary and migrations
 COPY        --from=otel-source /signoz-collector /opt/signoz/bin/otel-collector
-
-# Copy schema migrator (creates ClickHouse tables)
-COPY        --from=otel-source /signoz-schema-migrator /opt/signoz/bin/schema-migrator
+COPY        --from=otel-source /signoz-collector-migrations /opt/signoz/migrations
 
 # Copy frontend static files
 COPY        --from=frontend-source /usr/share/nginx/html /opt/signoz/frontend
 
 # Make binaries executable
-RUN         chmod +x /opt/signoz/bin/query-service /opt/signoz/bin/otel-collector /opt/signoz/bin/schema-migrator
+RUN         chmod +x /opt/signoz/bin/query-service /opt/signoz/bin/otel-collector
 
 # Create directories and set permissions
 RUN         mkdir -p /opt/signoz/config /opt/signoz/data \
