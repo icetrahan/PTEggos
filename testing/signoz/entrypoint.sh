@@ -173,16 +173,23 @@ CLICKHOUSE_PID=$!
 
 echo "      Waiting for ClickHouse (PID: $CLICKHOUSE_PID)..."
 
-# Wait loop using while instead of for with brace expansion
+# Wait for port 9000 to be listening
 COUNTER=0
 while [ $COUNTER -lt 60 ]; do
-    if clickhouse-client --port=9000 --query="SELECT 1" > /dev/null 2>&1; then
+    # Check if port is open using /dev/tcp
+    if (echo > /dev/tcp/127.0.0.1/9000) 2>/dev/null; then
+        echo "      Port 9000 open!"
+        sleep 2
         echo "      ClickHouse ready!"
         break
     fi
     COUNTER=$((COUNTER + 1))
     sleep 1
 done
+
+if [ $COUNTER -eq 60 ]; then
+    echo "      WARNING: ClickHouse may not be ready after 60s"
+fi
 
 echo "      Waiting for Keeper election..."
 sleep 5
