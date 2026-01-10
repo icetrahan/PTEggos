@@ -211,11 +211,11 @@ if [ -f /opt/signoz/bin/schema-migrator ]; then
     /opt/signoz/bin/schema-migrator sync --help >> /home/container/logs/migrator.log 2>&1 || true
     echo "" >> /home/container/logs/migrator.log
     echo "=== RUNNING MIGRATIONS ===" >> /home/container/logs/migrator.log
-    # Run all up migrations (leave --up empty)
+    # Run all up migrations with cluster name matching ClickHouse config
     /opt/signoz/bin/schema-migrator sync \
         --dsn="tcp://127.0.0.1:9000" \
         --replication=false \
-        --cluster-name="" \
+        --cluster-name="cluster" \
         >> /home/container/logs/migrator.log 2>&1 || echo "      Migration completed or had warnings"
     echo "      Schema migrations done!"
 else
@@ -245,7 +245,7 @@ exporters:
     dsn: tcp://127.0.0.1:9000/?database=signoz_logs
     timeout: 10s
     
-  clickhousemetricswrite:
+  signozclickhousemetrics:
     endpoint: tcp://127.0.0.1:9000/?database=signoz_metrics
 
 service:
@@ -261,7 +261,7 @@ service:
     metrics:
       receivers: [otlp]
       processors: [batch]
-      exporters: [clickhousemetricswrite]
+      exporters: [signozclickhousemetrics]
 EOF
 
 echo "[4/5] Starting OTEL Collector..."
@@ -327,23 +327,17 @@ PROMEOF
 echo "[5/5] Starting SigNoz + Nginx..."
 cd /home/container
 
-# Show signoz server help for debugging
-echo "=== SIGNOZ SERVER HELP ===" >> /home/container/logs/signoz.log
-/opt/signoz/bin/signoz server --help >> /home/container/logs/signoz.log 2>&1 || true
-echo "" >> /home/container/logs/signoz.log
 echo "=== STARTING SIGNOZ ===" >> /home/container/logs/signoz.log
 
-# Environment variables for SigNoz
-export SIGNOZ_CLICKHOUSE_DSN="tcp://127.0.0.1:9000"
-export SIGNOZ_SQLITE_PATH=/home/container/data/signoz/signoz.db
+# Environment variables for SigNoz (using new env var names)
+export SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_DSN="tcp://127.0.0.1:9000"
+export SIGNOZ_SQLITEDB_PATH=/home/container/data/signoz/signoz.db
 export SIGNOZ_TELEMETRY_ENABLED=false
-export SIGNOZ_JWT_SECRET="pterodactyl-signoz-secret-key-12345"
+export SIGNOZ_TOKENIZER_JWT_SECRET="pterodactyl-signoz-secret-key-12345"
 export SIGNOZ_WEB_DIR=/opt/signoz/frontend
 
-# SigNoz needs 'server' subcommand
-/opt/signoz/bin/signoz server \
-    --config /opt/signoz/config/example.yaml \
-    >> /home/container/logs/signoz.log 2>&1 &
+# SigNoz needs 'server' subcommand (no --config needed)
+/opt/signoz/bin/signoz server >> /home/container/logs/signoz.log 2>&1 &
 SIGNOZ_PID=$!
 echo "      SigNoz started (PID: $SIGNOZ_PID)!"
 
