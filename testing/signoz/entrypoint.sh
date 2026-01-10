@@ -17,14 +17,9 @@ mkdir -p /home/container/data/clickhouse/format_schemas
 mkdir -p /home/container/data/clickhouse/coordination/log
 mkdir -p /home/container/data/clickhouse/coordination/snapshots
 mkdir -p /home/container/data/signoz
+mkdir -p /home/container/data/signoz/active-queries
 mkdir -p /home/container/logs
 mkdir -p /home/container/config
-mkdir -p /home/container/nginx/body
-mkdir -p /home/container/nginx/proxy
-mkdir -p /home/container/nginx/fastcgi
-mkdir -p /home/container/nginx/uwsgi
-mkdir -p /home/container/nginx/scgi
-mkdir -p /home/container/data/signoz/active-queries
 
 echo "==========================================="
 echo " SigNoz Observability Platform"
@@ -276,82 +271,118 @@ echo "      OTEL started (PID: $OTEL_PID)!"
 # Give OTEL collector time to start
 sleep 3
 
-# Nginx config
-cat > /home/container/nginx.conf << EOF
-worker_processes 1;
-error_log /home/container/logs/nginx-error.log;
-pid /home/container/nginx.pid;
-daemon off;
-
-events {
-    worker_connections 1024;
-}
-
-http {
-    client_body_temp_path /home/container/nginx/body;
-    proxy_temp_path /home/container/nginx/proxy;
-    fastcgi_temp_path /home/container/nginx/fastcgi;
-    uwsgi_temp_path /home/container/nginx/uwsgi;
-    scgi_temp_path /home/container/nginx/scgi;
-
-    include /etc/nginx/mime.types;
-    default_type application/octet-stream;
-    access_log /home/container/logs/nginx-access.log;
-    
-    server {
-        listen ${SIGNOZ_PORT};
-        root /opt/signoz/frontend;
-        index index.html;
-        
-        location / {
-            try_files \$uri \$uri/ /index.html;
-        }
-        
-        location /api {
-            proxy_pass http://127.0.0.1:8080;
-            proxy_http_version 1.1;
-            proxy_set_header Host \$host;
-            proxy_set_header X-Real-IP \$remote_addr;
-        }
-    }
-}
-EOF
-
-# Prometheus config
+# Prometheus config (needed by SigNoz)
 cat > /home/container/config/prometheus.yml << PROMEOF
 global:
   scrape_interval: 60s
   evaluation_interval: 60s
 PROMEOF
 
-echo "[5/5] Starting SigNoz + Nginx..."
+echo "[5/5] Starting SigNoz..."
 cd /home/container
 
-echo "=== STARTING SIGNOZ ===" >> /home/container/logs/signoz.log
+# Log signoz binary capabilities
+echo "=== SIGNOZ BINARY INFO ===" >> /home/container/logs/signoz.log
+/opt/signoz/bin/signoz --help >> /home/container/logs/signoz.log 2>&1 || true
+echo "" >> /home/container/logs/signoz.log
+echo "=== SIGNOZ SERVER HELP ===" >> /home/container/logs/signoz.log
+/opt/signoz/bin/signoz server --help >> /home/container/logs/signoz.log 2>&1 || true
+echo "" >> /home/container/logs/signoz.log
 
-# Environment variables for SigNoz (using new env var names)
-export SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_DSN="tcp://127.0.0.1:9000"
+# Check if there's a config file we can examine
+if [ -d /opt/signoz/config ]; then
+    echo "=== CONFIG FILES ===" >> /home/container/logs/signoz.log
+    ls -la /opt/signoz/config/ >> /home/container/logs/signoz.log 2>&1
+    for f in /opt/signoz/config/*.yaml /opt/signoz/config/*.yml /opt/signoz/config/*.toml 2>/dev/null; do
+        if [ -f "$f" ]; then
+            echo "=== $f ===" >> /home/container/logs/signoz.log
+            cat "$f" >> /home/container/logs/signoz.log 2>&1
+        fi
+    done
+fi
+
+echo "=== STARTING SIGNOZ SERVER ===" >> /home/container/logs/signoz.log
+
+# Environment variables for SigNoz (try various known env var names)
+export STORAGE=clickhouse
+export ClickHouseUrl="tcp://127.0.0.1:9000"
+export SIGNOZ_LOCAL_DB_PATH=/home/container/data/signoz/signoz.db
 export SIGNOZ_SQLITEDB_PATH=/home/container/data/signoz/signoz.db
+export TELEMETRY_ENABLED=false
 export SIGNOZ_TELEMETRY_ENABLED=false
-export SIGNOZ_TOKENIZER_JWT_SECRET="pterodactyl-signoz-secret-key-12345"
-export SIGNOZ_WEB_DIR=/opt/signoz/frontend
+export SIGNOZ_JWT_SECRET="pterodactyl-signoz-secret-key-12345"
+export DEPLOYMENT_TYPE="docker-standalone"
 
-# SigNoz needs 'server' subcommand (no --config needed)
+# Web/Frontend settings
+export SIGNOZ_WEB_DIR=/opt/signoz/frontend
+export SIGNOZ_WEB_PREFIX=""
+
+# HTTP Port settings (try various env var names)
+export SIGNOZ_HTTP_PORT=${SIGNOZ_PORT}
+export HTTP_PORT=${SIGNOZ_PORT}
+export PORT=${SIGNOZ_PORT}
+
+# Active query tracker path
+export ACTIVE_QUERY_TRACKER_PATH=/home/container/data/signoz/active-queries
+
+# Print environment for debugging
+echo "PORT=${SIGNOZ_PORT}" >> /home/container/logs/signoz.log
+echo "SIGNOZ_WEB_DIR=${SIGNOZ_WEB_DIR}" >> /home/container/logs/signoz.log
+
+# Start SigNoz unified binary
 /opt/signoz/bin/signoz server >> /home/container/logs/signoz.log 2>&1 &
 SIGNOZ_PID=$!
 echo "      SigNoz started (PID: $SIGNOZ_PID)!"
 
-echo "      Starting Nginx..."
-nginx -p /home/container/ -c /home/container/nginx.conf >> /home/container/logs/nginx-stdout.log 2>&1 &
-echo "      Nginx started!"
+# Wait a moment for SigNoz to start
+sleep 5
+
+# Check if SigNoz is still running and what port it's on
+if kill -0 $SIGNOZ_PID 2>/dev/null; then
+    # Check what ports are listening
+    echo "      Checking listening ports..."
+    LISTENING=$(ss -tlnp 2>/dev/null | grep -E ":(${SIGNOZ_PORT}|8080|3301)" || netstat -tlnp 2>/dev/null | grep -E ":(${SIGNOZ_PORT}|8080|3301)" || echo "Unable to check ports")
+    echo "      $LISTENING"
+    echo "      SigNoz is running!"
+    
+    # If SigNoz is on 8080 and we need 3301, use socat to forward
+    if [ "${SIGNOZ_PORT}" != "8080" ]; then
+        echo "      Starting port forwarder (${SIGNOZ_PORT} -> 8080)..."
+        socat TCP-LISTEN:${SIGNOZ_PORT},fork,reuseaddr TCP:127.0.0.1:8080 >> /home/container/logs/socat.log 2>&1 &
+        SOCAT_PID=$!
+        echo "      Port forwarder started (PID: $SOCAT_PID)!"
+    fi
+else
+    echo "      WARNING: SigNoz crashed - dumping logs:"
+    tail -30 /home/container/logs/signoz.log
+fi
 
 echo ""
 echo "==========================================="
-echo " SigNoz is ready!"
+echo " SigNoz started!"
+echo " Check signoz.log for port info"
+echo " OTLP gRPC: ${OTLP_GRPC_PORT}"
+echo " OTLP HTTP: ${OTLP_HTTP_PORT}"
 echo "==========================================="
 echo ""
 
-# Keep container running
+# Keep container running and monitor processes
 while true; do
-    sleep 60
+    # Monitor SigNoz
+    if ! kill -0 $SIGNOZ_PID 2>/dev/null; then
+        echo "[WARN] SigNoz process died, restarting..."
+        /opt/signoz/bin/signoz server >> /home/container/logs/signoz.log 2>&1 &
+        SIGNOZ_PID=$!
+        sleep 5
+    fi
+    
+    # Monitor OTEL
+    if ! kill -0 $OTEL_PID 2>/dev/null; then
+        echo "[WARN] OTEL Collector process died, restarting..."
+        /opt/signoz/bin/otel-collector --config=/home/container/otel-config.yaml >> /home/container/logs/otel.log 2>&1 &
+        OTEL_PID=$!
+        sleep 5
+    fi
+    
+    sleep 30
 done

@@ -15,7 +15,7 @@ ENV         DEBIAN_FRONTEND=noninteractive
 ARG         SIGNOZ_VERSION=0.106.0
 ARG         OTEL_VERSION=0.129.12
 
-# Install dependencies
+# Install dependencies (socat for port forwarding 3301 → 8080)
 RUN         apt-get update && apt-get upgrade -y \
             && apt-get install -y \
                 curl \
@@ -26,7 +26,7 @@ RUN         apt-get update && apt-get upgrade -y \
                 net-tools \
                 iproute2 \
                 tini \
-                nginx \
+                socat \
                 locales \
             && sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen \
             && locale-gen \
@@ -97,8 +97,7 @@ RUN         mkdir -p /opt/signoz/config /opt/signoz/data \
             && useradd -m -d /home/container -s /bin/bash container \
             && chown -R container:container /opt/signoz \
             && mkdir -p /var/lib/clickhouse /var/log/clickhouse-server \
-            && chown -R container:container /var/lib/clickhouse /var/log/clickhouse-server \
-            && chown -R container:container /var/log/nginx /var/lib/nginx /run
+            && chown -R container:container /var/lib/clickhouse /var/log/clickhouse-server /run
 
 USER        container
 ENV         USER=container HOME=/home/container
