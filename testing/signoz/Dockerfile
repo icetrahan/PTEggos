@@ -47,16 +47,23 @@ RUN         mkdir -p /opt/signoz/bin /opt/signoz/frontend /opt/signoz/migrations
 
 # Download SigNoz binary from GitHub releases
 RUN         curl -fsSL "https://github.com/SigNoz/signoz/releases/download/v${SIGNOZ_VERSION}/signoz_linux_amd64.tar.gz" -o /tmp/signoz.tar.gz \
-            && tar -xzf /tmp/signoz.tar.gz -C /opt/signoz/bin \
-            && rm /tmp/signoz.tar.gz \
-            && chmod +x /opt/signoz/bin/signoz
+            && mkdir -p /tmp/signoz-extract \
+            && tar -xzf /tmp/signoz.tar.gz -C /tmp/signoz-extract \
+            && ls -la /tmp/signoz-extract \
+            && find /tmp/signoz-extract -type f -executable -o -name "signoz*" | head -20 \
+            && cp -r /tmp/signoz-extract/* /opt/signoz/ \
+            && rm -rf /tmp/signoz.tar.gz /tmp/signoz-extract \
+            && find /opt/signoz -type f -name "signoz*" -exec chmod +x {} \;
 
-# Download OTEL Collector from GitHub releases
+# Download OTEL Collector from GitHub releases  
 RUN         curl -fsSL "https://github.com/SigNoz/signoz-otel-collector/releases/download/v${OTEL_VERSION}/signoz-collector_linux_amd64.tar.gz" -o /tmp/otel.tar.gz \
-            && tar -xzf /tmp/otel.tar.gz -C /opt/signoz \
-            && mv /opt/signoz/signoz-collector /opt/signoz/bin/otel-collector || true \
-            && rm /tmp/otel.tar.gz \
-            && chmod +x /opt/signoz/bin/otel-collector || true
+            && mkdir -p /tmp/otel-extract \
+            && tar -xzf /tmp/otel.tar.gz -C /tmp/otel-extract \
+            && ls -la /tmp/otel-extract \
+            && find /tmp/otel-extract -type f | head -20 \
+            && cp -r /tmp/otel-extract/* /opt/signoz/ \
+            && rm -rf /tmp/otel.tar.gz /tmp/otel-extract \
+            && find /opt/signoz -type f -name "*collector*" -exec chmod +x {} \; || true
 
 # Create directories and set permissions
 RUN         mkdir -p /opt/signoz/config /opt/signoz/data \
