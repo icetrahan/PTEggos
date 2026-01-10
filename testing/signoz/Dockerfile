@@ -49,11 +49,14 @@ COPY        --from=query-source /root/query-service /opt/signoz/bin/query-servic
 # Copy OTEL collector binary
 COPY        --from=otel-source /signoz-collector /opt/signoz/bin/otel-collector
 
+# Copy schema migrator (creates ClickHouse tables)
+COPY        --from=otel-source /signoz-schema-migrator /opt/signoz/bin/schema-migrator
+
 # Copy frontend static files
 COPY        --from=frontend-source /usr/share/nginx/html /opt/signoz/frontend
 
 # Make binaries executable
-RUN         chmod +x /opt/signoz/bin/query-service /opt/signoz/bin/otel-collector
+RUN         chmod +x /opt/signoz/bin/query-service /opt/signoz/bin/otel-collector /opt/signoz/bin/schema-migrator
 
 # Create directories and set permissions
 RUN         mkdir -p /opt/signoz/config /opt/signoz/data \

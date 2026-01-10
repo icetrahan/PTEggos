@@ -194,11 +194,24 @@ fi
 echo "      Waiting for Keeper election..."
 sleep 5
 
-echo "[2/4] Creating databases..."
+echo "[2/5] Creating databases..."
 clickhouse-client --port=9000 --query="CREATE DATABASE IF NOT EXISTS signoz_traces" || echo "      traces failed"
 clickhouse-client --port=9000 --query="CREATE DATABASE IF NOT EXISTS signoz_logs" || echo "      logs failed"
 clickhouse-client --port=9000 --query="CREATE DATABASE IF NOT EXISTS signoz_metrics" || echo "      metrics failed"
 echo "      Databases done!"
+
+echo "[3/5] Running schema migrations..."
+if [ -f /opt/signoz/bin/schema-migrator ]; then
+    /opt/signoz/bin/schema-migrator sync --dsn="tcp://127.0.0.1:9000" >> /home/container/logs/migrator.log 2>&1
+    MIGRATE_EXIT=$?
+    if [ $MIGRATE_EXIT -eq 0 ]; then
+        echo "      Schema migrated!"
+    else
+        echo "      WARNING: Migration returned code $MIGRATE_EXIT (check migrator.log)"
+    fi
+else
+    echo "      WARNING: Schema migrator not found!"
+fi
 
 # OTEL config
 cat > /home/container/otel-config.yaml << EOF
@@ -239,7 +252,7 @@ service:
       exporters: [clickhousemetricswrite]
 EOF
 
-echo "[3/4] Starting OTEL Collector..."
+echo "[4/5] Starting OTEL Collector..."
 # Use environment variables instead of config file
 export SIGNOZ_COMPONENT=otel-collector
 export ClickHouseUrl="tcp://127.0.0.1:9000"
@@ -303,7 +316,7 @@ global:
   evaluation_interval: 60s
 PROMEOF
 
-echo "[4/4] Starting Query Service..."
+echo "[5/5] Starting Query Service + Nginx..."
 cd /home/container
 export ClickHouseUrl="tcp://127.0.0.1:9000"
 export STORAGE=clickhouse
