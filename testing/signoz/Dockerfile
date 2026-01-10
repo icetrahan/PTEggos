@@ -1,7 +1,5 @@
-# SigNoz unified image (v0.104.0+)
-FROM        signoz/signoz:0.106.0 AS signoz-source
-FROM        signoz/signoz-otel-collector:0.106.0 AS otel-source
-
+# Download binaries from GitHub releases
+# https://github.com/SigNoz/signoz/releases
 FROM        ubuntu:22.04
 
 LABEL       author="Primal Heaven" maintainer="primalheaven@example.com"
@@ -9,6 +7,10 @@ LABEL       org.opencontainers.image.source="https://github.com/YOUR_ORG/signoz-
 LABEL       org.opencontainers.image.licenses=MIT
 
 ENV         DEBIAN_FRONTEND=noninteractive
+
+# Versions - update these to upgrade
+ARG         SIGNOZ_VERSION=0.106.0
+ARG         OTEL_VERSION=0.111.62
 
 # Install dependencies
 RUN         apt-get update && apt-get upgrade -y \
@@ -40,21 +42,21 @@ RUN         curl -fsSL https://packages.clickhouse.com/rpm/lts/repodata/repomd.x
             && apt-get clean \
             && rm -rf /var/lib/apt/lists/*
 
-# Copy from unified SigNoz image
-RUN         mkdir -p /opt/signoz/bin /opt/signoz/frontend
+# Create directories
+RUN         mkdir -p /opt/signoz/bin /opt/signoz/frontend /opt/signoz/migrations
 
-# Copy signoz binary (unified query-service)
-COPY        --from=signoz-source /signoz /opt/signoz/bin/signoz
+# Download SigNoz binary from GitHub releases
+RUN         curl -fsSL "https://github.com/SigNoz/signoz/releases/download/v${SIGNOZ_VERSION}/signoz_linux_amd64.tar.gz" -o /tmp/signoz.tar.gz \
+            && tar -xzf /tmp/signoz.tar.gz -C /opt/signoz/bin \
+            && rm /tmp/signoz.tar.gz \
+            && chmod +x /opt/signoz/bin/signoz
 
-# Copy frontend static files from unified image
-COPY        --from=signoz-source /etc/signoz/web /opt/signoz/frontend
-
-# Copy OTEL collector binary and migrations
-COPY        --from=otel-source /signoz-collector /opt/signoz/bin/otel-collector
-COPY        --from=otel-source /signoz-collector-migrations /opt/signoz/migrations
-
-# Make binaries executable
-RUN         chmod +x /opt/signoz/bin/signoz /opt/signoz/bin/otel-collector
+# Download OTEL Collector from GitHub releases
+RUN         curl -fsSL "https://github.com/SigNoz/signoz-otel-collector/releases/download/v${OTEL_VERSION}/signoz-collector_linux_amd64.tar.gz" -o /tmp/otel.tar.gz \
+            && tar -xzf /tmp/otel.tar.gz -C /opt/signoz \
+            && mv /opt/signoz/signoz-collector /opt/signoz/bin/otel-collector || true \
+            && rm /tmp/otel.tar.gz \
+            && chmod +x /opt/signoz/bin/otel-collector || true
 
 # Create directories and set permissions
 RUN         mkdir -p /opt/signoz/config /opt/signoz/data \
