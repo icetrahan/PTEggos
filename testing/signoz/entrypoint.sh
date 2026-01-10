@@ -179,14 +179,11 @@ CLICKHOUSE_PID=$!
 
 echo "      Waiting for ClickHouse (PID: $CLICKHOUSE_PID)..."
 
-# Wait for port 9000 to be listening
+# Wait for ClickHouse to be ready using clickhouse-client (proper protocol)
 COUNTER=0
 while [ $COUNTER -lt 60 ]; do
-    # Check if port is open using /dev/tcp
-    if (echo > /dev/tcp/127.0.0.1/9000) 2>/dev/null; then
-        echo "      Port 9000 open!"
-        sleep 2
-        echo "      ClickHouse ready!"
+    if clickhouse-client --port=9000 --query="SELECT 1" >/dev/null 2>&1; then
+        echo "      ClickHouse responding!"
         break
     fi
     COUNTER=$((COUNTER + 1))
@@ -198,7 +195,8 @@ if [ $COUNTER -eq 60 ]; then
 fi
 
 echo "      Waiting for Keeper election..."
-sleep 5
+sleep 8
+echo "      ClickHouse ready!"
 
 echo "[2/5] Creating databases..."
 clickhouse-client --port=9000 --query="CREATE DATABASE IF NOT EXISTS signoz_traces" || echo "      traces failed"
@@ -222,7 +220,7 @@ else
     echo "      WARNING: schema-migrator not found"
 fi
 
-# OTEL config - minimal working config for v0.129.12
+# OTEL config - fixed for v0.129.12 (use dsn not endpoint for metrics)
 cat > /home/container/otel-config.yaml << 'EOF'
 receivers:
   otlp:
@@ -246,7 +244,7 @@ exporters:
     timeout: 10s
     
   signozclickhousemetrics:
-    endpoint: tcp://127.0.0.1:9000/?database=signoz_metrics
+    dsn: tcp://127.0.0.1:9000/?database=signoz_metrics
 
 service:
   pipelines:
@@ -266,9 +264,8 @@ EOF
 
 echo "[4/5] Starting OTEL Collector..."
 export SIGNOZ_COMPONENT=otel-collector
-export ClickHouseUrl="tcp://127.0.0.1:9000"
 
-echo "      Running migrations and starting collector..."
+echo "      Starting collector..."
 /opt/signoz/bin/otel-collector --config=/home/container/otel-config.yaml >> /home/container/logs/otel.log 2>&1 &
 OTEL_PID=$!
 echo "      OTEL started (PID: $OTEL_PID)!"
@@ -286,7 +283,7 @@ PROMEOF
 echo "[5/5] Starting SigNoz..."
 cd /home/container
 
-# Environment variables for SigNoz v0.106.0 (using correct env var names from deprecation warnings)
+# Environment variables for SigNoz v0.106.0 (using correct env var names)
 # Telemetry store (ClickHouse)
 export SIGNOZ_TELEMETRYSTORE_PROVIDER=clickhouse
 export SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_DSN="tcp://127.0.0.1:9000"
@@ -300,10 +297,18 @@ export SIGNOZ_TOKENIZER_JWT_SECRET="pterodactyl-signoz-secret-key-12345"
 
 # Analytics/Telemetry
 export SIGNOZ_ANALYTICS_ENABLED=false
+export SIGNOZ_STATSREPORTER_ENABLED=false
 
 # Web frontend - SigNoz expects files at /etc/signoz/web by default
 export SIGNOZ_WEB_DIRECTORY=/etc/signoz/web
 export SIGNOZ_WEB_ENABLED=true
+export SIGNOZ_WEB_PREFIX="/"
+
+# HTTP Server - bind to 8080 (socat forwards 3301->8080)
+export SIGNOZ_APISERVER_HTTP_ADDR="0.0.0.0:8080"
+
+# Prometheus config path
+export SIGNOZ_PROMETHEUS_CONFIG=/home/container/config/prometheus.yml
 
 # Log config for debugging
 echo "=== SIGNOZ CONFIG ===" >> /home/container/logs/signoz.log
