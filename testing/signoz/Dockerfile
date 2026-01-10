@@ -49,12 +49,12 @@ RUN         curl -fsSL https://packages.clickhouse.com/rpm/lts/repodata/repomd.x
 RUN         mkdir -p /opt/signoz/bin /opt/signoz/frontend /opt/signoz/migrations
 
 # Download SigNoz binary from GitHub releases
-# Structure: signoz_linux_amd64/signoz (binary), signoz_linux_amd64/web/* (frontend), signoz_linux_amd64/conf/* (config)
+# Structure: signoz_linux_amd64/bin/signoz (binary), signoz_linux_amd64/web/* (frontend), signoz_linux_amd64/conf/* (config)
 RUN         curl -fsSL "https://github.com/SigNoz/signoz/releases/download/v${SIGNOZ_VERSION}/signoz_linux_amd64.tar.gz" -o /tmp/signoz.tar.gz \
             && mkdir -p /tmp/signoz-extract \
             && tar -xzf /tmp/signoz.tar.gz -C /tmp/signoz-extract \
-            && ls -la /tmp/signoz-extract/signoz_linux_amd64/ \
-            && cp /tmp/signoz-extract/signoz_linux_amd64/signoz /opt/signoz/bin/signoz \
+            && ls -la /tmp/signoz-extract/signoz_linux_amd64/bin/ \
+            && cp /tmp/signoz-extract/signoz_linux_amd64/bin/signoz /opt/signoz/bin/signoz \
             && chmod +x /opt/signoz/bin/signoz \
             && cp -r /tmp/signoz-extract/signoz_linux_amd64/web/* /opt/signoz/frontend/ \
             && cp -r /tmp/signoz-extract/signoz_linux_amd64/conf /opt/signoz/config \
