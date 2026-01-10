@@ -17,15 +17,8 @@ RETENTION_DAYS=${RETENTION_DAYS:-15}
 # Directories
 mkdir -p /home/container/data/clickhouse/tmp
 mkdir -p /home/container/data/clickhouse/user_files
-mkdir -p /home/container/data/clickhouse/coordination/log
-mkdir -p /home/container/data/clickhouse/coordination/snapshots
 mkdir -p /home/container/data/signoz
 mkdir -p /home/container/logs
-
-# SINGLE-NODE: Use localhost for all internal communication
-# This avoids any DNS resolution issues with container IPs
-CONTAINER_IP="127.0.0.1"
-echo "Using localhost for single-node Keeper/Cluster config"
 
 echo "==========================================="
 echo " SigNoz Observability Platform"
@@ -36,7 +29,7 @@ echo " OTLP HTTP: 0.0.0.0:${OTLP_HTTP_PORT}"
 echo "==========================================="
 echo ""
 
-# ClickHouse config - tuned for Pterodactyl's limited resources
+# ClickHouse config - SIMPLE SINGLE-NODE (no Keeper, no cluster)
 cat > /home/container/clickhouse-config.xml << EOF
 <?xml version="1.0"?>
 <clickhouse>
@@ -60,12 +53,12 @@ cat > /home/container/clickhouse-config.xml << EOF
     <max_connections>256</max_connections>
     <max_concurrent_queries>20</max_concurrent_queries>
     
-    <!-- CRITICAL: Thread pool settings to prevent "Not enough threads" crash -->
+    <!-- Thread pool settings to prevent crashes -->
     <max_thread_pool_size>100</max_thread_pool_size>
     <max_thread_pool_free_size>10</max_thread_pool_free_size>
     <thread_pool_queue_size>1000</thread_pool_queue_size>
     
-    <!-- Background pools - must be >= 10 so pool_size * 2 >= 20 (mutation default) -->
+    <!-- Background pools -->
     <background_pool_size>16</background_pool_size>
     <background_move_pool_size>2</background_move_pool_size>
     <background_schedule_pool_size>16</background_schedule_pool_size>
@@ -96,75 +89,8 @@ cat > /home/container/clickhouse-config.xml << EOF
             <max_memory_usage>4000000000</max_memory_usage>
             <max_threads>8</max_threads>
             <max_insert_threads>2</max_insert_threads>
-            <allow_experimental_database_replicated>1</allow_experimental_database_replicated>
         </default>
     </profiles>
-    
-    <!-- Single-node cluster using container IP -->
-    <remote_servers>
-        <cluster>
-            <shard>
-                <replica>
-                    <host>${CONTAINER_IP}</host>
-                    <port>${CLICKHOUSE_PORT}</port>
-                </replica>
-            </shard>
-        </cluster>
-    </remote_servers>
-    
-    <macros>
-        <cluster>cluster</cluster>
-        <shard>1</shard>
-        <replica>1</replica>
-    </macros>
-    
-    <!-- ClickHouse Keeper embedded - single node with explicit networking -->
-    <keeper_server>
-        <tcp_port>9181</tcp_port>
-        <server_id>1</server_id>
-        <log_storage_path>/home/container/data/clickhouse/coordination/log</log_storage_path>
-        <snapshot_storage_path>/home/container/data/clickhouse/coordination/snapshots</snapshot_storage_path>
-        
-        <!-- CRITICAL: Explicitly bind to all interfaces -->
-        <listen_host>0.0.0.0</listen_host>
-        
-        <coordination_settings>
-            <operation_timeout_ms>10000</operation_timeout_ms>
-            <session_timeout_ms>30000</session_timeout_ms>
-            <force_sync>false</force_sync>
-            <auto_forwarding>false</auto_forwarding>
-            <quorum_reads>false</quorum_reads>
-            <raft_logs_level>trace</raft_logs_level>
-            <dead_session_check_period_ms>500</dead_session_check_period_ms>
-            <heart_beat_interval_ms>250</heart_beat_interval_ms>
-            <election_timeout_lower_bound_ms>500</election_timeout_lower_bound_ms>
-            <election_timeout_upper_bound_ms>1000</election_timeout_upper_bound_ms>
-            <reserved_log_items>100</reserved_log_items>
-            <snapshot_distance>10000</snapshot_distance>
-            <!-- Force becoming leader immediately for single node -->
-            <startup_timeout>30000</startup_timeout>
-        </coordination_settings>
-        
-        <raft_configuration>
-            <server>
-                <id>1</id>
-                <hostname>${CONTAINER_IP}</hostname>
-                <port>9234</port>
-            </server>
-        </raft_configuration>
-    </keeper_server>
-    
-    <zookeeper>
-        <node>
-            <host>${CONTAINER_IP}</host>
-            <port>9181</port>
-        </node>
-    </zookeeper>
-    
-    <distributed_ddl>
-        <path>/clickhouse/task_queue/ddl</path>
-        <cleanup_delay_period>60</cleanup_delay_period>
-    </distributed_ddl>
     
     <quotas>
         <default>
@@ -187,17 +113,17 @@ cat > /home/container/clickhouse-config.xml << EOF
         <number_of_free_entries_in_pool_to_lower_max_size_of_merge>4</number_of_free_entries_in_pool_to_lower_max_size_of_merge>
     </merge_tree>
     
+    <!-- NO KEEPER, NO CLUSTER, NO ZOOKEEPER - pure single-node -->
+    
 </clickhouse>
 EOF
 
-# Start ClickHouse
+# Start ClickHouse (simple single-node, no Keeper)
 echo "[1/4] Starting ClickHouse..."
 clickhouse-server --config-file=/home/container/clickhouse-config.xml &
 
-# Wait for Keeper to elect itself (single-node takes a few seconds)
-echo "      Waiting for ClickHouse Keeper..."
-sleep 10
-for i in {1..60}; do
+# Wait for ClickHouse to be ready
+for i in {1..30}; do
     if clickhouse-client --port=${CLICKHOUSE_PORT} --query="SELECT 1" 2>/dev/null; then
         echo "      ClickHouse ready!"
         break
