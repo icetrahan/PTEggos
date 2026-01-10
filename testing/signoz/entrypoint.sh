@@ -240,7 +240,19 @@ service:
 EOF
 
 echo "[3/4] Starting OTEL Collector..."
-/opt/signoz/bin/otel-collector --config=/home/container/otel-config.yaml >> /home/container/logs/otel.log 2>&1 &
+# Use environment variables instead of config file
+export SIGNOZ_COMPONENT=otel-collector
+export ClickHouseUrl="tcp://127.0.0.1:9000"
+export OTEL_EXPORTER_OTLP_ENDPOINT="127.0.0.1:4317"
+
+# Check if default config exists, otherwise use our custom one
+if [ -f /opt/signoz/config/otel-collector-config.yaml ]; then
+    echo "      Using default SigNoz collector config..."
+    /opt/signoz/bin/otel-collector --config=/opt/signoz/config/otel-collector-config.yaml >> /home/container/logs/otel.log 2>&1 &
+else
+    echo "      Using custom collector config..."
+    /opt/signoz/bin/otel-collector --config=/home/container/otel-config.yaml >> /home/container/logs/otel.log 2>&1 &
+fi
 echo "      OTEL started!"
 
 # Nginx config
