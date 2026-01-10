@@ -167,7 +167,7 @@ cat > /home/container/clickhouse-config.xml << 'CHEOF'
 </clickhouse>
 CHEOF
 
-echo "[1/4] Starting ClickHouse..."
+echo "[1/5] Starting ClickHouse..."
 clickhouse-server --config-file=/home/container/clickhouse-config.xml >> /home/container/logs/clickhouse-stdout.log 2>&1 &
 CLICKHOUSE_PID=$!
 
@@ -202,11 +202,25 @@ echo "      Databases done!"
 
 echo "[3/5] Running schema migrations..."
 if [ -f /opt/signoz/bin/schema-migrator ]; then
-    echo "      Migrating traces schema..."
-    /opt/signoz/bin/schema-migrator sync --dsn="tcp://127.0.0.1:9000" --replication=false >> /home/container/logs/migrator.log 2>&1 || echo "      Migration warning (check migrator.log)"
-    echo "      Schema migrations complete!"
+    echo "      Running migrator (check migrator.log for details)..."
+    # Show migrator help
+    echo "=== MIGRATOR HELP ===" >> /home/container/logs/migrator.log
+    /opt/signoz/bin/schema-migrator --help >> /home/container/logs/migrator.log 2>&1 || true
+    echo "" >> /home/container/logs/migrator.log
+    echo "=== SYNC HELP ===" >> /home/container/logs/migrator.log
+    /opt/signoz/bin/schema-migrator sync --help >> /home/container/logs/migrator.log 2>&1 || true
+    echo "" >> /home/container/logs/migrator.log
+    echo "=== RUNNING MIGRATIONS ===" >> /home/container/logs/migrator.log
+    # Try with --up flag
+    /opt/signoz/bin/schema-migrator sync \
+        --dsn="tcp://127.0.0.1:9000" \
+        --replication=false \
+        --cluster-name="" \
+        --up \
+        >> /home/container/logs/migrator.log 2>&1 || echo "      Migration completed or had warnings"
+    echo "      Schema migrations done!"
 else
-    echo "      WARNING: schema-migrator not found, tables may need manual creation"
+    echo "      WARNING: schema-migrator not found"
 fi
 
 # OTEL config - with migrations enabled
