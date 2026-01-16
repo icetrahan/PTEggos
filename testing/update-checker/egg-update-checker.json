@@ -1,0 +1,98 @@
+{
+    "_comment": "Primal Heaven Update Checker Egg",
+    "meta": {
+        "version": "PTDL_v2",
+        "update_url": null
+    },
+    "exported_at": "2026-01-16T00:00:00+00:00",
+    "name": "Isle Update Checker",
+    "author": "ice@primalheaven.com",
+    "description": "Checks for Isle vanilla and modded binary updates every 10 minutes. Reports to backend API which orchestrates server restarts.",
+    "features": null,
+    "docker_images": {
+        "ghcr.io/parkervcp/yolks:debian": "ghcr.io/parkervcp/yolks:debian"
+    },
+    "file_denylist": [],
+    "startup": "/bin/bash /entrypoint.sh",
+    "config": {
+        "files": "{}",
+        "startup": "{\r\n    \"done\": \"Update check complete!\"\r\n}",
+        "logs": "{}",
+        "stop": "^C"
+    },
+    "scripts": {
+        "installation": {
+            "script": "#!/bin/bash\r\napt-get update\r\napt-get install -y curl ca-certificates jq lib32gcc-s1 lib32stdc++6\r\n\r\ncd /mnt/server\r\n\r\n# Download entrypoint\r\ncurl -sSL -o entrypoint.sh \"https://raw.githubusercontent.com/icetrahan/PTEggos/main/testing/update-checker/entrypoint.sh\"\r\nchmod +x entrypoint.sh\r\n\r\n# Install SteamCMD\r\nmkdir -p steamcmd\r\ncd steamcmd\r\ncurl -sqL \"https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz\" | tar zxvf -\r\n\r\necho \"Installation complete!\"",
+            "container": "ghcr.io/parkervcp/installers:debian",
+            "entrypoint": "bash"
+        }
+    },
+    "variables": [
+        {
+            "name": "API Base URL",
+            "description": "Base URL for the Primal Heaven backend API",
+            "env_variable": "API_BASE_URL",
+            "default_value": "https://api.primalheaven.com",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string",
+            "sort": 1,
+            "field_type": "text"
+        },
+        {
+            "name": "API Key",
+            "description": "API key for authenticating with the backend",
+            "env_variable": "API_KEY",
+            "default_value": "update-checker-key",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string",
+            "sort": 2,
+            "field_type": "text"
+        },
+        {
+            "name": "Steam App ID",
+            "description": "The Isle Steam App ID",
+            "env_variable": "SRCDS_APPID",
+            "default_value": "1020410",
+            "user_viewable": true,
+            "user_editable": false,
+            "rules": "required|string",
+            "sort": 3,
+            "field_type": "text"
+        },
+        {
+            "name": "Norden API URL",
+            "description": "Norden Cloud API endpoint for modded binary",
+            "env_variable": "NORDEN_API_URL",
+            "default_value": "https://manage.norden.cloud/api/884851/1020410",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string",
+            "sort": 4,
+            "field_type": "text"
+        },
+        {
+            "name": "Steam User",
+            "description": "Steam username for SteamCMD (anonymous for free games)",
+            "env_variable": "STEAM_USER",
+            "default_value": "anonymous",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string",
+            "sort": 5,
+            "field_type": "text"
+        },
+        {
+            "name": "Steam Password",
+            "description": "Steam password (leave empty for anonymous)",
+            "env_variable": "STEAM_PASS",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string",
+            "sort": 6,
+            "field_type": "text"
+        }
+    ]
+}
