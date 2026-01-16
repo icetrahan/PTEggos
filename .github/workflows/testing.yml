@@ -30,6 +30,7 @@ jobs:
           - perforce
           - deathmatch
           - survival
+          - update-checker
 
     steps:
       - name: Checkout repository
