@@ -16,8 +16,8 @@ RUN dpkg --add-architecture i386 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Create container user and directories
-RUN useradd -m -d /home/container -s /bin/bash container
+# Create container user if it doesn't exist (base image may already have it)
+RUN id -u container &>/dev/null || useradd -m -d /home/container -s /bin/bash container
 
 USER container
 ENV USER=container HOME=/home/container
