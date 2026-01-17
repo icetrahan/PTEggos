@@ -15,7 +15,7 @@
     "startup": "/bin/bash /entrypoint.sh",
     "config": {
         "files": "{}",
-        "startup": "{}",
+        "startup": "{\"done\": \"Update check complete!\"}",
         "logs": "{}",
         "stop": "^C"
     },

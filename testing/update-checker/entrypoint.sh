@@ -203,6 +203,8 @@ echo "=========================================="
 echo "Update check complete!"
 echo "$(date '+%Y-%m-%d %H:%M:%S')"
 echo "=========================================="
+echo "Sleeping until next scheduled restart..."
 
-# Exit cleanly - Pterodactyl will restart us on schedule
-exit 0
+# Sleep indefinitely - the Pterodactyl schedule will restart us
+# This prevents crash detection from triggering
+sleep infinity
