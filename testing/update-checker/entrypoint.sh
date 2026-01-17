@@ -129,50 +129,50 @@ echo "=========================================="
 echo "Step 2: Checking Modded Binary"
 echo "=========================================="
 
-# Check what hash Norden has
-# We send an empty hash to force it to tell us what the current version is
+# Use the same approach as deathmatch - send current hash, get new binary if available
+# If we have a cached hash, use it. Otherwise send empty to force download.
 echo "Checking Norden Cloud API..."
+
+# Get current modded hash (we might have downloaded it previously)
+MODDED_BINARY_PATH="/home/container/TheIsle/Binaries/Linux/TheIsleServer-Linux-Shipping"
+if [ -f "$MODDED_BINARY_PATH" ]; then
+    CURRENT_HASH=$(get_file_hash "$MODDED_BINARY_PATH")
+    echo "Current binary hash: ${CURRENT_HASH:0:16}..."
+else
+    CURRENT_HASH=""
+    echo "No existing binary found, will download fresh"
+fi
 
 RESPONSE_FILE=$(mktemp)
 RESPONSE_CODE=$(curl -s -w "%{http_code}" -o "$RESPONSE_FILE" -X POST "$NORDEN_API_URL" \
     -H "Content-Type: application/json" \
-    -d '{"os":"linux", "currentHash":"check-only"}')
+    -d "{\"os\":\"linux\", \"currentHash\":\"$CURRENT_HASH\"}")
 
 if [ "$RESPONSE_CODE" == "200" ]; then
-    # New version available - compute hash of downloaded file
-    echo "⬇️ Modded binary available from Norden"
+    # New version available - Norden sent us the binary
+    echo "⬇️ Modded binary downloaded from Norden"
     
-    # Move to temp location and hash it
+    # Compute hash of the downloaded file
     MODDED_HASH=$(md5sum "$RESPONSE_FILE" | awk '{ print $1 }')
-    echo "Modded hash: ${MODDED_HASH:0:16}..."
+    echo "New modded hash: ${MODDED_HASH:0:16}..."
+    
+    # Save the binary so next time we have the correct hash
+    mkdir -p "$(dirname "$MODDED_BINARY_PATH")"
+    mv "$RESPONSE_FILE" "$MODDED_BINARY_PATH"
+    chmod +x "$MODDED_BINARY_PATH"
     
     # Report to backend
     report_to_backend "report-modded" "$MODDED_HASH"
     
-    # Clean up - we don't actually need the binary, just the hash
-    rm -f "$RESPONSE_FILE"
-    
 elif [ "$RESPONSE_CODE" == "204" ]; then
-    echo "ℹ️ Norden returned 204 - no binary to download"
-    # This means we need to get the hash differently
-    # Check if we have a previously stored modded hash
-    if [ -f "/home/container/.modded_hash" ]; then
-        MODDED_HASH=$(cat /home/container/.modded_hash)
-        echo "Using cached modded hash: ${MODDED_HASH:0:16}..."
-        report_to_backend "report-modded" "$MODDED_HASH"
+    # 204 = our hash matches, mod is up to date
+    echo "✅ Mod binary is already up to date"
+    
+    if [ ! -z "$CURRENT_HASH" ]; then
+        echo "Current modded hash: ${CURRENT_HASH:0:16}..."
+        report_to_backend "report-modded" "$CURRENT_HASH"
     else
-        echo "⚠️ No cached modded hash - need to download once to establish baseline"
-        # Try with empty hash to force download
-        RESPONSE_CODE=$(curl -s -w "%{http_code}" -o "$RESPONSE_FILE" -X POST "$NORDEN_API_URL" \
-            -H "Content-Type: application/json" \
-            -d '{"os":"linux", "currentHash":""}')
-        
-        if [ "$RESPONSE_CODE" == "200" ]; then
-            MODDED_HASH=$(md5sum "$RESPONSE_FILE" | awk '{ print $1 }')
-            echo "$MODDED_HASH" > /home/container/.modded_hash
-            echo "Established modded hash: ${MODDED_HASH:0:16}..."
-            report_to_backend "report-modded" "$MODDED_HASH"
-        fi
+        echo "⚠️ No binary to hash - cannot report modded version"
     fi
     rm -f "$RESPONSE_FILE"
 else

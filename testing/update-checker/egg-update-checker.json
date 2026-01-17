@@ -1,5 +1,4 @@
 {
-    "_comment": "Primal Heaven Update Checker Egg",
     "meta": {
         "version": "PTDL_v2",
         "update_url": null
@@ -10,21 +9,21 @@
     "description": "Checks for Isle vanilla and modded binary updates every 10 minutes. Reports to backend API which orchestrates server restarts.",
     "features": null,
     "docker_images": {
-        "ghcr.io/parkervcp/yolks:debian": "ghcr.io/parkervcp/yolks:debian"
+        "ghcr.io/icetrahan/testing:update-checker": "ghcr.io/icetrahan/testing:update-checker"
     },
     "file_denylist": [],
     "startup": "/bin/bash /entrypoint.sh",
     "config": {
         "files": "{}",
-        "startup": "{\r\n    \"done\": \"Update check complete!\"\r\n}",
+        "startup": "{}",
         "logs": "{}",
         "stop": "^C"
     },
     "scripts": {
         "installation": {
-            "script": "#!/bin/bash\r\napt-get update\r\napt-get install -y curl ca-certificates jq lib32gcc-s1 lib32stdc++6\r\n\r\ncd /mnt/server\r\n\r\n# Download entrypoint\r\ncurl -sSL -o entrypoint.sh \"https://raw.githubusercontent.com/icetrahan/PTEggos/main/testing/update-checker/entrypoint.sh\"\r\nchmod +x entrypoint.sh\r\n\r\n# Install SteamCMD\r\nmkdir -p steamcmd\r\ncd steamcmd\r\ncurl -sqL \"https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz\" | tar zxvf -\r\n\r\necho \"Installation complete!\"",
-            "container": "ghcr.io/parkervcp/installers:debian",
-            "entrypoint": "bash"
+            "script": "#!/bin/bash\necho done",
+            "container": "alpine:3.4",
+            "entrypoint": "ash"
         }
     },
     "variables": [
@@ -36,7 +35,6 @@
             "user_viewable": true,
             "user_editable": true,
             "rules": "required|string",
-            "sort": 1,
             "field_type": "text"
         },
         {
@@ -47,7 +45,6 @@
             "user_viewable": true,
             "user_editable": true,
             "rules": "required|string",
-            "sort": 2,
             "field_type": "text"
         },
         {
@@ -58,7 +55,6 @@
             "user_viewable": true,
             "user_editable": false,
             "rules": "required|string",
-            "sort": 3,
             "field_type": "text"
         },
         {
@@ -69,7 +65,6 @@
             "user_viewable": true,
             "user_editable": true,
             "rules": "required|string",
-            "sort": 4,
             "field_type": "text"
         },
         {
@@ -80,7 +75,6 @@
             "user_viewable": true,
             "user_editable": true,
             "rules": "required|string",
-            "sort": 5,
             "field_type": "text"
         },
         {
@@ -91,7 +85,6 @@
             "user_viewable": true,
             "user_editable": true,
             "rules": "nullable|string",
-            "sort": 6,
             "field_type": "text"
         }
     ]
