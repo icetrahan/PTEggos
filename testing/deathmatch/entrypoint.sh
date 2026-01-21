@@ -52,7 +52,10 @@ get_file_hash() {
 }
 
 # =============================================================================
-# Step 0: Check if server is blocked (waiting for mod update)
+# Step 0: Check if server can start (read-only check, no writes)
+# =============================================================================
+# The modChecker is the ONLY service that writes update hashes.
+# This script only READS the status and confirms its own startup for monitoring.
 # =============================================================================
 if [ ! -z "$SERVER_ID" ] && [ ! -z "$API_BASE_URL" ]; then
     echo "=========================================="
@@ -64,6 +67,7 @@ if [ ! -z "$SERVER_ID" ] && [ ! -z "$API_BASE_URL" ]; then
     BLOCKED=false
     
     while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+        # Use the can-start endpoint for a simple check, or server-status for detailed info
         STATUS_RESPONSE=$(curl -s -w "\n%{http_code}" -X GET "${API_BASE_URL}/api/updates/server-status/${SERVER_ID}" \
             -H "X-API-Key: ${API_KEY}" 2>/dev/null)
         
@@ -71,18 +75,24 @@ if [ ! -z "$SERVER_ID" ] && [ ! -z "$API_BASE_URL" ]; then
         BODY=$(echo "$STATUS_RESPONSE" | sed '$d')
         
         if [ "$HTTP_CODE" == "200" ]; then
-            # Parse blocked status from JSON
+            # Parse blocked status and mod_pending from JSON
             BLOCKED=$(echo "$BODY" | grep -o '"blocked":[^,}]*' | cut -d':' -f2 | tr -d ' ')
+            MOD_PENDING=$(echo "$BODY" | grep -o '"mod_pending":[^,}]*' | cut -d':' -f2 | tr -d ' ')
+            BLOCK_REASON=$(echo "$BODY" | grep -o '"block_reason":"[^"]*"' | cut -d'"' -f4)
             
             if [ "$BLOCKED" == "true" ]; then
-                echo "🚫 Server is BLOCKED - waiting for mod update"
-                echo "The game has updated but the mod is not ready yet."
-                echo "Server will not start until mod is available."
+                echo "🚫 Server is BLOCKED"
+                if [ "$MOD_PENDING" == "true" ]; then
+                    echo "   Reason: Vanilla updated, waiting for mod to catch up"
+                elif [ ! -z "$BLOCK_REASON" ]; then
+                    echo "   Reason: $BLOCK_REASON"
+                fi
                 echo ""
-                echo "Exiting... Pterodactyl will restart us when mod is ready."
+                echo "Server will not start until mod is available."
+                echo "Exiting... Pterodactyl will restart us when ready."
                 exit 0
             else
-                echo "✅ Server is not blocked - proceeding with startup"
+                echo "✅ Server can start (mod_pending=false)"
                 
                 # Extract expected hashes for later verification
                 EXPECTED_MODDED_HASH=$(echo "$BODY" | grep -o '"expected_modded_hash":"[^"]*"' | cut -d'"' -f4)
