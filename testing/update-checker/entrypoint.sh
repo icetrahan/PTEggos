@@ -15,8 +15,7 @@ echo "=========================================="
 
 # Configuration from environment
 API_BASE_URL=${API_BASE_URL:-"https://api.primalheaven.com"}
-API_KEY=${API_KEY:-"update-checker-key"}
-COMMAND_API_KEY=${COMMAND_API_KEY:-"cmd_primal_alpha_2026"}
+API_KEY=${API_KEY:-"Itachi6969!"}
 SRCDS_APPID=${SRCDS_APPID:-"1020410"}
 NORDEN_API_URL=${NORDEN_API_URL:-"https://manage.norden.cloud/api/884851/1020410"}
 STEAM_USER=${STEAM_USER:-"anonymous"}
@@ -86,7 +85,7 @@ upload_binary_for_distribution() {
     fi
     
     response=$(curl -s -w "\n%{http_code}" -X POST "${API_BASE_URL}/commands/binary/upload" \
-        -H "X-Command-API-Key: ${COMMAND_API_KEY}" \
+        -H "X-API-Key: ${API_KEY}" \
         -F "vanilla_hash=${vanilla_hash}" \
         -F "binary_file=@${binary_path}")
     
