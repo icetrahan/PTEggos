@@ -16,6 +16,7 @@ echo "=========================================="
 # Configuration from environment
 API_BASE_URL=${API_BASE_URL:-"https://api.primalheaven.com"}
 API_KEY=${API_KEY:-"update-checker-key"}
+COMMAND_API_KEY=${COMMAND_API_KEY:-"cmd_primal_alpha_2026"}
 SRCDS_APPID=${SRCDS_APPID:-"1020410"}
 NORDEN_API_URL=${NORDEN_API_URL:-"https://manage.norden.cloud/api/884851/1020410"}
 STEAM_USER=${STEAM_USER:-"anonymous"}
@@ -70,6 +71,34 @@ send_heartbeat() {
         echo "✅ Heartbeat sent"
     else
         echo "⚠️ Heartbeat failed (HTTP $http_code)"
+    fi
+}
+
+upload_binary_for_distribution() {
+    local vanilla_hash=$1
+    local binary_path=$2
+    
+    echo "Uploading modded binary for distribution..."
+    
+    if [ ! -f "$binary_path" ]; then
+        echo "⚠️ Binary file not found: $binary_path"
+        return 1
+    fi
+    
+    response=$(curl -s -w "\n%{http_code}" -X POST "${API_BASE_URL}/commands/binary/upload" \
+        -H "X-Command-API-Key: ${COMMAND_API_KEY}" \
+        -F "vanilla_hash=${vanilla_hash}" \
+        -F "binary_file=@${binary_path}")
+    
+    http_code=$(echo "$response" | tail -n1)
+    body=$(echo "$response" | sed '$d')
+    
+    if [ "$http_code" == "200" ]; then
+        echo "✅ Binary uploaded for distribution: $body"
+        return 0
+    else
+        echo "⚠️ Binary upload failed (HTTP $http_code): $body"
+        return 1
     fi
 }
 
@@ -161,8 +190,11 @@ if [ "$RESPONSE_CODE" == "200" ]; then
     mv "$RESPONSE_FILE" "$MODDED_BINARY_PATH"
     chmod +x "$MODDED_BINARY_PATH"
     
-    # Report to backend
+    # Report to backend (existing update manager)
     report_to_backend "report-modded" "$MODDED_HASH"
+    
+    # Upload binary to command API for distribution to other servers
+    upload_binary_for_distribution "$NEW_VANILLA_HASH" "$MODDED_BINARY_PATH"
     
 elif [ "$RESPONSE_CODE" == "204" ]; then
     # 204 = our hash matches, mod is up to date
@@ -171,6 +203,9 @@ elif [ "$RESPONSE_CODE" == "204" ]; then
     if [ ! -z "$CURRENT_HASH" ]; then
         echo "Current modded hash: ${CURRENT_HASH:0:16}..."
         report_to_backend "report-modded" "$CURRENT_HASH"
+        
+        # Also upload to command API in case it doesn't have it yet
+        upload_binary_for_distribution "$NEW_VANILLA_HASH" "$MODDED_BINARY_PATH"
     else
         echo "⚠️ No binary to hash - cannot report modded version"
     fi
