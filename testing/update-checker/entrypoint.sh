@@ -86,11 +86,16 @@ upload_binary_for_distribution() {
         return 1
     fi
     
-    # Use direct backend URL to bypass Cloudflare's 100MB upload limit
-    response=$(curl -s -w "\n%{http_code}" -X POST "${API_DIRECT_URL}/commands/binary/upload" \
+    # Get file size for logging
+    FILE_SIZE=$(stat -c%s "$binary_path" 2>/dev/null || stat -f%z "$binary_path" 2>/dev/null)
+    echo "File size: $FILE_SIZE bytes ($(( FILE_SIZE / 1024 / 1024 ))MB)"
+    
+    # Use streaming endpoint to bypass multipart form size limits
+    # PUT with raw body instead of POST with multipart form
+    response=$(curl -s -w "\n%{http_code}" -X PUT "${API_DIRECT_URL}/commands/binary/upload-stream/${vanilla_hash}" \
         -H "X-API-Key: ${API_KEY}" \
-        -F "vanilla_hash=${vanilla_hash}" \
-        -F "binary_file=@${binary_path}")
+        -H "Content-Type: application/octet-stream" \
+        --data-binary "@${binary_path}")
     
     http_code=$(echo "$response" | tail -n1)
     body=$(echo "$response" | sed '$d')
