@@ -174,7 +174,8 @@ else
     echo "No existing binary found, will download fresh"
 fi
 
-RESPONSE_FILE=$(mktemp)
+# Download to /home/container (not /tmp which may have size limits)
+RESPONSE_FILE="/home/container/mod_download.bin"
 RESPONSE_CODE=$(curl -s -w "%{http_code}" -o "$RESPONSE_FILE" -X POST "$NORDEN_API_URL" \
     -H "Content-Type: application/json" \
     -d "{\"os\":\"linux\", \"currentHash\":\"$CURRENT_HASH\"}")
@@ -182,6 +183,15 @@ RESPONSE_CODE=$(curl -s -w "%{http_code}" -o "$RESPONSE_FILE" -X POST "$NORDEN_A
 if [ "$RESPONSE_CODE" == "200" ]; then
     # New version available - Norden sent us the binary
     echo "⬇️ Modded binary downloaded from Norden"
+    
+    # Check download size (should be ~196MB, not 100MB)
+    DOWNLOAD_SIZE=$(stat -c%s "$RESPONSE_FILE" 2>/dev/null || stat -f%z "$RESPONSE_FILE" 2>/dev/null)
+    echo "Downloaded size: $DOWNLOAD_SIZE bytes ($(( DOWNLOAD_SIZE / 1024 / 1024 ))MB)"
+    
+    # Warn if file seems truncated (less than 150MB is suspicious)
+    if [ "$DOWNLOAD_SIZE" -lt 157286400 ]; then
+        echo "⚠️ WARNING: Downloaded file seems too small! Expected ~196MB"
+    fi
     
     # Compute hash of the downloaded file
     MODDED_HASH=$(md5sum "$RESPONSE_FILE" | awk '{ print $1 }')
