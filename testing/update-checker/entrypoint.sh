@@ -157,17 +157,13 @@ else
 fi
 
 # =============================================================================
-# Step 3: Check Norden Cloud API for modded binary
+# Step 3: Check Norden Cloud API for modded binary (with retry/resilience)
 # =============================================================================
 
 echo ""
 echo "=========================================="
 echo "Step 2: Checking Modded Binary"
 echo "=========================================="
-
-# Use the same approach as deathmatch - send current hash, get new binary if available
-# If we have a cached hash, use it. Otherwise send empty to force download.
-echo "Checking Norden Cloud API..."
 
 # Get current modded hash (we might have downloaded it previously)
 MODDED_BINARY_PATH="/home/container/TheIsle/Binaries/Linux/TheIsleServer-Linux-Shipping"
@@ -181,59 +177,108 @@ fi
 
 # Download to /home/container (not /tmp which may have size limits)
 RESPONSE_FILE="/home/container/mod_download.bin"
-RESPONSE_CODE=$(curl -s -w "%{http_code}" -o "$RESPONSE_FILE" -X POST "$NORDEN_API_URL" \
-    -H "Content-Type: application/json" \
-    -d "{\"os\":\"linux\", \"currentHash\":\"$CURRENT_HASH\"}")
 
-if [ "$RESPONSE_CODE" == "200" ]; then
-    # New version available - Norden sent us the binary
-    echo "⬇️ Modded binary downloaded from Norden"
+# Retry logic for Norden API (it can be flaky)
+NORDEN_RETRY=0
+NORDEN_MAX_RETRIES=5
+NORDEN_SUCCESS=false
+RETRY_DELAY=10
+
+echo "Checking Norden Cloud API..."
+
+while [ $NORDEN_RETRY -lt $NORDEN_MAX_RETRIES ] && [ "$NORDEN_SUCCESS" != "true" ]; do
+    RESPONSE_CODE=$(curl -s -w "%{http_code}" -o "$RESPONSE_FILE" --max-time 120 -X POST "$NORDEN_API_URL" \
+        -H "Content-Type: application/json" \
+        -d "{\"os\":\"linux\", \"currentHash\":\"$CURRENT_HASH\"}" 2>/dev/null)
     
-    # Check download size (should be ~196MB, not 100MB)
-    DOWNLOAD_SIZE=$(stat -c%s "$RESPONSE_FILE" 2>/dev/null || stat -f%z "$RESPONSE_FILE" 2>/dev/null)
-    echo "Downloaded size: $DOWNLOAD_SIZE bytes ($(( DOWNLOAD_SIZE / 1024 / 1024 ))MB)"
-    
-    # Warn if file seems truncated (less than 150MB is suspicious)
-    if [ "$DOWNLOAD_SIZE" -lt 157286400 ]; then
-        echo "⚠️ WARNING: Downloaded file seems too small! Expected ~196MB"
-    fi
-    
-    # Compute hash of the downloaded file
-    MODDED_HASH=$(md5sum "$RESPONSE_FILE" | awk '{ print $1 }')
-    echo "New modded hash: ${MODDED_HASH:0:16}..."
-    
-    # Save the binary so next time we have the correct hash
-    mkdir -p "$(dirname "$MODDED_BINARY_PATH")"
-    mv "$RESPONSE_FILE" "$MODDED_BINARY_PATH"
-    chmod +x "$MODDED_BINARY_PATH"
-    
-    # Report to backend (existing update manager)
-    report_to_backend "report-modded" "$MODDED_HASH"
-    
-    # Upload binary to command API for distribution to other servers
-    upload_binary_for_distribution "$NEW_VANILLA_HASH" "$MODDED_BINARY_PATH"
-    
-elif [ "$RESPONSE_CODE" == "204" ]; then
-    # 204 = our hash matches, mod is up to date
-    echo "✅ Mod binary is already up to date"
-    
-    if [ ! -z "$CURRENT_HASH" ]; then
-        echo "Current modded hash: ${CURRENT_HASH:0:16}..."
-        report_to_backend "report-modded" "$CURRENT_HASH"
+    if [ "$RESPONSE_CODE" == "200" ]; then
+        # New version available - Norden sent us the binary
+        echo "⬇️ Modded binary downloaded from Norden"
         
-        # Also upload to command API in case it doesn't have it yet
+        # Check download size (should be ~196MB, not 100MB)
+        DOWNLOAD_SIZE=$(stat -c%s "$RESPONSE_FILE" 2>/dev/null || stat -f%z "$RESPONSE_FILE" 2>/dev/null)
+        echo "Downloaded size: $DOWNLOAD_SIZE bytes ($(( DOWNLOAD_SIZE / 1024 / 1024 ))MB)"
+        
+        # Verify file size (less than 150MB is suspicious/truncated)
+        if [ "$DOWNLOAD_SIZE" -lt 157286400 ]; then
+            echo "⚠️ WARNING: Downloaded file seems too small! Expected ~196MB"
+            echo "   Retrying download..."
+            rm -f "$RESPONSE_FILE"
+            NORDEN_RETRY=$((NORDEN_RETRY + 1))
+            sleep $RETRY_DELAY
+            RETRY_DELAY=$((RETRY_DELAY * 2))  # Exponential backoff
+            continue
+        fi
+        
+        # Compute hash of the downloaded file
+        MODDED_HASH=$(md5sum "$RESPONSE_FILE" | awk '{ print $1 }')
+        echo "New modded hash: ${MODDED_HASH:0:16}..."
+        
+        # Save the binary so next time we have the correct hash
+        mkdir -p "$(dirname "$MODDED_BINARY_PATH")"
+        mv "$RESPONSE_FILE" "$MODDED_BINARY_PATH"
+        chmod +x "$MODDED_BINARY_PATH"
+        
+        # Report to backend (existing update manager)
+        report_to_backend "report-modded" "$MODDED_HASH"
+        
+        # Upload binary to command API for distribution to other servers
+        upload_binary_for_distribution "$NEW_VANILLA_HASH" "$MODDED_BINARY_PATH"
+        
+        NORDEN_SUCCESS=true
+        
+    elif [ "$RESPONSE_CODE" == "204" ]; then
+        # 204 = our hash matches, mod is up to date
+        echo "✅ Mod binary is already up to date"
+        
+        if [ ! -z "$CURRENT_HASH" ]; then
+            echo "Current modded hash: ${CURRENT_HASH:0:16}..."
+            report_to_backend "report-modded" "$CURRENT_HASH"
+            
+            # Also upload to command API in case it doesn't have it yet
+            upload_binary_for_distribution "$NEW_VANILLA_HASH" "$MODDED_BINARY_PATH"
+        else
+            echo "⚠️ No binary to hash - cannot report modded version"
+        fi
+        rm -f "$RESPONSE_FILE"
+        NORDEN_SUCCESS=true
+        
+    elif [ "$RESPONSE_CODE" == "000" ]; then
+        # Connection failed (timeout, DNS, etc)
+        NORDEN_RETRY=$((NORDEN_RETRY + 1))
+        echo "⚠️ Norden API connection failed, retry $NORDEN_RETRY/$NORDEN_MAX_RETRIES (waiting ${RETRY_DELAY}s)..."
+        rm -f "$RESPONSE_FILE"
+        sleep $RETRY_DELAY
+        RETRY_DELAY=$((RETRY_DELAY * 2))  # Exponential backoff (10, 20, 40, 80, 160)
+        
+    else
+        # Other error codes
+        NORDEN_RETRY=$((NORDEN_RETRY + 1))
+        echo "⚠️ Norden API returned HTTP $RESPONSE_CODE, retry $NORDEN_RETRY/$NORDEN_MAX_RETRIES..."
+        if [ -f "$RESPONSE_FILE" ]; then
+            head -c 500 "$RESPONSE_FILE"  # Show first 500 chars of error
+            rm -f "$RESPONSE_FILE"
+        fi
+        sleep $RETRY_DELAY
+        RETRY_DELAY=$((RETRY_DELAY * 2))
+    fi
+done
+
+# If Norden failed but we have an existing binary, still report it
+if [ "$NORDEN_SUCCESS" != "true" ]; then
+    echo ""
+    echo "❌ Norden API failed after $NORDEN_MAX_RETRIES attempts"
+    
+    if [ ! -z "$CURRENT_HASH" ] && [ -f "$MODDED_BINARY_PATH" ]; then
+        echo "📦 Reporting existing binary to backend anyway..."
+        report_to_backend "report-modded" "$CURRENT_HASH"
         upload_binary_for_distribution "$NEW_VANILLA_HASH" "$MODDED_BINARY_PATH"
     else
-        echo "⚠️ No binary to hash - cannot report modded version"
-    fi
-    rm -f "$RESPONSE_FILE"
-else
-    echo "❌ Norden API returned HTTP $RESPONSE_CODE"
-    if [ -f "$RESPONSE_FILE" ]; then
-        cat "$RESPONSE_FILE"
-        rm -f "$RESPONSE_FILE"
+        echo "⚠️ No existing binary to report - servers may be blocked until Norden recovers"
     fi
 fi
+
+rm -f "$RESPONSE_FILE"
 
 # =============================================================================
 # Step 4: Send heartbeat

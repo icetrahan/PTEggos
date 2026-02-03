@@ -168,11 +168,13 @@ MOD_FILE_PATH="/home/container/TheIsle/Binaries/Linux/TheIsleServer-Linux-Shippi
 VANILLA_HASH=$(get_file_hash "$MOD_FILE_PATH")
 echo "Vanilla hash after SteamCMD: ${VANILLA_HASH:0:16}..."
 
-# Mod Update Check (ALWAYS runs, regardless of AUTO_UPDATE setting)
-# This checks the Norden Cloud API for mod binary updates
+# =============================================================================
+# Mod Update Check - Try backend first, fallback to Norden
+# =============================================================================
+echo -e ""
+echo -e "=========================================="
 echo -e "Checking for mod updates..."
-
-MOD_API_URL="https://manage.norden.cloud/api/884851/1020410"
+echo -e "=========================================="
 
 # Read current file hash if file exists
 if [ -f "$MOD_FILE_PATH" ]; then
@@ -181,33 +183,137 @@ else
     CURRENT_HASH=""
 fi
 
-# Send POST request with hash to check for updates
-RESPONSE_HEADERS=$(mktemp)
-RESPONSE_CODE=$(curl -s -w "%{http_code}" -D "$RESPONSE_HEADERS" -o /home/container/response.bin -X POST "$MOD_API_URL" \
-    -H "Content-Type: application/json" \
-    -d "{\"os\":\"linux\", \"currentHash\":\"$CURRENT_HASH\"}")
+MOD_DOWNLOADED=false
+NORDEN_API_URL="https://manage.norden.cloud/api/884851/1020410"
 
-# Handle response
-if [ "$RESPONSE_CODE" == "200" ]; then
-    echo -e "⬇️  New mod version available. Downloading..."
-    mkdir -p "$(dirname "$MOD_FILE_PATH")"
-    mv /home/container/response.bin "$MOD_FILE_PATH"
-    chmod +x "$MOD_FILE_PATH"
-    echo -e "✅ Mod binary downloaded and updated."
-elif [ "$RESPONSE_CODE" == "204" ]; then
-    echo -e "✅ Mod binary is already up to date."
-else
-    echo -e "❌ Mod update check failed with response code: $RESPONSE_CODE"
-    if [ -f /home/container/response.bin ]; then
-        cat /home/container/response.bin
+# -----------------------------------------------------------------------------
+# Method 1: Try Primal Backend (our own server - more reliable)
+# -----------------------------------------------------------------------------
+echo -e "📡 Checking Primal Backend for modded binary..."
+
+BACKEND_RETRY=0
+BACKEND_MAX_RETRIES=3
+
+while [ $BACKEND_RETRY -lt $BACKEND_MAX_RETRIES ] && [ "$MOD_DOWNLOADED" != "true" ]; do
+    # Check if backend has a mod for our vanilla version
+    CHECK_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${API_BASE_URL}/commands/binary/check" \
+        -H "Content-Type: application/json" \
+        -d "{\"vanilla_hash\": \"${VANILLA_HASH}\", \"current_modded_hash\": \"${CURRENT_HASH}\"}" 2>/dev/null)
+    
+    HTTP_CODE=$(echo "$CHECK_RESPONSE" | tail -n1)
+    BODY=$(echo "$CHECK_RESPONSE" | sed '$d')
+    
+    if [ "$HTTP_CODE" == "200" ]; then
+        # Parse response
+        STATUS=$(echo "$BODY" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
+        DOWNLOAD_URL=$(echo "$BODY" | grep -o '"download_url":"[^"]*"' | cut -d'"' -f4)
+        
+        echo "   Backend status: $STATUS"
+        
+        if [ "$STATUS" == "up_to_date" ]; then
+            echo -e "✅ Mod binary is already up to date (verified by backend)"
+            MOD_DOWNLOADED=true
+            
+        elif [ "$STATUS" == "update_available" ] && [ ! -z "$DOWNLOAD_URL" ]; then
+            echo -e "⬇️  Downloading modded binary from backend..."
+            
+            # Download from backend
+            DOWNLOAD_CODE=$(curl -s -w "%{http_code}" -o /home/container/mod_download.bin \
+                "${API_BASE_URL}${DOWNLOAD_URL}" 2>/dev/null)
+            
+            if [ "$DOWNLOAD_CODE" == "200" ]; then
+                # Verify download size (should be ~196MB)
+                DOWNLOAD_SIZE=$(stat -c%s "/home/container/mod_download.bin" 2>/dev/null || stat -f%z "/home/container/mod_download.bin" 2>/dev/null)
+                
+                if [ "$DOWNLOAD_SIZE" -gt 157286400 ]; then
+                    mkdir -p "$(dirname "$MOD_FILE_PATH")"
+                    mv /home/container/mod_download.bin "$MOD_FILE_PATH"
+                    chmod +x "$MOD_FILE_PATH"
+                    echo -e "✅ Mod binary downloaded from backend (${DOWNLOAD_SIZE} bytes)"
+                    MOD_DOWNLOADED=true
+                else
+                    echo -e "⚠️  Downloaded file too small (${DOWNLOAD_SIZE} bytes), trying again..."
+                    rm -f /home/container/mod_download.bin
+                fi
+            else
+                echo -e "⚠️  Backend download failed (HTTP $DOWNLOAD_CODE)"
+            fi
+            
+        elif [ "$STATUS" == "no_mod_available" ]; then
+            echo -e "⚠️  Backend doesn't have mod for this vanilla version yet"
+            break  # Don't retry, backend genuinely doesn't have it
+        fi
+        
+        break  # Successful response, exit retry loop
+    else
+        BACKEND_RETRY=$((BACKEND_RETRY + 1))
+        echo -e "⚠️  Backend check failed (HTTP $HTTP_CODE), retry $BACKEND_RETRY/$BACKEND_MAX_RETRIES..."
+        sleep 5
     fi
-    echo -e "🚫 Cannot proceed without mod - exiting"
-    rm -f "$RESPONSE_HEADERS" /home/container/response.bin
-    exit 1
+done
+
+# -----------------------------------------------------------------------------
+# Method 2: Fallback to Norden Cloud API (if backend didn't have it)
+# -----------------------------------------------------------------------------
+if [ "$MOD_DOWNLOADED" != "true" ]; then
+    echo -e ""
+    echo -e "📡 Falling back to Norden Cloud API..."
+    
+    NORDEN_RETRY=0
+    NORDEN_MAX_RETRIES=5
+    
+    while [ $NORDEN_RETRY -lt $NORDEN_MAX_RETRIES ] && [ "$MOD_DOWNLOADED" != "true" ]; do
+        RESPONSE_CODE=$(curl -s -w "%{http_code}" -o /home/container/response.bin -X POST "$NORDEN_API_URL" \
+            -H "Content-Type: application/json" \
+            -d "{\"os\":\"linux\", \"currentHash\":\"$CURRENT_HASH\"}" 2>/dev/null)
+        
+        if [ "$RESPONSE_CODE" == "200" ]; then
+            # Check download size
+            DOWNLOAD_SIZE=$(stat -c%s "/home/container/response.bin" 2>/dev/null || stat -f%z "/home/container/response.bin" 2>/dev/null)
+            
+            if [ "$DOWNLOAD_SIZE" -gt 157286400 ]; then
+                echo -e "⬇️  New mod version downloaded from Norden"
+                mkdir -p "$(dirname "$MOD_FILE_PATH")"
+                mv /home/container/response.bin "$MOD_FILE_PATH"
+                chmod +x "$MOD_FILE_PATH"
+                echo -e "✅ Mod binary downloaded and updated (${DOWNLOAD_SIZE} bytes)"
+                MOD_DOWNLOADED=true
+            else
+                echo -e "⚠️  Downloaded file too small (${DOWNLOAD_SIZE} bytes), retrying..."
+                rm -f /home/container/response.bin
+            fi
+            
+        elif [ "$RESPONSE_CODE" == "204" ]; then
+            echo -e "✅ Mod binary is already up to date (Norden)"
+            MOD_DOWNLOADED=true
+            
+        else
+            NORDEN_RETRY=$((NORDEN_RETRY + 1))
+            echo -e "⚠️  Norden API failed (HTTP $RESPONSE_CODE), retry $NORDEN_RETRY/$NORDEN_MAX_RETRIES..."
+            sleep 10
+        fi
+        
+        rm -f /home/container/response.bin
+    done
 fi
 
 # Cleanup
-rm -f "$RESPONSE_HEADERS" /home/container/response.bin
+rm -f /home/container/response.bin /home/container/mod_download.bin
+
+# -----------------------------------------------------------------------------
+# Final check - do we have a valid mod?
+# -----------------------------------------------------------------------------
+if [ "$MOD_DOWNLOADED" != "true" ]; then
+    # Check if we at least have an existing binary
+    if [ -f "$MOD_FILE_PATH" ] && [ ! -z "$CURRENT_HASH" ]; then
+        echo -e "⚠️  Could not verify mod updates, but existing binary found"
+        echo -e "   Proceeding with existing mod (hash: ${CURRENT_HASH:0:16}...)"
+    else
+        echo -e "❌ No mod binary available and could not download one"
+        echo -e "🚫 Cannot proceed without mod - exiting"
+        exit 1
+    fi
+fi
 
 # Get final modded hash
 MODDED_HASH=$(get_file_hash "$MOD_FILE_PATH")
