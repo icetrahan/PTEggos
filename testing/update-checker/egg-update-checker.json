@@ -3,10 +3,10 @@
         "version": "PTDL_v2",
         "update_url": null
     },
-    "exported_at": "2026-01-16T00:00:00+00:00",
+    "exported_at": "2026-03-15T00:00:00+00:00",
     "name": "Isle Update Checker",
     "author": "ice@primalheaven.com",
-    "description": "Checks for Isle vanilla and modded binary updates every 10 minutes. Reports to backend API which orchestrates server restarts.",
+    "description": "Self-contained update checker and binary patching pipeline. Downloads Linux and Windows vanilla binaries via SteamCMD, detects version changes, patches them locally with signature-based patch_worker.py, and uploads modded binaries to the backend for distribution. No external patching API needed.",
     "features": null,
     "docker_images": {
         "ghcr.io/icetrahan/testing:update-checker": "ghcr.io/icetrahan/testing:update-checker"
@@ -15,7 +15,7 @@
     "startup": "/bin/bash /entrypoint.sh",
     "config": {
         "files": "{}",
-        "startup": "{\"done\": \"Update check complete!\"}",
+        "startup": "{\"done\": \"Update Checker Summary\"}",
         "logs": "{}",
         "stop": "^C"
     },
@@ -38,10 +38,20 @@
             "field_type": "text"
         },
         {
+            "name": "API Direct URL",
+            "description": "Direct backend URL for large binary uploads (bypasses Cloudflare 100MB limit)",
+            "env_variable": "API_DIRECT_URL",
+            "default_value": "http://172.93.100.254:25022",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string",
+            "field_type": "text"
+        },
+        {
             "name": "API Key",
             "description": "API key for authenticating with the backend",
             "env_variable": "API_KEY",
-            "default_value": "update-checker-key",
+            "default_value": "",
             "user_viewable": true,
             "user_editable": true,
             "rules": "required|string",
@@ -58,10 +68,10 @@
             "field_type": "text"
         },
         {
-            "name": "Norden API URL",
-            "description": "Norden Cloud API endpoint for modded binary",
-            "env_variable": "NORDEN_API_URL",
-            "default_value": "https://manage.norden.cloud/api/884851/1020410",
+            "name": "Steam Beta Branch",
+            "description": "Steam beta branch to download (e.g. evrima)",
+            "env_variable": "STEAM_BETA",
+            "default_value": "evrima",
             "user_viewable": true,
             "user_editable": true,
             "rules": "required|string",

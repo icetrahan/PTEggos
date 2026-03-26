@@ -1,0 +1,20 @@
+{
+  "platform": "linux",
+  "description": "The Isle server patch rules for ELF binaries",
+  "patches": [
+    {
+      "name": "branch_flip_signature_gate",
+      "pattern": "83 78 08 00 74 0F 48 8B 38 48 85 FF ?? 07 48 8B 07 59 FF 60 38",
+      "patch_offset": 12,
+      "original": "74",
+      "patched": "EB"
+    },
+    {
+      "name": "nop_init_flag_write",
+      "pattern": "41 89 C6 EB 03 45 31 F6 ?? ?? ?? ?? 48 C7 44 24 48 00 00 00 00",
+      "patch_offset": 8,
+      "original": "44 88 73 30",
+      "patched": "90 90 90 90"
+    }
+  ]
+}

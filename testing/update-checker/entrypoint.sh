@@ -1,11 +1,20 @@
 #!/bin/bash
 
 #
-# Update Checker for Primal Heaven
-# =================================
-# This script checks for Isle vanilla and modded binary updates.
-# Runs every 10 minutes via Pterodactyl schedule.
-# Reports hashes to the backend API which orchestrates server restarts.
+# Primal Heaven Update Checker
+# =============================
+# Self-contained binary update & patching pipeline for Linux + Windows.
+# Replaces the old Norden Cloud dependency.
+#
+# Flow:
+#   1. SteamCMD → download Linux vanilla binary
+#   2. SteamCMD → download Windows vanilla binary (cross-platform)
+#   3. Compare vanilla hashes against last-known to detect updates
+#   4. Patch both platforms using patch_worker.py + JSON specs
+#   5. Upload patched binaries to backend for distribution
+#   6. Report vanilla + modded hashes for both platforms
+#   7. Heartbeat
+#   8. Sleep until Pterodactyl schedule restarts us
 #
 
 echo "=========================================="
@@ -13,21 +22,34 @@ echo "Primal Heaven Update Checker"
 echo "$(date '+%Y-%m-%d %H:%M:%S')"
 echo "=========================================="
 
-# Configuration from environment
+# ─── Configuration ────────────────────────────────────────────────────────────
+
 API_BASE_URL=${API_BASE_URL:-"https://api.primalheaven.com"}
-# Direct backend URL (bypasses Cloudflare for large uploads - 100MB limit on CF)
 API_DIRECT_URL=${API_DIRECT_URL:-"http://172.93.100.254:25022"}
-API_KEY=${API_KEY:-"Itachi6969!"}
+API_KEY=${API_KEY:-""}
 SRCDS_APPID=${SRCDS_APPID:-"1020410"}
-NORDEN_API_URL=${NORDEN_API_URL:-"https://manage.norden.cloud/api/884851/1020410"}
 STEAM_USER=${STEAM_USER:-"anonymous"}
 STEAM_PASS=${STEAM_PASS:-""}
+STEAM_BETA=${STEAM_BETA:-"evrima"}
+
+PATCHER_DIR="/home/container/patcher"
+LINUX_INSTALL="/home/container/isle_linux"
+WINDOWS_INSTALL="/home/container/isle_windows"
+
+LINUX_BINARY_REL="TheIsle/Binaries/Linux/TheIsleServer-Linux-Shipping"
+WINDOWS_BINARY_REL="TheIsle/Binaries/Win64/TheIsleServer-Win64-Shipping.exe"
+
+LINUX_BINARY="${LINUX_INSTALL}/${LINUX_BINARY_REL}"
+WINDOWS_BINARY="${WINDOWS_INSTALL}/${WINDOWS_BINARY_REL}"
+
+LINUX_PATCHED="/home/container/patched_linux"
+WINDOWS_PATCHED="/home/container/patched_windows"
+
+HASH_CACHE="/home/container/.last_vanilla_hashes"
 
 cd /home/container || exit 1
 
-# =============================================================================
-# Helper Functions
-# =============================================================================
+# ─── Helpers ──────────────────────────────────────────────────────────────────
 
 get_file_hash() {
     if [ -f "$1" ]; then
@@ -37,271 +59,274 @@ get_file_hash() {
     fi
 }
 
-report_to_backend() {
+load_cached_hashes() {
+    CACHED_LINUX_HASH=""
+    CACHED_WINDOWS_HASH=""
+    if [ -f "$HASH_CACHE" ]; then
+        CACHED_LINUX_HASH=$(grep '^linux=' "$HASH_CACHE" 2>/dev/null | cut -d= -f2)
+        CACHED_WINDOWS_HASH=$(grep '^windows=' "$HASH_CACHE" 2>/dev/null | cut -d= -f2)
+    fi
+}
+
+save_cached_hashes() {
+    echo "linux=${LINUX_VANILLA_HASH}" > "$HASH_CACHE"
+    echo "windows=${WINDOWS_VANILLA_HASH}" >> "$HASH_CACHE"
+}
+
+report_hash() {
     local endpoint=$1
     local hash=$2
-    
-    echo "Reporting to $endpoint: ${hash:0:16}..."
-    
-    response=$(curl -s -w "\n%{http_code}" -X POST "${API_BASE_URL}/api/updates/${endpoint}" \
+    local platform=$3
+
+    echo "  Reporting ${endpoint} (${platform}): ${hash:0:16}..."
+
+    local json="{\"hash\": \"${hash}\", \"platform\": \"${platform}\"}"
+
+    response=$(curl -s -w "\n%{http_code}" -X POST \
+        "${API_BASE_URL}/api/updates/${endpoint}" \
         -H "Content-Type: application/json" \
         -H "X-API-Key: ${API_KEY}" \
-        -d "{\"hash\": \"${hash}\"}")
-    
+        -d "$json")
+
     http_code=$(echo "$response" | tail -n1)
     body=$(echo "$response" | sed '$d')
-    
+
     if [ "$http_code" == "200" ]; then
-        echo "✅ Reported successfully: $body"
+        echo "  ✅ Reported: $body"
         return 0
     else
-        echo "❌ Report failed (HTTP $http_code): $body"
+        echo "  ❌ Failed (HTTP $http_code): $body"
+        return 1
+    fi
+}
+
+upload_binary() {
+    local platform=$1
+    local vanilla_hash=$2
+    local binary_path=$3
+
+    if [ ! -f "$binary_path" ]; then
+        echo "  ⚠️ Binary not found: $binary_path"
+        return 1
+    fi
+
+    local file_size
+    file_size=$(stat -c%s "$binary_path" 2>/dev/null || stat -f%z "$binary_path" 2>/dev/null)
+    echo "  Uploading ${platform} modded binary ($(( file_size / 1024 / 1024 ))MB)..."
+
+    response=$(curl -s -w "\n%{http_code}" -X PUT \
+        "${API_DIRECT_URL}/api/binary/upload/${platform}/${vanilla_hash}" \
+        -H "X-API-Key: ${API_KEY}" \
+        -H "Content-Type: application/octet-stream" \
+        --data-binary "@${binary_path}")
+
+    http_code=$(echo "$response" | tail -n1)
+    body=$(echo "$response" | sed '$d')
+
+    if [ "$http_code" == "200" ]; then
+        echo "  ✅ Upload OK: $body"
+        return 0
+    else
+        echo "  ⚠️ Upload failed (HTTP $http_code): $body"
         return 1
     fi
 }
 
 send_heartbeat() {
     echo "Sending heartbeat..."
-    
-    response=$(curl -s -w "\n%{http_code}" -X POST "${API_BASE_URL}/api/updates/heartbeat" \
+    response=$(curl -s -w "\n%{http_code}" -X POST \
+        "${API_BASE_URL}/api/updates/heartbeat" \
         -H "X-API-Key: ${API_KEY}")
-    
     http_code=$(echo "$response" | tail -n1)
-    
     if [ "$http_code" == "200" ]; then
-        echo "✅ Heartbeat sent"
+        echo "✅ Heartbeat OK"
     else
         echo "⚠️ Heartbeat failed (HTTP $http_code)"
     fi
 }
 
-upload_binary_for_distribution() {
-    local vanilla_hash=$1
-    local binary_path=$2
-    
-    echo "Uploading modded binary for distribution..."
-    
-    if [ ! -f "$binary_path" ]; then
-        echo "⚠️ Binary file not found: $binary_path"
-        return 1
-    fi
-    
-    # Get file size for logging
-    FILE_SIZE=$(stat -c%s "$binary_path" 2>/dev/null || stat -f%z "$binary_path" 2>/dev/null)
-    echo "File size: $FILE_SIZE bytes ($(( FILE_SIZE / 1024 / 1024 ))MB)"
-    
-    # Use streaming endpoint to bypass multipart form size limits
-    # PUT with raw body instead of POST with multipart form
-    response=$(curl -s -w "\n%{http_code}" -X PUT "${API_DIRECT_URL}/commands/binary/upload-stream/${vanilla_hash}" \
-        -H "X-API-Key: ${API_KEY}" \
-        -H "Content-Type: application/octet-stream" \
-        --data-binary "@${binary_path}")
-    
-    http_code=$(echo "$response" | tail -n1)
-    body=$(echo "$response" | sed '$d')
-    
-    if [ "$http_code" == "200" ]; then
-        echo "✅ Binary uploaded for distribution: $body"
-        return 0
-    else
-        echo "⚠️ Binary upload failed (HTTP $http_code): $body"
-        return 1
-    fi
+run_patcher() {
+    local input_path=$1
+    local output_path=$2
+    local report_path=$3
+
+    mkdir -p "$(dirname "$output_path")"
+    python3 "${PATCHER_DIR}/patch_worker.py" "$input_path" "$output_path" --report "$report_path"
+    return $?
 }
 
-# =============================================================================
-# Step 1: Install/Update SteamCMD if needed
-# =============================================================================
+# ─── Step 0: Install SteamCMD ────────────────────────────────────────────────
 
 if [ ! -f "./steamcmd/steamcmd.sh" ]; then
+    echo ""
+    echo "=========================================="
     echo "Installing SteamCMD..."
+    echo "=========================================="
     mkdir -p steamcmd
     cd steamcmd
     curl -sqL "https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz" | tar zxvf -
     cd /home/container
 fi
 
-# =============================================================================
-# Step 2: Run SteamCMD to get latest vanilla binary
-# =============================================================================
+# Load previously seen vanilla hashes so we can detect changes
+load_cached_hashes
+
+# ─── Step 1: Download Linux Vanilla ──────────────────────────────────────────
 
 echo ""
 echo "=========================================="
-echo "Step 1: Checking Vanilla Binary"
+echo "Step 1: Downloading Linux Vanilla Binary"
 echo "=========================================="
 
-# Store old hash for comparison
-BINARY_PATH="/home/container/TheIsle/Binaries/Linux/TheIsleServer-Linux-Shipping"
-OLD_VANILLA_HASH=$(get_file_hash "$BINARY_PATH")
-
-echo "Running SteamCMD update..."
-./steamcmd/steamcmd.sh +force_install_dir /home/container \
+echo "Running SteamCMD (linux)..."
+./steamcmd/steamcmd.sh \
+    +force_install_dir "${LINUX_INSTALL}" \
     +login ${STEAM_USER} ${STEAM_PASS} \
-    +app_update ${SRCDS_APPID} validate \
+    +app_update ${SRCDS_APPID} -beta ${STEAM_BETA} validate \
     +quit
 
-# Get new hash
-NEW_VANILLA_HASH=$(get_file_hash "$BINARY_PATH")
+LINUX_VANILLA_HASH=$(get_file_hash "$LINUX_BINARY")
 
-if [ -z "$NEW_VANILLA_HASH" ]; then
-    echo "❌ Failed to get vanilla binary - file not found!"
+if [ -z "$LINUX_VANILLA_HASH" ]; then
+    echo "❌ Linux binary not found after SteamCMD!"
+    LINUX_OK=false
 else
-    echo "Vanilla hash: ${NEW_VANILLA_HASH:0:16}..."
-    
-    if [ "$OLD_VANILLA_HASH" != "$NEW_VANILLA_HASH" ]; then
-        echo "📦 Vanilla binary changed!"
+    echo "Linux vanilla hash: ${LINUX_VANILLA_HASH:0:16}..."
+    if [ "$CACHED_LINUX_HASH" != "$LINUX_VANILLA_HASH" ]; then
+        echo "📦 Linux vanilla binary changed!"
+        LINUX_CHANGED=true
+    else
+        LINUX_CHANGED=false
     fi
-    
-    # Always report current hash - backend decides if it's new
-    report_to_backend "report-vanilla" "$NEW_VANILLA_HASH"
+    report_hash "report-vanilla" "$LINUX_VANILLA_HASH" "linux"
+    LINUX_OK=true
 fi
 
-# =============================================================================
-# Step 3: Check Norden Cloud API for modded binary (with retry/resilience)
-# =============================================================================
+# ─── Step 2: Download Windows Vanilla ────────────────────────────────────────
 
 echo ""
 echo "=========================================="
-echo "Step 2: Checking Modded Binary"
+echo "Step 2: Downloading Windows Vanilla Binary"
 echo "=========================================="
 
-# Get current modded hash (we might have downloaded it previously)
-MODDED_BINARY_PATH="/home/container/TheIsle/Binaries/Linux/TheIsleServer-Linux-Shipping"
-if [ -f "$MODDED_BINARY_PATH" ]; then
-    CURRENT_HASH=$(get_file_hash "$MODDED_BINARY_PATH")
-    echo "Current binary hash: ${CURRENT_HASH:0:16}..."
+echo "Running SteamCMD (windows cross-download)..."
+./steamcmd/steamcmd.sh \
+    +@sSteamCmdForcePlatformType windows \
+    +force_install_dir "${WINDOWS_INSTALL}" \
+    +login ${STEAM_USER} ${STEAM_PASS} \
+    +app_update ${SRCDS_APPID} -beta ${STEAM_BETA} validate \
+    +quit
+
+WINDOWS_VANILLA_HASH=$(get_file_hash "$WINDOWS_BINARY")
+
+if [ -z "$WINDOWS_VANILLA_HASH" ]; then
+    echo "❌ Windows binary not found after SteamCMD!"
+    WINDOWS_OK=false
 else
-    CURRENT_HASH=""
-    echo "No existing binary found, will download fresh"
+    echo "Windows vanilla hash: ${WINDOWS_VANILLA_HASH:0:16}..."
+    if [ "$CACHED_WINDOWS_HASH" != "$WINDOWS_VANILLA_HASH" ]; then
+        echo "📦 Windows vanilla binary changed!"
+        WINDOWS_CHANGED=true
+    else
+        WINDOWS_CHANGED=false
+    fi
+    WINDOWS_OK=true
 fi
 
-# Download to /home/container (not /tmp which may have size limits)
-RESPONSE_FILE="/home/container/mod_download.bin"
+# Persist vanilla hashes for next run
+save_cached_hashes
 
-# Retry logic for Norden API (it can be flaky)
-NORDEN_RETRY=0
-NORDEN_MAX_RETRIES=5
-NORDEN_SUCCESS=false
-RETRY_DELAY=10
-
-echo "Checking Norden Cloud API..."
-
-while [ $NORDEN_RETRY -lt $NORDEN_MAX_RETRIES ] && [ "$NORDEN_SUCCESS" != "true" ]; do
-    RESPONSE_CODE=$(curl -s -w "%{http_code}" -o "$RESPONSE_FILE" --max-time 120 -X POST "$NORDEN_API_URL" \
-        -H "Content-Type: application/json" \
-        -d "{\"os\":\"linux\", \"currentHash\":\"$CURRENT_HASH\"}" 2>/dev/null)
-    
-    if [ "$RESPONSE_CODE" == "200" ]; then
-        # New version available - Norden sent us the binary
-        echo "⬇️ Modded binary downloaded from Norden"
-        
-        # Check download size (should be ~196MB, not 100MB)
-        DOWNLOAD_SIZE=$(stat -c%s "$RESPONSE_FILE" 2>/dev/null || stat -f%z "$RESPONSE_FILE" 2>/dev/null)
-        echo "Downloaded size: $DOWNLOAD_SIZE bytes ($(( DOWNLOAD_SIZE / 1024 / 1024 ))MB)"
-        
-        # Verify file size (less than 150MB is suspicious/truncated)
-        if [ "$DOWNLOAD_SIZE" -lt 157286400 ]; then
-            echo "⚠️ WARNING: Downloaded file seems too small! Expected ~196MB"
-            echo "   Retrying download..."
-            rm -f "$RESPONSE_FILE"
-            NORDEN_RETRY=$((NORDEN_RETRY + 1))
-            sleep $RETRY_DELAY
-            RETRY_DELAY=$((RETRY_DELAY * 2))  # Exponential backoff
-            continue
-        fi
-        
-        # Compute hash of the downloaded file
-        MODDED_HASH=$(md5sum "$RESPONSE_FILE" | awk '{ print $1 }')
-        echo "New modded hash: ${MODDED_HASH:0:16}..."
-        
-        # Save the binary so next time we have the correct hash
-        mkdir -p "$(dirname "$MODDED_BINARY_PATH")"
-        mv "$RESPONSE_FILE" "$MODDED_BINARY_PATH"
-        chmod +x "$MODDED_BINARY_PATH"
-        
-        # Report to backend (existing update manager)
-        report_to_backend "report-modded" "$MODDED_HASH"
-        
-        # Upload binary to command API for distribution to other servers
-        upload_binary_for_distribution "$NEW_VANILLA_HASH" "$MODDED_BINARY_PATH"
-        
-        NORDEN_SUCCESS=true
-        
-    elif [ "$RESPONSE_CODE" == "204" ]; then
-        # 204 = our hash matches, mod is up to date
-        echo "✅ Mod binary is already up to date"
-        
-        if [ ! -z "$CURRENT_HASH" ]; then
-            echo "Current modded hash: ${CURRENT_HASH:0:16}..."
-            report_to_backend "report-modded" "$CURRENT_HASH"
-            
-            # Also upload to command API in case it doesn't have it yet
-            upload_binary_for_distribution "$NEW_VANILLA_HASH" "$MODDED_BINARY_PATH"
-        else
-            echo "⚠️ No binary to hash - cannot report modded version"
-        fi
-        rm -f "$RESPONSE_FILE"
-        NORDEN_SUCCESS=true
-        
-    elif [ "$RESPONSE_CODE" == "000" ]; then
-        # Connection failed (timeout, DNS, etc)
-        NORDEN_RETRY=$((NORDEN_RETRY + 1))
-        echo "⚠️ Norden API connection failed, retry $NORDEN_RETRY/$NORDEN_MAX_RETRIES (waiting ${RETRY_DELAY}s)..."
-        rm -f "$RESPONSE_FILE"
-        sleep $RETRY_DELAY
-        RETRY_DELAY=$((RETRY_DELAY * 2))  # Exponential backoff (10, 20, 40, 80, 160)
-        
-    else
-        # Other error codes
-        NORDEN_RETRY=$((NORDEN_RETRY + 1))
-        echo "⚠️ Norden API returned HTTP $RESPONSE_CODE, retry $NORDEN_RETRY/$NORDEN_MAX_RETRIES..."
-        if [ -f "$RESPONSE_FILE" ]; then
-            head -c 500 "$RESPONSE_FILE"  # Show first 500 chars of error
-            rm -f "$RESPONSE_FILE"
-        fi
-        sleep $RETRY_DELAY
-        RETRY_DELAY=$((RETRY_DELAY * 2))
-    fi
-done
-
-# If Norden failed but we have an existing binary, still report it
-if [ "$NORDEN_SUCCESS" != "true" ]; then
-    echo ""
-    echo "❌ Norden API failed after $NORDEN_MAX_RETRIES attempts"
-    
-    if [ ! -z "$CURRENT_HASH" ] && [ -f "$MODDED_BINARY_PATH" ]; then
-        echo "📦 Reporting existing binary to backend anyway..."
-        report_to_backend "report-modded" "$CURRENT_HASH"
-        upload_binary_for_distribution "$NEW_VANILLA_HASH" "$MODDED_BINARY_PATH"
-    else
-        echo "⚠️ No existing binary to report - servers may be blocked until Norden recovers"
-    fi
-fi
-
-rm -f "$RESPONSE_FILE"
-
-# =============================================================================
-# Step 4: Send heartbeat
-# =============================================================================
+# ─── Step 3: Patch Linux Binary ──────────────────────────────────────────────
 
 echo ""
 echo "=========================================="
-echo "Step 3: Heartbeat"
+echo "Step 3: Patching Linux Binary"
+echo "=========================================="
+
+LINUX_MODDED_HASH=""
+if [ "$LINUX_OK" == "true" ]; then
+    LINUX_OUTPUT="${LINUX_PATCHED}/TheIsleServer-Linux-Shipping"
+    LINUX_REPORT="${LINUX_PATCHED}/patch_report_linux.json"
+
+    run_patcher "$LINUX_BINARY" "$LINUX_OUTPUT" "$LINUX_REPORT"
+    PATCH_EXIT=$?
+
+    if [ $PATCH_EXIT -eq 0 ]; then
+        chmod +x "$LINUX_OUTPUT"
+        LINUX_MODDED_HASH=$(get_file_hash "$LINUX_OUTPUT")
+        echo "✅ Linux patch successful. Modded hash: ${LINUX_MODDED_HASH:0:16}..."
+
+        report_hash "report-modded" "$LINUX_MODDED_HASH" "linux"
+        upload_binary "linux" "$LINUX_VANILLA_HASH" "$LINUX_OUTPUT"
+    else
+        echo "❌ Linux patch FAILED (exit $PATCH_EXIT). See report:"
+        if [ -f "$LINUX_REPORT" ]; then
+            cat "$LINUX_REPORT"
+        fi
+        echo ""
+        echo "⚠️ Signature may have changed. Manual re-discovery needed."
+    fi
+else
+    echo "⏭️ Skipping — Linux vanilla not available"
+fi
+
+# ─── Step 4: Patch Windows Binary ────────────────────────────────────────────
+
+echo ""
+echo "=========================================="
+echo "Step 4: Patching Windows Binary"
+echo "=========================================="
+
+WINDOWS_MODDED_HASH=""
+if [ "$WINDOWS_OK" == "true" ]; then
+    WINDOWS_OUTPUT="${WINDOWS_PATCHED}/TheIsleServer-Win64-Shipping.exe"
+    WINDOWS_REPORT="${WINDOWS_PATCHED}/patch_report_windows.json"
+
+    run_patcher "$WINDOWS_BINARY" "$WINDOWS_OUTPUT" "$WINDOWS_REPORT"
+    PATCH_EXIT=$?
+
+    if [ $PATCH_EXIT -eq 0 ]; then
+        WINDOWS_MODDED_HASH=$(get_file_hash "$WINDOWS_OUTPUT")
+        echo "✅ Windows patch successful. Modded hash: ${WINDOWS_MODDED_HASH:0:16}..."
+
+        report_hash "report-modded" "$WINDOWS_MODDED_HASH" "windows"
+        upload_binary "windows" "$WINDOWS_VANILLA_HASH" "$WINDOWS_OUTPUT"
+    else
+        echo "❌ Windows patch FAILED (exit $PATCH_EXIT). See report:"
+        if [ -f "$WINDOWS_REPORT" ]; then
+            cat "$WINDOWS_REPORT"
+        fi
+        echo ""
+        echo "⚠️ Signature may have changed. Manual re-discovery needed."
+    fi
+else
+    echo "⏭️ Skipping — Windows vanilla not available"
+fi
+
+# ─── Step 5: Heartbeat ───────────────────────────────────────────────────────
+
+echo ""
+echo "=========================================="
+echo "Step 5: Heartbeat"
 echo "=========================================="
 
 send_heartbeat
 
-# =============================================================================
-# Done
-# =============================================================================
+# ─── Summary ──────────────────────────────────────────────────────────────────
 
 echo ""
 echo "=========================================="
-echo "Update check complete!"
-echo "$(date '+%Y-%m-%d %H:%M:%S')"
+echo "Update Checker Summary"
+echo "=========================================="
+echo "Linux  vanilla : ${LINUX_VANILLA_HASH:-(not available)}"
+echo "Linux  modded  : ${LINUX_MODDED_HASH:-(not patched)}"
+echo "Linux  changed : ${LINUX_CHANGED:-N/A}"
+echo "Windows vanilla: ${WINDOWS_VANILLA_HASH:-(not available)}"
+echo "Windows modded : ${WINDOWS_MODDED_HASH:-(not patched)}"
+echo "Windows changed: ${WINDOWS_CHANGED:-N/A}"
+echo ""
+echo "$(date '+%Y-%m-%d %H:%M:%S') — Done."
 echo "=========================================="
 echo "Sleeping until next scheduled restart..."
 
-# Sleep indefinitely - the Pterodactyl schedule will restart us
-# This prevents crash detection from triggering
 sleep infinity

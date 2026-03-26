@@ -1,0 +1,20 @@
+{
+  "platform": "windows",
+  "description": "The Isle server patch rules for PE binaries",
+  "patches": [
+    {
+      "name": "branch_flip_signature_gate",
+      "pattern": "39 78 08 0F ?? 7D 00 00 00 48 8B 08 48 85 C9 74 75 48 8B 01 FF 50 30 84 C0",
+      "patch_offset": 4,
+      "original": "84",
+      "patched": "85"
+    },
+    {
+      "name": "nop_init_flag_write",
+      "pattern": "48 8B 01 FF 50 30 84 C0 74 04 B0 01 EB 02 32 C0 ?? ?? ?? 48 8B 1D ?? ?? ?? ?? 4C 8B 35 ?? ?? ?? ??",
+      "patch_offset": 16,
+      "original": "88 47 30",
+      "patched": "90 90 90"
+    }
+  ]
+}
