@@ -1,0 +1,81 @@
+{
+    "meta": {
+        "version": "PTDL_v2",
+        "update_url": null
+    },
+    "exported_at": "2026-05-27T00:00:00+00:00",
+    "name": "DeathMatch",
+    "author": "ice@primalheaven.com",
+    "description": "Legacy The Isle deathmatch dedicated server (app 1020410, non-Evrima). No Steam beta branch.",
+    "features": null,
+    "docker_images": {
+        "ghcr.io/icetrahan/isles:deathmatch": "ghcr.io/icetrahan/isles:deathmatch"
+    },
+    "file_denylist": [],
+    "startup": "/bin/bash /entrypoint.sh",
+    "config": {
+        "files": "{\r\n    \"TheIsle/Saved/Config/LinuxServer/Game.ini\": {\r\n        \"parser\": \"file\",\r\n        \"find\": {}\r\n    }\r\n}",
+        "startup": "{\r\n    \"done\": \"LogTheIsle: Display:\"\r\n}",
+        "logs": "{}",
+        "stop": "^C"
+    },
+    "scripts": {
+        "installation": {
+            "script": "#!/bin/bash\r\n# Legacy Isle (1020410) — no Evrima beta\r\napt-get update\r\napt-get install -y curl wget file tar lib32gcc-s1\r\n\r\nmkdir -p /mnt/server/steamcmd\r\ncd /mnt/server/steamcmd\r\ncurl -sqL \"https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz\" | tar zxvf -\r\nmkdir -p /mnt/server/steamapps\r\n\r\nexport HOME=/mnt/server\r\ncd /mnt/server/steamcmd\r\n\r\nSTEAM_USER=${STEAM_USER:-anonymous}\r\nSTEAM_PASS=${STEAM_PASS:-}\r\nSRCDS_APPID=${SRCDS_APPID:-1020410}\r\n\r\n./steamcmd.sh +force_install_dir /mnt/server +login \"${STEAM_USER}\" \"${STEAM_PASS}\" +app_update \"${SRCDS_APPID}\" validate +quit\r\n\r\nmkdir -p /mnt/server/.steam/sdk64\r\nif [ -f /mnt/server/Steam/steamapps/common/Steamworks\\ SDK\\ Redist/linux64/steamclient.so ]; then\r\n    cp /mnt/server/Steam/steamapps/common/Steamworks\\ SDK\\ Redist/linux64/steamclient.so /mnt/server/.steam/sdk64/steamclient.so\r\nfi\r\n\r\necho \"Legacy Isle install complete\"",
+            "container": "ghcr.io/icetrahan/isles:deathmatch",
+            "entrypoint": "bash"
+        }
+    },
+    "variables": [
+        {
+            "name": "Steam App ID",
+            "description": "Legacy The Isle dedicated server (do not use Evrima beta)",
+            "env_variable": "SRCDS_APPID",
+            "default_value": "1020410",
+            "user_viewable": true,
+            "user_editable": false,
+            "rules": "required|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Auto Update",
+            "description": "Run SteamCMD update on each server start",
+            "env_variable": "AUTO_UPDATE",
+            "default_value": "1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|boolean",
+            "field_type": "text"
+        },
+        {
+            "name": "Steam User",
+            "description": "Steam username for SteamCMD (anonymous for dedicated server)",
+            "env_variable": "STEAM_USER",
+            "default_value": "anonymous",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Steam Password",
+            "description": "Steam password (leave empty for anonymous)",
+            "env_variable": "STEAM_PASS",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Startup Command",
+            "description": "Leave empty to use the default legacy Isle binary and ports",
+            "env_variable": "STARTUP",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string",
+            "field_type": "text"
+        }
+    ]
+}

@@ -22,12 +22,24 @@
 # SOFTWARE.
 #
 
+# Primal Isles — Legacy Deathmatch (non-Evrima)
+# Steam app 1020410, public branch only (no -beta evrima).
+
 # Wait for the container to fully initialize
 sleep 1
 
 # Default the TZ environment variable to UTC.
 TZ=${TZ:-UTC}
 export TZ
+
+# Legacy Isle dedicated server (not Evrima)
+SRCDS_APPID=${SRCDS_APPID:-1020410}
+export SRCDS_APPID
+
+if [ -n "${SRCDS_BETAID}" ] || [ -n "${SRCDS_BETAPASS}" ] || [ "${STEAM_BETA}" = "evrima" ]; then
+    echo "⚠️  Beta branch variables ignored — this egg installs legacy Isle only (no Evrima)"
+fi
+unset SRCDS_BETAID SRCDS_BETAPASS STEAM_BETA
 
 # Set environment variable that holds the Internal Docker IP
 INTERNAL_IP=$(ip route get 1 | awk '{print $(NF-2);exit}')
@@ -65,13 +77,14 @@ else
 fi
 
 ## if auto_update is not set or to 1 update
-if [ -z ${AUTO_UPDATE} ] || [ "${AUTO_UPDATE}" == "1" ]; then 
-    # Update Source Server
+if [ -z ${AUTO_UPDATE} ] || [ "${AUTO_UPDATE}" == "1" ]; then
+    # Update legacy Isle dedicated server (no Steam beta branch)
     if [ ! -z ${SRCDS_APPID} ]; then
+        echo -e "Updating legacy Isle (app ${SRCDS_APPID}, no beta)..."
 	    if [ "${STEAM_USER}" == "anonymous" ]; then
-            ./steamcmd/steamcmd.sh +force_install_dir /home/container +login ${STEAM_USER} ${STEAM_PASS} ${STEAM_AUTH} $( [[ "${WINDOWS_INSTALL}" == "1" ]] && printf %s '+@sSteamCmdForcePlatformType windows' ) +app_update 1007 +app_update ${SRCDS_APPID} $( [[ -z ${SRCDS_BETAID} ]] || printf %s "-beta ${SRCDS_BETAID}" ) $( [[ -z ${SRCDS_BETAPASS} ]] || printf %s "-betapassword ${SRCDS_BETAPASS}" ) $( [[ -z ${HLDS_GAME} ]] || printf %s "+app_set_config 90 mod ${HLDS_GAME}" )  ${INSTALL_FLAGS} $( [[ "${VALIDATE}" == "1" ]] && printf %s 'validate' ) +quit
+            ./steamcmd/steamcmd.sh +force_install_dir /home/container +login ${STEAM_USER} ${STEAM_PASS} ${STEAM_AUTH} +app_update ${SRCDS_APPID} validate +quit
 	    else
-            ./steamcmd/steamcmd.sh +force_install_dir /home/container +login ${STEAM_USER} ${STEAM_PASS} ${STEAM_AUTH} $( [[ "${WINDOWS_INSTALL}" == "1" ]] && printf %s '+@sSteamCmdForcePlatformType windows' ) +app_update 1007 +app_update ${SRCDS_APPID} $( [[ -z ${SRCDS_BETAID} ]] || printf %s "-beta ${SRCDS_BETAID}" ) $( [[ -z ${SRCDS_BETAPASS} ]] || printf %s "-betapassword ${SRCDS_BETAPASS}" ) $( [[ -z ${HLDS_GAME} ]] || printf %s "+app_set_config 90 mod ${HLDS_GAME}" ) ${INSTALL_FLAGS} $( [[ "${VALIDATE}" == "1" ]] && printf %s 'validate' ) +quit
+            ./steamcmd/steamcmd.sh +force_install_dir /home/container +login ${STEAM_USER} ${STEAM_PASS} ${STEAM_AUTH} +app_update ${SRCDS_APPID} validate +quit
 	    fi
     else
         echo -e "No appid set. Starting Server"
@@ -81,7 +94,10 @@ else
     echo -e "Not updating game server as auto update was set to 0. Starting Server"
 fi
 
-
+# Default startup for legacy Linux dedicated server
+if [ -z "${STARTUP}" ]; then
+    export STARTUP="/home/container/TheIsle/Binaries/Linux/TheIsleServer-Linux-Shipping -QueryPort=${SERVER_PORT} -Port=${SERVER_PORT} -ini:Engine:[EpicOnlineServices]:DedicatedServerClientId=xyza7891gk5PRo3J7G9puCJGFJjmEguW -ini:Engine:[EpicOnlineServices]:DedicatedServerClientSecret=pKWl6t5i9NJK8gTpVlAxzENZ65P8hYzodV8Dqe5Rlc8"
+fi
 
 # Replace Startup Variables
 MODIFIED_STARTUP=$(echo ${STARTUP} | sed -e 's/{{/${/g' -e 's/}}/}/g')
