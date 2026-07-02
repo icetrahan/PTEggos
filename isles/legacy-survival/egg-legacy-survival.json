@@ -1,0 +1,312 @@
+{
+    "_comment": "DO NOT EDIT: FILE GENERATED FOR PTERODACTYL PANEL - PTDL_v2",
+    "meta": {
+        "version": "PTDL_v2",
+        "update_url": null
+    },
+    "exported_at": "2026-06-16T00:00:00+00:00",
+    "name": "Legacy Survival",
+    "author": "ice@primalheaven.com",
+    "description": "Legacy The Isle survival dedicated server (Steam app 1020410, non-Evrima). Generates Game.ini from panel variables.",
+    "features": [],
+    "docker_images": {
+        "ghcr.io/icetrahan/isles:legacy-survival": "ghcr.io/icetrahan/isles:legacy-survival"
+    },
+    "file_denylist": [],
+    "startup": "bash /entrypoint.sh",
+    "config": {
+        "files": "{}",
+        "startup": "{\"done\": \"LogTheIsle: Display:\"}",
+        "logs": "{}",
+        "stop": "^C"
+    },
+    "scripts": {
+        "installation": {
+            "script": "#!/bin/bash\n# Legacy Isle Survival (1020410) - no Evrima beta\nif [[ \"${STEAM_USER}\" == \"\" ]] || [[ \"${STEAM_PASS}\" == \"\" ]]; then\n    echo -e \"steam user is not set.\\n\"\n    echo -e \"Using anonymous user.\\n\"\n    STEAM_USER=anonymous\n    STEAM_PASS=\"\"\n    STEAM_AUTH=\"\"\nelse\n    echo -e \"user set to ${STEAM_USER}\"\nfi\n\ncd /tmp\nmkdir -p /mnt/server/steamcmd\ncurl -sSL -o steamcmd.tar.gz https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz\ntar -xzvf steamcmd.tar.gz -C /mnt/server/steamcmd\nmkdir -p /mnt/server/steamapps\ncd /mnt/server/steamcmd\nchown -R root:root /mnt\nexport HOME=/mnt/server\n\nSRCDS_APPID=${SRCDS_APPID:-1020410}\n./steamcmd.sh +force_install_dir /mnt/server +login ${STEAM_USER} ${STEAM_PASS} ${STEAM_AUTH} +app_update ${SRCDS_APPID} validate +quit\n\nmkdir -p /mnt/server/.steam/sdk32\ncp -v linux32/steamclient.so ../.steam/sdk32/steamclient.so 2>/dev/null || true\nmkdir -p /mnt/server/.steam/sdk64\ncp -v linux64/steamclient.so ../.steam/sdk64/steamclient.so 2>/dev/null || true\n\nmkdir -p /mnt/server/TheIsle/Saved/Config/LinuxServer\necho \"Legacy Isle survival install complete\"",
+            "container": "ghcr.io/parkervcp/installers:debian",
+            "entrypoint": "bash"
+        }
+    },
+    "variables": [
+        {
+            "name": "Steam App ID",
+            "description": "Legacy The Isle dedicated server (do not use Evrima beta)",
+            "env_variable": "SRCDS_APPID",
+            "default_value": "1020410",
+            "user_viewable": true,
+            "user_editable": false,
+            "rules": "required|string|in:1020410",
+            "field_type": "text"
+        },
+        {
+            "name": "Auto Update",
+            "description": "Run SteamCMD update on each server start (1=yes, 0=no)",
+            "env_variable": "AUTO_UPDATE",
+            "default_value": "1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:0,1",
+            "field_type": "text"
+        },
+        {
+            "name": "Steam User",
+            "description": "Steam username for SteamCMD (anonymous for dedicated server)",
+            "env_variable": "STEAM_USER",
+            "default_value": "anonymous",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Steam Password",
+            "description": "Steam password (leave empty for anonymous)",
+            "env_variable": "STEAM_PASS",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Server Name",
+            "description": "Display name shown in the server browser",
+            "env_variable": "SERVER_NAME",
+            "default_value": "The Isle Legacy Server",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|max:128",
+            "field_type": "text"
+        },
+        {
+            "name": "Map",
+            "description": "Legacy map to load (isle_v3, isle_v4, region2, region2_redwoods, dv_testlevel, thenyaw)",
+            "env_variable": "MAP",
+            "default_value": "thenyaw",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:isle_v3,isle_v4,region2,region2_redwoods,dv_testlevel,thenyaw",
+            "field_type": "text"
+        },
+        {
+            "name": "Max Players",
+            "description": "Maximum player count (also written to Game.ini and startup URL)",
+            "env_variable": "MAX_PLAYERS",
+            "default_value": "125",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:1,200",
+            "field_type": "text"
+        },
+        {
+            "name": "Query Port",
+            "description": "Steam query port. Leave empty to use the primary server port. Allocate a second port in the panel if you need a separate query port.",
+            "env_variable": "QUERY_PORT",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|integer|between:1024,65535",
+            "field_type": "text"
+        },
+        {
+            "name": "Server Password",
+            "description": "Server join password (leave empty for no password)",
+            "env_variable": "SERVER_PASSWORD",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:64",
+            "field_type": "text"
+        },
+        {
+            "name": "Global Chat",
+            "description": "Enable global chat (bServerGlobalChat)",
+            "env_variable": "B_SERVER_GLOBAL_CHAT",
+            "default_value": "true",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:0,1,true,false",
+            "field_type": "text"
+        },
+        {
+            "name": "Server AI",
+            "description": "Enable server AI (bServerAI)",
+            "env_variable": "B_SERVER_AI",
+            "default_value": "true",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:0,1,true,false",
+            "field_type": "text"
+        },
+        {
+            "name": "Server AI Max",
+            "description": "Maximum AI count (ServerAIMax)",
+            "env_variable": "SERVER_AI_MAX",
+            "default_value": "100",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:0,500",
+            "field_type": "text"
+        },
+        {
+            "name": "Server AI Rate",
+            "description": "AI spawn rate multiplier (ServerAIRate)",
+            "env_variable": "SERVER_AI_RATE",
+            "default_value": "1.5",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|numeric|min:0|max:10",
+            "field_type": "text"
+        },
+        {
+            "name": "AI Player Spawns",
+            "description": "Allow AI at player spawn areas (bServerAIPlayerSpawns)",
+            "env_variable": "B_SERVER_AI_PLAYER_SPAWNS",
+            "default_value": "true",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:0,1,true,false",
+            "field_type": "text"
+        },
+        {
+            "name": "Growth",
+            "description": "Enable growth (bServerGrowth)",
+            "env_variable": "B_SERVER_GROWTH",
+            "default_value": "true",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:0,1,true,false",
+            "field_type": "text"
+        },
+        {
+            "name": "Nesting",
+            "description": "Enable nesting (bServerNesting)",
+            "env_variable": "B_SERVER_NESTING",
+            "default_value": "true",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:0,1,true,false",
+            "field_type": "text"
+        },
+        {
+            "name": "Scent",
+            "description": "Enable scent tracking (bServerScent)",
+            "env_variable": "B_SERVER_SCENT",
+            "default_value": "false",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:0,1,true,false",
+            "field_type": "text"
+        },
+        {
+            "name": "Allow Turn In Place",
+            "description": "Allow turn-in-place (bServerAllowTurnInPlace)",
+            "env_variable": "B_SERVER_ALLOW_TURN_IN_PLACE",
+            "default_value": "false",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:0,1,true,false",
+            "field_type": "text"
+        },
+        {
+            "name": "Fall Damage",
+            "description": "Enable fall damage (bServerFallDamage)",
+            "env_variable": "B_SERVER_FALL_DAMAGE",
+            "default_value": "true",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:0,1,true,false",
+            "field_type": "text"
+        },
+        {
+            "name": "Replay Recording",
+            "description": "Allow replay recording (bServerAllowReplayRecording)",
+            "env_variable": "B_SERVER_ALLOW_REPLAY_RECORDING",
+            "default_value": "true",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:0,1,true,false",
+            "field_type": "text"
+        },
+        {
+            "name": "Dead Body Time",
+            "description": "Corpse despawn time in seconds (ServerDeadBodyTime)",
+            "env_variable": "SERVER_DEAD_BODY_TIME",
+            "default_value": "1200",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|min:0",
+            "field_type": "text"
+        },
+        {
+            "name": "Respawn Time",
+            "description": "Respawn cooldown in seconds (ServerRespawnTime)",
+            "env_variable": "SERVER_RESPAWN_TIME",
+            "default_value": "5",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|min:0",
+            "field_type": "text"
+        },
+        {
+            "name": "Logout Time",
+            "description": "Safe logout timer in seconds (ServerLogoutTime)",
+            "env_variable": "SERVER_LOGOUT_TIME",
+            "default_value": "26",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|min:0",
+            "field_type": "text"
+        },
+        {
+            "name": "Discord Invite Code",
+            "description": "Discord invite code only (e.g. VupCCzV for discord.gg/VupCCzV)",
+            "env_variable": "SERVER_DISCORD",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:64",
+            "field_type": "text"
+        },
+        {
+            "name": "Server Admins",
+            "description": "Steam64 IDs, one per line or comma-separated",
+            "env_variable": "SERVER_ADMINS",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Day Length",
+            "description": "In-game day length in minutes (ServerDayLength)",
+            "env_variable": "SERVER_DAY_LENGTH",
+            "default_value": "30",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|min:1",
+            "field_type": "text"
+        },
+        {
+            "name": "Starting Time",
+            "description": "Server starting time of day (ServerStartingTime, 0-1439)",
+            "env_variable": "SERVER_STARTING_TIME",
+            "default_value": "341",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:0,1439",
+            "field_type": "text"
+        },
+        {
+            "name": "Dynamic Time Of Day",
+            "description": "Enable dynamic time of day (bServerDynamicTimeOfDay, 0=off 1=on)",
+            "env_variable": "B_SERVER_DYNAMIC_TIME_OF_DAY",
+            "default_value": "0",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:0,1",
+            "field_type": "text"
+        }
+    ]
+}
