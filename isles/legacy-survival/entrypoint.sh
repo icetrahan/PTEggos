@@ -23,20 +23,26 @@
 #
 
 # Primal Isles — Legacy Survival (non-Evrima)
-# Steam app 1020410, public branch only (no -beta evrima).
+# The Isle Dedicated Server = Steam app 412680.
+# Legacy lives on the DEFAULT "public" branch; Evrima is -beta evrima.
+# We pin -beta public and refuse evrima so this never pulls the Evrima build.
 
 sleep 1
 
 TZ=${TZ:-UTC}
 export TZ
 
-SRCDS_APPID=${SRCDS_APPID:-1020410}
+SRCDS_APPID=${SRCDS_APPID:-412680}
 export SRCDS_APPID
 
-if [ -n "${SRCDS_BETAID}" ] || [ -n "${SRCDS_BETAPASS}" ] || [ "${STEAM_BETA}" = "evrima" ]; then
-    echo "⚠️  Beta branch variables ignored — this egg installs legacy Isle only (no Evrima)"
+# Force the Legacy (public) branch. Ignore any Evrima override.
+STEAM_BRANCH=${STEAM_BRANCH:-public}
+if [ "${STEAM_BRANCH}" = "evrima" ] || [ "${SRCDS_BETAID}" = "evrima" ]; then
+    echo "⚠️  Evrima branch requested but this egg installs Legacy only — forcing 'public'"
+    STEAM_BRANCH=public
 fi
 unset SRCDS_BETAID SRCDS_BETAPASS STEAM_BETA
+export STEAM_BRANCH
 
 INTERNAL_IP=$(ip route get 1 | awk '{print $(NF-2);exit}')
 export INTERNAL_IP
@@ -70,8 +76,8 @@ fi
 
 if [ -z ${AUTO_UPDATE} ] || [ "${AUTO_UPDATE}" == "1" ]; then
     if [ ! -z ${SRCDS_APPID} ]; then
-        echo -e "Updating legacy Isle (app ${SRCDS_APPID}, no beta)..."
-        ./steamcmd/steamcmd.sh +force_install_dir /home/container +login ${STEAM_USER} ${STEAM_PASS} ${STEAM_AUTH} +app_update ${SRCDS_APPID} validate +quit
+        echo -e "Updating Legacy Isle (app ${SRCDS_APPID}, -beta ${STEAM_BRANCH})..."
+        ./steamcmd/steamcmd.sh +force_install_dir /home/container +login ${STEAM_USER} ${STEAM_PASS} ${STEAM_AUTH} +app_update ${SRCDS_APPID} -beta ${STEAM_BRANCH} validate +quit
     else
         echo -e "No appid set. Starting Server"
     fi

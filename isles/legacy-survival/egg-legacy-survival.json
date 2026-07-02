@@ -7,7 +7,7 @@
     "exported_at": "2026-06-16T00:00:00+00:00",
     "name": "Legacy Survival",
     "author": "ice@primalheaven.com",
-    "description": "Legacy The Isle survival dedicated server (Steam app 1020410, non-Evrima). Generates Game.ini from panel variables.",
+    "description": "Legacy The Isle survival dedicated server (Steam app 412680, 'public' branch = Legacy, NOT Evrima). Generates Game.ini from panel variables.",
     "features": [],
     "docker_images": {
         "ghcr.io/icetrahan/isles:legacy-survival": "ghcr.io/icetrahan/isles:legacy-survival"
@@ -22,7 +22,7 @@
     },
     "scripts": {
         "installation": {
-            "script": "#!/bin/bash\n# Legacy Isle Survival (1020410) - no Evrima beta\nif [[ \"${STEAM_USER}\" == \"\" ]] || [[ \"${STEAM_PASS}\" == \"\" ]]; then\n    echo -e \"steam user is not set.\\n\"\n    echo -e \"Using anonymous user.\\n\"\n    STEAM_USER=anonymous\n    STEAM_PASS=\"\"\n    STEAM_AUTH=\"\"\nelse\n    echo -e \"user set to ${STEAM_USER}\"\nfi\n\ncd /tmp\nmkdir -p /mnt/server/steamcmd\ncurl -sSL -o steamcmd.tar.gz https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz\ntar -xzvf steamcmd.tar.gz -C /mnt/server/steamcmd\nmkdir -p /mnt/server/steamapps\ncd /mnt/server/steamcmd\nchown -R root:root /mnt\nexport HOME=/mnt/server\n\nSRCDS_APPID=${SRCDS_APPID:-1020410}\n./steamcmd.sh +force_install_dir /mnt/server +login ${STEAM_USER} ${STEAM_PASS} ${STEAM_AUTH} +app_update ${SRCDS_APPID} validate +quit\n\nmkdir -p /mnt/server/.steam/sdk32\ncp -v linux32/steamclient.so ../.steam/sdk32/steamclient.so 2>/dev/null || true\nmkdir -p /mnt/server/.steam/sdk64\ncp -v linux64/steamclient.so ../.steam/sdk64/steamclient.so 2>/dev/null || true\n\nmkdir -p /mnt/server/TheIsle/Saved/Config/LinuxServer\necho \"Legacy Isle survival install complete\"",
+            "script": "#!/bin/bash\n# Legacy Isle Survival - The Isle Dedicated Server app 412680, 'public' branch (Legacy, NOT Evrima)\nif [[ \"${STEAM_USER}\" == \"\" ]] || [[ \"${STEAM_PASS}\" == \"\" ]]; then\n    echo -e \"steam user is not set.\\n\"\n    echo -e \"Using anonymous user.\\n\"\n    STEAM_USER=anonymous\n    STEAM_PASS=\"\"\n    STEAM_AUTH=\"\"\nelse\n    echo -e \"user set to ${STEAM_USER}\"\nfi\n\ncd /tmp\nmkdir -p /mnt/server/steamcmd\ncurl -sSL -o steamcmd.tar.gz https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz\ntar -xzvf steamcmd.tar.gz -C /mnt/server/steamcmd\nmkdir -p /mnt/server/steamapps\ncd /mnt/server/steamcmd\nchown -R root:root /mnt\nexport HOME=/mnt/server\n\n# Legacy = default 'public' branch of 412680. Evrima is -beta evrima, which we never use here.\nSRCDS_APPID=${SRCDS_APPID:-412680}\nSTEAM_BRANCH=${STEAM_BRANCH:-public}\n./steamcmd.sh +force_install_dir /mnt/server +login ${STEAM_USER} ${STEAM_PASS} ${STEAM_AUTH} +app_update ${SRCDS_APPID} -beta ${STEAM_BRANCH} validate +quit\n\nmkdir -p /mnt/server/.steam/sdk32\ncp -v linux32/steamclient.so ../.steam/sdk32/steamclient.so 2>/dev/null || true\nmkdir -p /mnt/server/.steam/sdk64\ncp -v linux64/steamclient.so ../.steam/sdk64/steamclient.so 2>/dev/null || true\n\nmkdir -p /mnt/server/TheIsle/Saved/Config/LinuxServer\necho \"Legacy Isle survival install complete\"",
             "container": "ghcr.io/parkervcp/installers:debian",
             "entrypoint": "bash"
         }
@@ -30,12 +30,22 @@
     "variables": [
         {
             "name": "Steam App ID",
-            "description": "Legacy The Isle dedicated server (do not use Evrima beta)",
+            "description": "The Isle Dedicated Server app id (412680). Legacy is the default 'public' branch; do not change.",
             "env_variable": "SRCDS_APPID",
-            "default_value": "1020410",
+            "default_value": "412680",
             "user_viewable": true,
             "user_editable": false,
-            "rules": "required|string|in:1020410",
+            "rules": "required|string|in:412680",
+            "field_type": "text"
+        },
+        {
+            "name": "Steam Branch",
+            "description": "SteamCMD branch. 'public' = Legacy build. Do NOT set to 'evrima' (this egg forces public).",
+            "env_variable": "STEAM_BRANCH",
+            "default_value": "public",
+            "user_viewable": true,
+            "user_editable": false,
+            "rules": "required|string|in:public",
             "field_type": "text"
         },
         {
