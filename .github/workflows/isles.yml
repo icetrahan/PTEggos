@@ -30,6 +30,7 @@ jobs:
           - deathmatch
           - survival
           - legacy-survival
+          - evrima-survival
 
     steps:
       - name: Checkout repository

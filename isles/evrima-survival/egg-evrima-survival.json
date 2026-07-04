@@ -10,7 +10,7 @@
     "description": "The Isle EVRIMA survival dedicated server (Steam app 412680, 'evrima' branch). Generates Game.ini from panel variables on every boot, fetches game + modded-binary updates from Primal infrastructure only, and preserves customer Engine.ini lines outside the Primal managed block.",
     "features": [],
     "docker_images": {
-        "ghcr.io/icetrahan/isles:survival": "ghcr.io/icetrahan/isles:survival"
+        "ghcr.io/icetrahan/isles:evrima-survival": "ghcr.io/icetrahan/isles:evrima-survival"
     },
     "file_denylist": [],
     "startup": "bash /entrypoint.sh",
