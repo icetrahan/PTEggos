@@ -1,0 +1,492 @@
+{
+    "_comment": "DO NOT EDIT: FILE GENERATED FOR PTERODACTYL PANEL - PTDL_v2",
+    "meta": {
+        "version": "PTDL_v2",
+        "update_url": null
+    },
+    "exported_at": "2026-07-04T00:00:00+00:00",
+    "name": "Evrima Survival (Primal Hosted)",
+    "author": "ice@primalheaven.com",
+    "description": "The Isle EVRIMA survival dedicated server (Steam app 412680, 'evrima' branch). Generates Game.ini from panel variables on every boot, fetches game + modded-binary updates from Primal infrastructure only, and preserves customer Engine.ini lines outside the Primal managed block.",
+    "features": [],
+    "docker_images": {
+        "ghcr.io/icetrahan/isles:survival": "ghcr.io/icetrahan/isles:survival"
+    },
+    "file_denylist": [],
+    "startup": "bash /entrypoint.sh",
+    "config": {
+        "files": "{}",
+        "startup": "{\"done\": \"LogTheIsle\"}",
+        "logs": "{}",
+        "stop": "^C"
+    },
+    "scripts": {
+        "installation": {
+            "script": "#!/bin/bash\n# Evrima Survival - The Isle Dedicated Server app 412680, 'evrima' beta branch\nif [[ \"${STEAM_USER}\" == \"\" ]] || [[ \"${STEAM_PASS}\" == \"\" ]]; then\n    echo -e \"steam user is not set.\\n\"\n    echo -e \"Using anonymous user.\\n\"\n    STEAM_USER=anonymous\n    STEAM_PASS=\"\"\n    STEAM_AUTH=\"\"\nelse\n    echo -e \"user set to ${STEAM_USER}\"\nfi\n\ncd /tmp\nmkdir -p /mnt/server/steamcmd\ncurl -sSL -o steamcmd.tar.gz https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz\ntar -xzvf steamcmd.tar.gz -C /mnt/server/steamcmd\nmkdir -p /mnt/server/steamapps\ncd /mnt/server/steamcmd\nchown -R root:root /mnt\nexport HOME=/mnt/server\n\n# Evrima = 'evrima' beta branch of app 412680 (the default 'public' branch is Legacy).\nSRCDS_APPID=${SRCDS_APPID:-412680}\nSTEAM_BRANCH=${STEAM_BRANCH:-evrima}\n./steamcmd.sh +force_install_dir /mnt/server +login ${STEAM_USER} ${STEAM_PASS} ${STEAM_AUTH} +app_update ${SRCDS_APPID} -beta ${STEAM_BRANCH} validate +quit\n\nmkdir -p /mnt/server/.steam/sdk32\ncp -v linux32/steamclient.so ../.steam/sdk32/steamclient.so 2>/dev/null || true\nmkdir -p /mnt/server/.steam/sdk64\ncp -v linux64/steamclient.so ../.steam/sdk64/steamclient.so 2>/dev/null || true\n\nmkdir -p /mnt/server/TheIsle/Saved/Config/LinuxServer\necho \"Evrima survival install complete\"",
+            "container": "ghcr.io/parkervcp/installers:debian",
+            "entrypoint": "bash"
+        }
+    },
+    "variables": [
+        {
+            "name": "Steam App ID",
+            "description": "The Isle Dedicated Server app id (412680). Do not change.",
+            "env_variable": "SRCDS_APPID",
+            "default_value": "412680",
+            "user_viewable": true,
+            "user_editable": false,
+            "rules": "required|string|in:412680",
+            "field_type": "text"
+        },
+        {
+            "name": "Steam Branch",
+            "description": "SteamCMD branch. 'evrima' = Evrima build. Do NOT change (the 'public' branch is Legacy).",
+            "env_variable": "STEAM_BRANCH",
+            "default_value": "evrima",
+            "user_viewable": true,
+            "user_editable": false,
+            "rules": "required|string|in:evrima",
+            "field_type": "text"
+        },
+        {
+            "name": "Auto Update",
+            "description": "Run SteamCMD update on each server start (1=yes, 0=no)",
+            "env_variable": "AUTO_UPDATE",
+            "default_value": "1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:0,1",
+            "field_type": "text"
+        },
+        {
+            "name": "Steam User",
+            "description": "Steam username for SteamCMD (anonymous for dedicated server)",
+            "env_variable": "STEAM_USER",
+            "default_value": "anonymous",
+            "user_viewable": true,
+            "user_editable": false,
+            "rules": "required|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Primal API Base URL",
+            "description": "Primal backend used for the update gate and modded-binary distribution.",
+            "env_variable": "API_BASE_URL",
+            "default_value": "https://api.primalheaven.com",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "required|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Primal API Key",
+            "description": "API key for the Primal backend (platform-managed).",
+            "env_variable": "API_KEY",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "nullable|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Primal Server ID",
+            "description": "Unique server id in the Primal update manager (platform-managed).",
+            "env_variable": "SERVER_ID",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "nullable|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Panel Name",
+            "description": "Which panel this server belongs to (platform-managed).",
+            "env_variable": "PANEL_NAME",
+            "default_value": "primal",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "required|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Update Gate",
+            "description": "Ask the backend for permission to start (blocks while mod lags a vanilla update). 1=on, 0=off.",
+            "env_variable": "UPDATE_GATE",
+            "default_value": "1",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "required|string|in:0,1",
+            "field_type": "text"
+        },
+        {
+            "name": "Modded Binary",
+            "description": "Fetch the Primal modded server binary (1=on, 0=vanilla).",
+            "env_variable": "MODDED_BINARY",
+            "default_value": "1",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "required|string|in:0,1",
+            "field_type": "text"
+        },
+        {
+            "name": "Mod Required",
+            "description": "If 1, the server refuses to start without a verified modded binary.",
+            "env_variable": "MOD_REQUIRED",
+            "default_value": "1",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "required|string|in:0,1",
+            "field_type": "text"
+        },
+        {
+            "name": "Manage Game.ini",
+            "description": "Regenerate Game.ini from these panel variables on every boot (1=on). Set 0 only for manual-config debugging.",
+            "env_variable": "MANAGE_GAME_INI",
+            "default_value": "1",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "required|string|in:0,1",
+            "field_type": "text"
+        },
+        {
+            "name": "EOS Client Id",
+            "description": "Epic Online Services dedicated-server client id (platform-managed).",
+            "env_variable": "EOS_CLIENT_ID",
+            "default_value": "xyza7891gk5PRo3J7G9puCJGFJjmEguW",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "required|string",
+            "field_type": "text"
+        },
+        {
+            "name": "EOS Client Secret",
+            "description": "Epic Online Services dedicated-server client secret (platform-managed).",
+            "env_variable": "EOS_CLIENT_SECRET",
+            "default_value": "pKWl6t5i9NJK8gTpVlAxzENZ65P8hYzodV8Dqe5Rlc8",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "required|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Stats API Base",
+            "description": "If set, writes the GSV stats-dumper endpoints (pstats/astats/nstats/gstats) into the Primal managed block of Engine.ini (platform-managed).",
+            "env_variable": "STATS_API_BASE",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "nullable|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Server Name",
+            "description": "Display name shown in the server browser",
+            "env_variable": "SERVER_NAME",
+            "default_value": "Primal Hosted Evrima Server",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|max:128",
+            "field_type": "text"
+        },
+        {
+            "name": "Map",
+            "description": "Evrima map to load",
+            "env_variable": "MAP_NAME",
+            "default_value": "Gateway",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:Gateway",
+            "field_type": "text"
+        },
+        {
+            "name": "Max Players",
+            "description": "Maximum concurrent players (MaxPlayerCount)",
+            "env_variable": "MAX_PLAYER_COUNT",
+            "default_value": "100",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:1,300",
+            "field_type": "text"
+        },
+        {
+            "name": "Server Password",
+            "description": "Join password. Leave empty for a public server (also controls bServerPassword).",
+            "env_variable": "SERVER_PASSWORD",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:64",
+            "field_type": "text"
+        },
+        {
+            "name": "Admin Steam IDs",
+            "description": "Steam64 IDs with in-game admin (AdminsSteamIDs). One per line or comma-separated.",
+            "env_variable": "ADMIN_STEAM_IDS",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string",
+            "field_type": "text"
+        },
+        {
+            "name": "VIP Steam IDs",
+            "description": "Steam64 IDs with VIP slots (VIPs). One per line or comma-separated.",
+            "env_variable": "VIP_STEAM_IDS",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Whitelist Enabled",
+            "description": "Only whitelisted Steam IDs may join (bServerWhitelist)",
+            "env_variable": "WHITELIST_ENABLED",
+            "default_value": "false",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:0,1,true,false",
+            "field_type": "text"
+        },
+        {
+            "name": "Whitelist Steam IDs",
+            "description": "Steam64 IDs allowed when the whitelist is enabled (WhitelistIDs)",
+            "env_variable": "WHITELIST_IDS",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Allowed Classes",
+            "description": "Playable dinosaur classes (AllowedClasses), one per line or comma-separated. Empty = all classes allowed.",
+            "env_variable": "ALLOWED_CLASSES",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Discord Invite URL",
+            "description": "Full Discord invite URL shown in-game (e.g. https://discord.gg/yourserver)",
+            "env_variable": "DISCORD_URL",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:128",
+            "field_type": "text"
+        },
+        {
+            "name": "Global Chat",
+            "description": "Enable global chat (bEnableGlobalChat)",
+            "env_variable": "GLOBAL_CHAT",
+            "default_value": "true",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:0,1,true,false",
+            "field_type": "text"
+        },
+        {
+            "name": "Queue Enabled",
+            "description": "Enable the join queue (bQueueEnabled)",
+            "env_variable": "QUEUE_ENABLED",
+            "default_value": "true",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:0,1,true,false",
+            "field_type": "text"
+        },
+        {
+            "name": "Queue Port",
+            "description": "Queue system port. Leave empty to use game port + 1 (allocate it in the panel).",
+            "env_variable": "QUEUE_PORT",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": false,
+            "rules": "nullable|integer|between:1024,65535",
+            "field_type": "text"
+        },
+        {
+            "name": "Query Port",
+            "description": "Steam query port. Leave empty to use the primary server port.",
+            "env_variable": "QUERY_PORT",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": false,
+            "rules": "nullable|integer|between:1024,65535",
+            "field_type": "text"
+        },
+        {
+            "name": "RCON Enabled",
+            "description": "Enable RCON (bRconEnabled). Requires an RCON password.",
+            "env_variable": "RCON_ENABLED",
+            "default_value": "false",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:0,1,true,false",
+            "field_type": "text"
+        },
+        {
+            "name": "RCON Port",
+            "description": "RCON port. Leave empty to use game port + 2 (allocate it in the panel).",
+            "env_variable": "RCON_PORT",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": false,
+            "rules": "nullable|integer|between:1024,65535",
+            "field_type": "text"
+        },
+        {
+            "name": "RCON Password",
+            "description": "RCON password (required when RCON is enabled)",
+            "env_variable": "RCON_PASSWORD",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:64",
+            "field_type": "text"
+        },
+        {
+            "name": "Day Length (minutes)",
+            "description": "In-game day length (ServerDayLengthMinutes)",
+            "env_variable": "DAY_LENGTH_MINUTES",
+            "default_value": "45",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:5,240",
+            "field_type": "text"
+        },
+        {
+            "name": "Night Length (minutes)",
+            "description": "In-game night length (ServerNightLengthMinutes)",
+            "env_variable": "NIGHT_LENGTH_MINUTES",
+            "default_value": "25",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:5,240",
+            "field_type": "text"
+        },
+        {
+            "name": "Dynamic Weather",
+            "description": "Enable dynamic weather (bServerDynamicWeather)",
+            "env_variable": "DYNAMIC_WEATHER",
+            "default_value": "true",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:0,1,true,false",
+            "field_type": "text"
+        },
+        {
+            "name": "Growth Multiplier",
+            "description": "Growth speed multiplier (GrowthMultiplier)",
+            "env_variable": "GROWTH_MULTIPLIER",
+            "default_value": "1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|numeric|min:0.1|max:20",
+            "field_type": "text"
+        },
+        {
+            "name": "Corpse Decay Multiplier",
+            "description": "Corpse decay rate multiplier (CorpseDecayMultiplier)",
+            "env_variable": "CORPSE_DECAY_MULTIPLIER",
+            "default_value": "1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|numeric|min:0.1|max:10",
+            "field_type": "text"
+        },
+        {
+            "name": "Spawn AI",
+            "description": "Enable AI spawning (bSpawnAI)",
+            "env_variable": "SPAWN_AI",
+            "default_value": "true",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:0,1,true,false",
+            "field_type": "text"
+        },
+        {
+            "name": "AI Density",
+            "description": "AI population density (AIDensity)",
+            "env_variable": "AI_DENSITY",
+            "default_value": "1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|numeric|min:0|max:10",
+            "field_type": "text"
+        },
+        {
+            "name": "AI Spawn Interval",
+            "description": "Seconds between AI spawn checks (AISpawnInterval)",
+            "env_variable": "AI_SPAWN_INTERVAL",
+            "default_value": "40",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:5,3600",
+            "field_type": "text"
+        },
+        {
+            "name": "Spawn Plants",
+            "description": "Enable plant spawning (bSpawnPlants)",
+            "env_variable": "SPAWN_PLANTS",
+            "default_value": "true",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:0,1,true,false",
+            "field_type": "text"
+        },
+        {
+            "name": "Plant Spawn Multiplier",
+            "description": "Plant spawn rate multiplier (PlantSpawnMultiplier)",
+            "env_variable": "PLANT_SPAWN_MULTIPLIER",
+            "default_value": "1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|numeric|min:0|max:10",
+            "field_type": "text"
+        },
+        {
+            "name": "Migration",
+            "description": "Enable species migration (bEnableMigration)",
+            "env_variable": "ENABLE_MIGRATION",
+            "default_value": "true",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:0,1,true,false",
+            "field_type": "text"
+        },
+        {
+            "name": "Mutations",
+            "description": "Enable genetic mutations (bEnableMutations)",
+            "env_variable": "ENABLE_MUTATIONS",
+            "default_value": "true",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:0,1,true,false",
+            "field_type": "text"
+        },
+        {
+            "name": "Humans",
+            "description": "Enable the human class (bEnableHumans)",
+            "env_variable": "ENABLE_HUMANS",
+            "default_value": "false",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:0,1,true,false",
+            "field_type": "text"
+        },
+        {
+            "name": "Replay Recording",
+            "description": "Allow replay recording (bAllowRecordingReplay)",
+            "env_variable": "ALLOW_REPLAY",
+            "default_value": "true",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:0,1,true,false",
+            "field_type": "text"
+        }
+    ]
+}
