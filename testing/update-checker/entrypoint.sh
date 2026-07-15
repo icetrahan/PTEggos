@@ -155,6 +155,42 @@ run_patcher() {
     return $?
 }
 
+# The Isle Evrima's SteamCMD is BROKEN: an in-place `app_update ... validate` will
+# NOT pull a new build while a stale appmanifest + old binaries sit on disk — it
+# reports "up to date", so we keep hashing the OLD binary and silently stop
+# patching (exactly what happened for days: a new build shipped, the checker never
+# saw it). Fix (same as the server egg's clean-update): delete steamapps (the
+# appmanifest → forces a re-query of the LATEST build) AND TheIsle/Binaries (a
+# stale exe survives a manifest-only wipe) so SteamCMD re-pulls from scratch. Every
+# run. Content/ stays, so it's a verify pass, not a full re-download.
+clean_install() {
+    local dir=$1
+    echo "  (clean) rm ${dir}/steamapps + ${dir}/TheIsle/Binaries — force a fresh SteamCMD pull"
+    rm -rf "${dir}/steamapps" "${dir}/TheIsle/Binaries"
+}
+
+# Clean, then SteamCMD-pull an install dir. $2 = platform for a cross-download
+# ("windows"), or empty for the native Linux pull.
+steam_pull() {
+    local dir=$1 plat=$2
+    clean_install "$dir"
+    if [ -n "$plat" ]; then
+        ./steamcmd/steamcmd.sh \
+            +@sSteamCmdForcePlatformType "$plat" \
+            +force_install_dir "$dir" \
+            +login ${STEAM_USER} ${STEAM_PASS} \
+            +app_update ${SRCDS_APPID} -beta ${STEAM_BETA} validate \
+            +quit
+    else
+        ./steamcmd/steamcmd.sh \
+            +force_install_dir "$dir" \
+            +login ${STEAM_USER} ${STEAM_PASS} \
+            +app_update ${SRCDS_APPID} -beta ${STEAM_BETA} validate \
+            +quit
+    fi
+    return $?
+}
+
 # ─── Step 0: Install SteamCMD ────────────────────────────────────────────────
 
 if [ ! -f "./steamcmd/steamcmd.sh" ]; then
@@ -179,13 +215,17 @@ echo "Step 1: Downloading Linux Vanilla Binary"
 echo "=========================================="
 
 echo "Running SteamCMD (linux)..."
-./steamcmd/steamcmd.sh \
-    +force_install_dir "${LINUX_INSTALL}" \
-    +login ${STEAM_USER} ${STEAM_PASS} \
-    +app_update ${SRCDS_APPID} -beta ${STEAM_BETA} validate \
-    +quit
+steam_pull "$LINUX_INSTALL" ""
 
 LINUX_VANILLA_HASH=$(get_file_hash "$LINUX_BINARY")
+
+# self-heal: a wedged/partial appmanifest can leave the binary missing even after a
+# clean pull — clean + retry ONCE before giving up (mirrors the server egg).
+if [ -z "$LINUX_VANILLA_HASH" ]; then
+    echo "⚠️ Linux binary missing after SteamCMD — retrying once..."
+    steam_pull "$LINUX_INSTALL" ""
+    LINUX_VANILLA_HASH=$(get_file_hash "$LINUX_BINARY")
+fi
 
 if [ -z "$LINUX_VANILLA_HASH" ]; then
     echo "❌ Linux binary not found after SteamCMD!"
@@ -210,14 +250,16 @@ echo "Step 2: Downloading Windows Vanilla Binary"
 echo "=========================================="
 
 echo "Running SteamCMD (windows cross-download)..."
-./steamcmd/steamcmd.sh \
-    +@sSteamCmdForcePlatformType windows \
-    +force_install_dir "${WINDOWS_INSTALL}" \
-    +login ${STEAM_USER} ${STEAM_PASS} \
-    +app_update ${SRCDS_APPID} -beta ${STEAM_BETA} validate \
-    +quit
+steam_pull "$WINDOWS_INSTALL" "windows"
 
 WINDOWS_VANILLA_HASH=$(get_file_hash "$WINDOWS_BINARY")
+
+# self-heal retry once (see the linux note above).
+if [ -z "$WINDOWS_VANILLA_HASH" ]; then
+    echo "⚠️ Windows binary missing after SteamCMD — retrying once..."
+    steam_pull "$WINDOWS_INSTALL" "windows"
+    WINDOWS_VANILLA_HASH=$(get_file_hash "$WINDOWS_BINARY")
+fi
 
 if [ -z "$WINDOWS_VANILLA_HASH" ]; then
     echo "❌ Windows binary not found after SteamCMD!"
