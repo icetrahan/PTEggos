@@ -1,4 +1,5 @@
 {
+    "_comment": "DO NOT EDIT: FILE GENERATED FOR PTERODACTYL PANEL - PTDL_v2",
     "meta": {
         "version": "PTDL_v2",
         "update_url": null
@@ -6,23 +7,23 @@
     "exported_at": "2026-05-27T00:00:00+00:00",
     "name": "DeathMatch",
     "author": "ice@primalheaven.com",
-    "description": "Legacy The Isle deathmatch dedicated server (app 1020410, non-Evrima). No Steam beta branch.",
-    "features": null,
+    "description": "Legacy The Isle deathmatch dedicated server (Steam app 1020410, non-Evrima). No Steam beta branch.",
+    "features": [],
     "docker_images": {
         "ghcr.io/icetrahan/isles:deathmatch": "ghcr.io/icetrahan/isles:deathmatch"
     },
     "file_denylist": [],
-    "startup": "/bin/bash /entrypoint.sh",
+    "startup": "bash /entrypoint.sh",
     "config": {
-        "files": "{\r\n    \"TheIsle/Saved/Config/LinuxServer/Game.ini\": {\r\n        \"parser\": \"file\",\r\n        \"find\": {}\r\n    }\r\n}",
-        "startup": "{\r\n    \"done\": \"LogTheIsle: Display:\"\r\n}",
+        "files": "{}",
+        "startup": "{\"done\": \"LogTheIsle: Display:\"}",
         "logs": "{}",
         "stop": "^C"
     },
     "scripts": {
         "installation": {
-            "script": "#!/bin/bash\r\n# Legacy Isle (1020410) — no Evrima beta\r\napt-get update\r\napt-get install -y curl wget file tar lib32gcc-s1\r\n\r\nmkdir -p /mnt/server/steamcmd\r\ncd /mnt/server/steamcmd\r\ncurl -sqL \"https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz\" | tar zxvf -\r\nmkdir -p /mnt/server/steamapps\r\n\r\nexport HOME=/mnt/server\r\ncd /mnt/server/steamcmd\r\n\r\nSTEAM_USER=${STEAM_USER:-anonymous}\r\nSTEAM_PASS=${STEAM_PASS:-}\r\nSRCDS_APPID=${SRCDS_APPID:-1020410}\r\n\r\n./steamcmd.sh +force_install_dir /mnt/server +login \"${STEAM_USER}\" \"${STEAM_PASS}\" +app_update \"${SRCDS_APPID}\" validate +quit\r\n\r\nmkdir -p /mnt/server/.steam/sdk64\r\nif [ -f /mnt/server/Steam/steamapps/common/Steamworks\\ SDK\\ Redist/linux64/steamclient.so ]; then\r\n    cp /mnt/server/Steam/steamapps/common/Steamworks\\ SDK\\ Redist/linux64/steamclient.so /mnt/server/.steam/sdk64/steamclient.so\r\nfi\r\n\r\necho \"Legacy Isle install complete\"",
-            "container": "ghcr.io/icetrahan/isles:deathmatch",
+            "script": "#!/bin/bash\n# Legacy Isle (1020410) - no Evrima beta\nif [[ \"${STEAM_USER}\" == \"\" ]] || [[ \"${STEAM_PASS}\" == \"\" ]]; then\n    echo -e \"steam user is not set.\\n\"\n    echo -e \"Using anonymous user.\\n\"\n    STEAM_USER=anonymous\n    STEAM_PASS=\"\"\n    STEAM_AUTH=\"\"\nelse\n    echo -e \"user set to ${STEAM_USER}\"\nfi\n\ncd /tmp\nmkdir -p /mnt/server/steamcmd\ncurl -sSL -o steamcmd.tar.gz https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz\ntar -xzvf steamcmd.tar.gz -C /mnt/server/steamcmd\nmkdir -p /mnt/server/steamapps\ncd /mnt/server/steamcmd\nchown -R root:root /mnt\nexport HOME=/mnt/server\n\nSRCDS_APPID=${SRCDS_APPID:-1020410}\n./steamcmd.sh +force_install_dir /mnt/server +login ${STEAM_USER} ${STEAM_PASS} ${STEAM_AUTH} +app_update ${SRCDS_APPID} validate +quit\n\nmkdir -p /mnt/server/.steam/sdk32\ncp -v linux32/steamclient.so ../.steam/sdk32/steamclient.so 2>/dev/null || true\nmkdir -p /mnt/server/.steam/sdk64\ncp -v linux64/steamclient.so ../.steam/sdk64/steamclient.so 2>/dev/null || true\n\nmkdir -p /mnt/server/TheIsle/Saved/Config/LinuxServer\necho \"Legacy Isle install complete\"",
+            "container": "ghcr.io/parkervcp/installers:debian",
             "entrypoint": "bash"
         }
     },
@@ -34,17 +35,17 @@
             "default_value": "1020410",
             "user_viewable": true,
             "user_editable": false,
-            "rules": "required|string",
+            "rules": "required|string|in:1020410",
             "field_type": "text"
         },
         {
             "name": "Auto Update",
-            "description": "Run SteamCMD update on each server start",
+            "description": "Run SteamCMD update on each server start (1=yes, 0=no)",
             "env_variable": "AUTO_UPDATE",
             "default_value": "1",
             "user_viewable": true,
             "user_editable": true,
-            "rules": "required|boolean",
+            "rules": "required|string|in:0,1",
             "field_type": "text"
         },
         {
@@ -61,16 +62,6 @@
             "name": "Steam Password",
             "description": "Steam password (leave empty for anonymous)",
             "env_variable": "STEAM_PASS",
-            "default_value": "",
-            "user_viewable": true,
-            "user_editable": true,
-            "rules": "nullable|string",
-            "field_type": "text"
-        },
-        {
-            "name": "Startup Command",
-            "description": "Leave empty to use the default legacy Isle binary and ports",
-            "env_variable": "STARTUP",
             "default_value": "",
             "user_viewable": true,
             "user_editable": true,
