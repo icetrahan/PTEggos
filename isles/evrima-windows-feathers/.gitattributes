@@ -1,0 +1,6 @@
+# These files must stay byte-identical to the base64 blobs embedded in
+# egg-evrima-windows-feathers.json (see verify.py). An EOL conversion on a
+# machine with core.autocrlf=true would silently break that equality.
+*.ps1   -text
+*.tmpl  -text
+*.json  -text
