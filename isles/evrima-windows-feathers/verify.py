@@ -21,10 +21,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 EGG = os.path.join(HERE, 'egg-evrima-windows-feathers.json')
 # order matters: this is the order the install script writes them
 FILES = ['Engine.ini.tmpl', 'Game.ini.tmpl', 'start-evrima.ps1']
-# the sha256 of the *committed* (rcon-scrubbed) wrapper. The live one is
-# 03479537eced420aa0f5a2317c3e41d63139f940ebcda04794e39d0c1d194cbf; they differ
-# by one line, on purpose -- see README.md "Scrubbed values".
-WRAPPER_SHA = '2c1a8aa395d0ff017fa1fd1c940d2d73f21c9f3ae2a177071ef6ce2b8a4c8c51'
+# the sha256 of the *committed* (rcon-scrubbed) wrapper. The live one differs by
+# one line, on purpose -- see README.md "Scrubbed values". Updated for the pak
+# deploy lane (BUILD 39, #411): the DLL lane was replaced by the pak lane, the
+# sig-bypass drop was added, and Engine.ini now carries the mod's session block.
+WRAPPER_SHA = '7b04e869b3058b4478f9360f9c6474ab1f7691ff94f86636022933a915b1339e'
 
 egg = json.load(open(EGG, encoding='utf-8'))
 install = egg['scripts']['installation']['script']

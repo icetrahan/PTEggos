@@ -38,6 +38,34 @@ function Split-Csv([string]$v) {
 function EnvOr([string]$v, [string]$fb) { if ([string]::IsNullOrWhiteSpace($v)) { return $fb } else { return $v } }
 
 # ---------------------------------------------------------------------------
+# 🔴 THE SERVER KEY, TRIMMED ONCE, USED EVERYWHERE.
+#
+# The panel's API reports this variable as 53 chars, but the value injected into
+# the container carried a trailing character - the mod booted `tokenlen=54` for a
+# 53-char phsk_ key and every data-plane / rt call 401'd. Auth is a SHA-256 hash
+# lookup, so one stray byte doesn't degrade it, it misses the row entirely.
+# Trim here, at the single point of entry, so the launch flag and Engine.ini can
+# never disagree or carry whitespace again. Never log the value - length only.
+# ---------------------------------------------------------------------------
+# Trim() alone only fixes WHITESPACE. We have not proven the stray byte is
+# whitespace, so EXTRACT the key by its own shape instead: phsk_ + 48 hex chars.
+# Whatever surrounds it - quote, semicolon, NUL, BOM, newline - is discarded, and
+# the result is either a structurally valid key or empty. Falls back to the
+# trimmed raw value if the pattern doesn't match, so a future key format change
+# degrades to today's behaviour instead of silently blanking the token.
+$phskRaw = '' + $env:PHSK_KEY
+$phsk    = $phskRaw.Trim()
+$phskM   = [regex]::Match($phskRaw, 'phsk_[0-9a-fA-F]{48}')
+if ($phskM.Success) { $phsk = $phskM.Value }
+Dbg ("phsk key: rawLen={0} finalLen={1} patternMatched={2} strippedBytes={3}" -f `
+     $phskRaw.Length, $phsk.Length, $phskM.Success, ($phskRaw.Length - $phsk.Length))
+if ($phskRaw.Length -ne $phsk.Length) {
+    # Byte codes of everything we removed - names the culprit exactly once, no secret.
+    $extra = ($phskRaw.ToCharArray() | Where-Object { $phsk.IndexOf($_) -lt 0 } | ForEach-Object { [int]$_ }) -join ','
+    Dbg ("phsk key: stripped char codes=[{0}]" -f $extra)
+}
+
+# ---------------------------------------------------------------------------
 # 1) DEFAULTS
 # ---------------------------------------------------------------------------
 $defaultClasses = @(
@@ -241,67 +269,217 @@ foreach ($k in $cfg.Extra.Keys) {
 Set-Content -Path (Join-Path $cfgDir 'Game.ini') -Value $gi -Encoding ascii
 Write-Host "(config) rendered Game.ini (players=$($cfg.MaxPlayers), classes=$($classes.Count), admins=$($cfg.AdminSteamIds.Count), vips=$($cfg.VipSteamIds.Count))"
 
-# --- Engine.ini: static template (EOS creds etc.), copied verbatim ---
-Copy-Item (Join-Path $tmpl 'Engine.ini.tmpl') (Join-Path $cfgDir 'Engine.ini') -Force
-Write-Host "(config) wrote Engine.ini"
+# --- Engine.ini: static template (EOS creds etc.) + the Primal mod's config section ---
+#
+# ⭐ The pak mod reads its per-server key as a UE *Config* property on the game
+# session BP class, i.e. from Engine.ini under that class's section - NOT only
+# from the -PrimalToken launch flag. The proven-live reference server carries:
+#
+#   [/Game/TheIsle/Core/Session/BP_TIGameSession.BP_TIGameSession_C]
+#   ApiToken=<phsk key>
+#   PollURL=<data base>/v1/commands/text
+#
+# Without this section the pak loads but has no token and no poll URL, so it
+# never authenticates - which is exactly why a stock-provisioned server showed
+# "no token in engine.ini". We render it from $env:PHSK_KEY every boot (the key
+# is NEVER stored in the template - the template stays secret-free, rule 10).
+# -PrimalToken is still passed on the launch line as the override path.
+$eng = Get-Content (Join-Path $tmpl 'Engine.ini.tmpl') -Raw
+if ($env:ENABLE_PRIMAL_MOD -eq '1' -and $phsk) {
+    $dataBase   = (EnvOr $env:PRIMAL_DATA_BASE 'https://data.primalhosted.com').TrimEnd('/')
+    $sessHeader = '[/Game/TheIsle/Core/Session/BP_TIGameSession.BP_TIGameSession_C]'
+    $sessBlock  = @(
+        $sessHeader,
+        "ApiToken=$phsk",
+        "PollURL=$dataBase/v1/commands/text"
+    ) -join "`r`n"
+    # Idempotent: if the template ever grows this section, REPLACE it rather than
+    # appending a second copy (UE takes the first, so a duplicate would silently
+    # win with the wrong value).
+    if ($eng -match "(?m)^\s*\[/Game/TheIsle/Core/Session/BP_TIGameSession\.BP_TIGameSession_C\]") {
+        $eng = [regex]::Replace(
+            $eng,
+            "(?ms)^\s*\[/Game/TheIsle/Core/Session/BP_TIGameSession\.BP_TIGameSession_C\].*?(?=^\s*\[|\z)",
+            ($sessBlock + "`r`n`r`n"), 1)
+    } else {
+        $eng = $eng.TrimEnd() + "`r`n`r`n" + $sessBlock + "`r`n"
+    }
+    Write-Host "(config) Engine.ini: Primal session block set (tokenlen=$($phsk.Length), poll=$dataBase/v1/commands/text)"
+} else {
+    Write-Host "(config) Engine.ini: no Primal session block (mod disabled or no PHSK_KEY)"
+}
+
+# 🔴 LF LINE ENDINGS, DELIBERATELY. The mod's ApiToken read keeps a trailing CR
+# in the value: with CRLF the server booted `tokenlen=54` for a 53-char phsk_ key
+# and every data-plane call came back 401. The proven-working reference server is
+# Linux (LF-only Engine.ini) and boots `tokenlen=53`. UE's own config parser is
+# fine either way - this only bites the mod - so we match the format that is
+# proven to authenticate. Use WriteAllText, NOT Set-Content: Set-Content appends
+# a platform line terminator and would re-introduce a CR on the last line.
+$eng = $eng -replace "`r", ""
+[System.IO.File]::WriteAllText((Join-Path $cfgDir 'Engine.ini'), $eng, [System.Text.Encoding]::ASCII)
+Write-Host "(config) wrote Engine.ini (LF endings; CR would land inside the token - 401)"
 
 # Dry-run hook: render the configs and stop (used for local tests + Primal Hosted
 # config preview/validation). Set PRIMAL_RENDER_ONLY=1 to skip update + launch.
 if ($env:PRIMAL_RENDER_ONLY -eq '1') { Write-Host '(render-only) done'; exit 0 }
 
 # ---------------------------------------------------------------------------
-# PRIMAL DLL MOD (Evrima = IsleModRebuild.dll). Mirrors the Legacy pipeline:
-#   download-by-version (manifest {version,dll_url,sha256}, re-download only on
-#   change) -> write isle_mod.ini BESIDE the DLL (module dir - config.cpp reads
-#   module_directory()/isle_mod.ini) -> inject post-boot (armed below). Publish
-#   new versions with isle_mod_rebuild/publish_dll.py. Evrima manifest is a
-#   SEPARATE key from Legacy's (primal-mod-evrima/latest.json).
+# PRIMAL PAK MOD (Evrima = BUILD 39+ pak: pakchunk50-Windows_P.{pak,ucas,utoc}).
+#
+#   SUPERSEDES the old IsleModRebuild.dll lane. The pak IS the finished Evrima
+#   mod (telemetry + command poll + voice positions) and it authenticates via
+#   -PrimalToken on the launch line (added below), NOT via isle_mod.ini. Running
+#   the DLL alongside the pak would DOUBLE-write telemetry/presence (dup steamId
+#   -> data-plane presence collision), so the pak REPLACES the DLL here. Legacy
+#   keeps its own wrapper + DLL - that lane is untouched.
+#
+#   Each boot: fetch the pak manifest
+#     { version, build, files:[ {name,url,sha256,size}, ... ] }
+#   and if the version changed OR any already-placed pak file's sha no longer
+#   matches the manifest, re-download ALL files to a temp stage, sha-verify EACH,
+#   and only when EVERY file verifies, move the whole set into
+#   TheIsle/Content/Paks. A partial triplet is NEVER placed - a half-updated pak
+#   loads and misbehaves, which is worse than not updating. sha is the authority,
+#   version is only the fast path (#410: build stamps have lied about the build).
+#   Publish new versions with IsleModProject/scripts/publish_pak.ps1. Pak manifest
+#   is a SEPARATE R2 key from the DLL's (primal-mod-evrima-pak/ vs primal-mod-evrima/).
 # ---------------------------------------------------------------------------
-$primalDir     = $tmpl                                 # _primal (same dir the wrapper + overlay live in)
-$primalDll     = Join-Path $primalDir 'IsleModRebuild.dll'
-$primalVerFile = Join-Path $primalDir 'primal-mod.version'
+$paksDir    = Join-Path $game 'TheIsle\Content\Paks'
+$pakVerFile = Join-Path $tmpl 'primal-pak.version'
+$pakUcas    = Join-Path $paksDir 'pakchunk50-Windows_P.ucas'
+
+# ---------------------------------------------------------------------------
+# SIGNATURE BYPASS (UniversalSigBypasser) - REQUIRED for the mod pak to mount.
+#
+# The Isle ships signed paks and refuses to mount an unsigned one, so our
+# pakchunk50 would sit on disk and never load. The bypass is an ASI hook, NOT a
+# binary patch: dsound.dll (ASI loader proxy) + UniversalSigBypasser.asi go in
+# TheIsle\Binaries\Win64 beside the server exe, and hook the signature check at
+# runtime. Nothing about the game binary is modified.
+#
+# ⚠️ THIS MUST RUN AFTER THE STEAMCMD UPDATE AND BEFORE LAUNCH. `app_update ...
+# validate` restores/strips files under the install dir every boot, so placing
+# these earlier (or once, by hand) does not survive. Re-verified by sha every
+# boot for exactly that reason.
+#
+# Source: github.com/rm-NoobInCoding/UniversalSigBypasser (v1.2), mirrored to our
+# R2 with pinned sha256s so a boot never pulls an unreviewed third-party binary.
+# ---------------------------------------------------------------------------
+$binDirWin  = Join-Path $game 'TheIsle\Binaries\Win64'
+$sbVerFile  = Join-Path $tmpl 'primal-sigbypass.version'
 if ($env:ENABLE_PRIMAL_MOD -eq '1') {
-    $manifestUrl = EnvOr $env:PRIMAL_MOD_MANIFEST 'https://pub-fb6fdcc2ce914775ba41c9813f80dc10.r2.dev/primal-mod-evrima/latest.json'
+    $sbManifestUrl = EnvOr $env:PRIMAL_SIGBYPASS_MANIFEST 'https://pub-fb6fdcc2ce914775ba41c9813f80dc10.r2.dev/primal-sigbypass/latest.json'
     try {
         $ProgressPreference = 'SilentlyContinue'
-        $m = Invoke-RestMethod -Uri $manifestUrl -TimeoutSec 20
-        $haveVer = if (Test-Path $primalVerFile) { (Get-Content $primalVerFile -Raw).Trim() } else { '' }
-        if ($m.version -ne $haveVer -or -not (Test-Path $primalDll)) {
-            Write-Host "(primal-mod) updating '$haveVer' -> '$($m.version)'..."
-            Invoke-WebRequest -Uri $m.dll_url -OutFile $primalDll -UseBasicParsing
-            $sha = (Get-FileHash $primalDll -Algorithm SHA256).Hash.ToLower()
-            if ($sha -ne ("" + $m.sha256).ToLower()) {
-                Write-Host "(primal-mod) sha256 MISMATCH (got $sha) - discarding"
-                Remove-Item $primalDll -Force -ErrorAction SilentlyContinue
-            } else {
-                Set-Content -Path $primalVerFile -Value $m.version -Encoding ascii
-                Write-Host "(primal-mod) DLL $($m.version) ready ($($m.size) bytes)"
-            }
-        } else { Write-Host "(primal-mod) up to date ($haveVer)" }
-    } catch { Write-Host "(primal-mod) manifest/download failed: $_" }
+        $sm = Invoke-RestMethod -Uri $sbManifestUrl -TimeoutSec 20
+        $sbFiles = @($sm.files)
+        if (-not $sbFiles -or $sbFiles.Count -lt 1) { throw 'sigbypass manifest carries no files[]' }
+        New-Item -ItemType Directory -Force -Path $binDirWin | Out-Null
 
-    # Per-server mod config: the DLL authenticates + polls ONLY this server's
-    # commands using its own phsk_ key. Keys match isle_mod_rebuild/src/config.cpp
-    # (bearer_token / command_poll_url / telemetry_push_url + intervals). Written
-    # beside the DLL where load_config() reads it. Re-written every boot, so a
-    # config change takes effect on the next server restart.
-    if ($env:PHSK_KEY) {
-        $dataBase = EnvOr $env:PRIMAL_DATA_BASE 'https://data.primalhosted.com'
-        $cfg = @(
-            '# Primal Hosted - auto-generated each boot from the server phsk_ key. Do not edit.',
-            "bearer_token=$($env:PHSK_KEY)",
-            "command_poll_url=$dataBase/v1/commands",
-            'command_poll_interval_ms=2000',
-            "telemetry_push_url=$dataBase/v1/telemetry",
-            'telemetry_push_interval_ms=5000'
-        ) -join "`n"
-        Set-Content -Path (Join-Path $primalDir 'isle_mod.ini') -Value $cfg -Encoding ascii
-        Write-Host "(primal-mod) wrote isle_mod.ini (per-server key, poll=$dataBase/v1/commands, telemetry=$dataBase/v1/telemetry)"
-    } else {
-        Write-Host "(primal-mod) no PHSK_KEY set - mod will run without a data-plane key"
+        # Content is the authority: replace whenever a file is missing or its sha
+        # differs (i.e. every time SteamCMD strips or reverts one).
+        $sbNeed = @()
+        foreach ($fi in $sbFiles) {
+            $dst = Join-Path $binDirWin $fi.name
+            if (-not (Test-Path $dst)) { $sbNeed += $fi; continue }
+            $h = (Get-FileHash $dst -Algorithm SHA256).Hash.ToLower()
+            if ($h -ne ("" + $fi.sha256).ToLower()) { $sbNeed += $fi }
+        }
+
+        if ($sbNeed.Count) {
+            Write-Host "(sigbypass) placing $($sbNeed.Count)/$($sbFiles.Count) file(s) (v$($sm.version)) into TheIsle\Binaries\Win64 ..."
+            foreach ($fi in $sbNeed) {
+                $dst = Join-Path $binDirWin $fi.name
+                $tmpf = "$dst.download"
+                Invoke-WebRequest -Uri $fi.url -OutFile $tmpf -UseBasicParsing
+                $sha = (Get-FileHash $tmpf -Algorithm SHA256).Hash.ToLower()
+                if ($sha -ne ("" + $fi.sha256).ToLower()) {
+                    Write-Host "(sigbypass) sha256 MISMATCH on $($fi.name) (got $sha) - discarding"
+                    Remove-Item $tmpf -Force -ErrorAction SilentlyContinue
+                } else {
+                    Move-Item -Force $tmpf $dst
+                    Write-Host "(sigbypass) placed $($fi.name) ($($fi.size) bytes)"
+                }
+            }
+            Set-Content -Path $sbVerFile -Value $sm.version -Encoding ascii
+        } else {
+            Write-Host "(sigbypass) up to date (v$($sm.version), all files sha-verified in place)"
+        }
+    } catch {
+        # Fail-soft: the server still boots. The pak just will not mount.
+        Write-Host "(sigbypass) manifest/download failed: $_ - the mod pak will NOT mount this boot"
     }
 } else {
-    Write-Host "(primal-mod) disabled (ENABLE_PRIMAL_MOD != 1)"
+    Write-Host "(sigbypass) disabled (ENABLE_PRIMAL_MOD != 1)"
+}
+
+if ($env:ENABLE_PRIMAL_MOD -eq '1') {
+    $pakManifestUrl = EnvOr $env:PRIMAL_MOD_MANIFEST 'https://pub-fb6fdcc2ce914775ba41c9813f80dc10.r2.dev/primal-mod-evrima-pak/latest.json'
+    try {
+        $ProgressPreference = 'SilentlyContinue'
+        $pm = Invoke-RestMethod -Uri $pakManifestUrl -TimeoutSec 20
+        $pakFiles = @($pm.files)
+        if (-not $pakFiles -or $pakFiles.Count -lt 1) { throw 'manifest carries no files[]' }
+
+        # Content is the authority: re-download when the version changed OR any
+        # placed file's sha differs from the manifest (a mislabelled version can
+        # not hide a changed pak - #410).
+        $haveVer = if (Test-Path $pakVerFile) { (Get-Content $pakVerFile -Raw).Trim() } else { '' }
+        $needs = ($pm.version -ne $haveVer)
+        if (-not $needs) {
+            foreach ($fi in $pakFiles) {
+                $dst = Join-Path $paksDir $fi.name
+                if (-not (Test-Path $dst)) { $needs = $true; break }
+                $h = (Get-FileHash $dst -Algorithm SHA256).Hash.ToLower()
+                if ($h -ne ("" + $fi.sha256).ToLower()) { $needs = $true; break }
+            }
+        }
+
+        if ($needs) {
+            Write-Host "(primal-pak) updating '$haveVer' -> '$($pm.version)' ($($pakFiles.Count) files)..."
+            New-Item -ItemType Directory -Force -Path $paksDir | Out-Null
+            $stage = Join-Path $tmpl 'pak-stage'
+            if (Test-Path $stage) { Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue }
+            New-Item -ItemType Directory -Force -Path $stage | Out-Null
+
+            $allOk = $true
+            foreach ($fi in $pakFiles) {
+                $tmp = Join-Path $stage $fi.name
+                Invoke-WebRequest -Uri $fi.url -OutFile $tmp -UseBasicParsing
+                $sha = (Get-FileHash $tmp -Algorithm SHA256).Hash.ToLower()
+                if ($sha -ne ("" + $fi.sha256).ToLower()) {
+                    Write-Host "(primal-pak) sha256 MISMATCH on $($fi.name) (got $sha) - discarding this update"
+                    $allOk = $false; break
+                }
+            }
+
+            if ($allOk) {
+                # Placement only after EVERY file verified. Fixed filenames, so a
+                # new build overwrites the old triplet in place - never layers.
+                foreach ($fi in $pakFiles) {
+                    Move-Item -Force (Join-Path $stage $fi.name) (Join-Path $paksDir $fi.name)
+                }
+                Set-Content -Path $pakVerFile -Value $pm.version -Encoding ascii
+                Write-Host "(primal-pak) pak $($pm.version) ready ($($pm.build)) -> $paksDir"
+            } else {
+                Write-Host "(primal-pak) update discarded on verify failure - keeping the existing pak (if any)"
+            }
+            Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
+        } else {
+            Write-Host "(primal-pak) up to date ($haveVer)"
+        }
+    } catch {
+        # A customer server MUST still start if the manifest is unreachable/bad.
+        # Boot continues with whatever pak is already on disk (possibly none).
+        Write-Host "(primal-pak) manifest/download failed: $_ - booting with existing pak (if any)"
+    }
+
+    if (-not $env:PHSK_KEY) {
+        Write-Host "(primal-pak) WARNING: no PHSK_KEY set - the pak will load but cannot authenticate to the data plane"
+    }
+} else {
+    Write-Host "(primal-pak) disabled (ENABLE_PRIMAL_MOD != 1)"
 }
 
 # ---------------------------------------------------------------------------
@@ -354,6 +532,29 @@ if ($forceDino) {
     $fdArgs = @("-PrimalForceDino=$forceDino")
     Write-Host "(start) PrimalForceDino=$forceDino (force-enabled species)"
 }
+# Primal data-plane auth for the pak mod: BUILD 39+ reads its per-server key from
+# -PrimalToken on the launch line (the DLL lane used isle_mod.ini; the pak does
+# not). Passed only when the mod is enabled, a key is set, AND a pak is actually
+# present - a token with no pak is inert, and this keeps the console honest.
+# 🔴 -PrimalToken is DISABLED BY DEFAULT (2026-07-29, #411).
+#
+# Engine.ini and this flag are two independent token sources, and with BOTH set
+# the mod booted `tokenlen=54` for a provably clean 53-char key (wrapper debug:
+# rawLen=53, strippedBytes=0; Engine.ini on disk: 0 CR, valueLen=53). The
+# proven-working reference server sets ONLY Engine.ini and boots `tokenlen=53`.
+# Same pak, same key length, different result => the flag is the odd one out, so
+# we match the configuration that authenticates and keep exactly one source of
+# truth. Set PRIMAL_TOKEN_ARG=1 to put it back (diagnostics / if the mod ever
+# stops reading the ini).
+$ptArgs = @()
+if ($env:PRIMAL_TOKEN_ARG -eq '1' -and $env:ENABLE_PRIMAL_MOD -eq '1' -and $phsk -and (Test-Path $pakUcas)) {
+    $ptArgs = @("-PrimalToken=$phsk")
+    Write-Host "(start) PrimalToken set (len=$($phsk.Length)) - launch-flag token path ENABLED"
+    Dbg ("launch token len={0}" -f $phsk.Length)
+} elseif ($env:ENABLE_PRIMAL_MOD -eq '1' -and $phsk) {
+    Write-Host "(start) PrimalToken flag omitted - Engine.ini is the single token source (len=$($phsk.Length))"
+    Dbg 'launch token: flag omitted, engine.ini only'
+}
 Write-Host "(start) $(Get-Date -Format HH:mm:ss) launching on port $env:SERVER_PORT, multihome $multihome ..."
 # CRITICAL: relax the error preference for the launch. Under 'Stop', the UE
 # server writing ANYTHING to stderr raises a NativeCommandError that terminates
@@ -364,70 +565,16 @@ $ErrorActionPreference = 'Continue'
 $isleLog = Join-Path $game 'TheIsle\Saved\Logs\TheIsle.log'
 $before  = @(Get-Process TheIsleServer-Win64-Shipping -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
 
-# Primal DLL mod injection: arm a background job that waits for the NEW server
-# process, then LoadLibraryW-injects the DLL via CreateRemoteThread (P/Invoke, no
-# Python in the container). Same technique as isle_mod_rebuild/inject_isle_mod.py.
-# Result -> _primal/primal-inject.log.
-if ($env:ENABLE_PRIMAL_MOD -eq '1' -and (Test-Path $primalDll)) {
-    $injLog = Join-Path $primalDir 'primal-inject.log'
-    Start-Job -Name primal-inject -ArgumentList $primalDll, $before, $injLog -ScriptBlock {
-        param($dll, $beforeIds, $log)
-        function W($m) { "$(Get-Date -Format 'HH:mm:ss') $m" | Out-File -FilePath $log -Append -Encoding ascii }
-        Add-Type -TypeDefinition @'
-using System; using System.Runtime.InteropServices;
-public static class PInj {
-  [DllImport("kernel32", SetLastError=true)] public static extern IntPtr OpenProcess(uint a, bool inh, uint pid);
-  [DllImport("kernel32", SetLastError=true)] public static extern IntPtr VirtualAllocEx(IntPtr h, IntPtr addr, uint sz, uint typ, uint prot);
-  [DllImport("kernel32", SetLastError=true)] public static extern bool WriteProcessMemory(IntPtr h, IntPtr addr, byte[] buf, uint sz, out UIntPtr wrote);
-  [DllImport("kernel32", CharSet=CharSet.Ansi, SetLastError=true)] public static extern IntPtr GetModuleHandleA(string n);
-  [DllImport("kernel32", CharSet=CharSet.Ansi, SetLastError=true)] public static extern IntPtr GetProcAddress(IntPtr h, string n);
-  [DllImport("kernel32", SetLastError=true)] public static extern IntPtr CreateRemoteThread(IntPtr h, IntPtr sa, uint sz, IntPtr start, IntPtr arg, uint fl, IntPtr tid);
-  [DllImport("kernel32", SetLastError=true)] public static extern uint WaitForSingleObject(IntPtr h, uint ms);
-  [DllImport("kernel32", SetLastError=true)] public static extern bool GetExitCodeThread(IntPtr h, out uint code);
-}
-'@
-        "===== primal-inject $(Get-Date -Format o) =====" | Out-File -FilePath $log -Encoding ascii
-        $proc = $null
-        for ($i = 0; $i -lt 60 -and -not $proc; $i++) {
-            Start-Sleep -Milliseconds 500
-            $proc = Get-Process TheIsleServer-Win64-Shipping -ErrorAction SilentlyContinue | Where-Object { $beforeIds -notcontains $_.Id } | Select-Object -First 1
-        }
-        if (-not $proc) { W 'no server process appeared - abort inject'; return }
-        Start-Sleep -Seconds 10   # let the server finish init before injecting
-        W "injecting into pid $($proc.Id): $dll"
-        $bytes = [System.Text.Encoding]::Unicode.GetBytes($dll + [char]0)
-        $h = [PInj]::OpenProcess(0x1F0FFF, $false, [uint32]$proc.Id)
-        if ($h -eq [IntPtr]::Zero) { W 'OpenProcess failed'; return }
-        $addr = [PInj]::VirtualAllocEx($h, [IntPtr]::Zero, [uint32]$bytes.Length, 0x3000, 0x04)
-        if ($addr -eq [IntPtr]::Zero) { W 'VirtualAllocEx failed'; return }
-        $wrote = [UIntPtr]::Zero
-        [void][PInj]::WriteProcessMemory($h, $addr, $bytes, [uint32]$bytes.Length, [ref]$wrote)
-        $ll = [PInj]::GetProcAddress([PInj]::GetModuleHandleA('kernel32.dll'), 'LoadLibraryW')
-        $t = [PInj]::CreateRemoteThread($h, [IntPtr]::Zero, 0, $ll, $addr, 0, [IntPtr]::Zero)
-        if ($t -eq [IntPtr]::Zero) { W 'CreateRemoteThread failed'; return }
-        [void][PInj]::WaitForSingleObject($t, 15000)
-        # LoadLibraryW's return (the HMODULE, low 32 bits here) is the remote thread's
-        # exit code: 0 => the DLL failed to load (bad deps / wrong bitness / crash in
-        # DllMain). Non-zero => it loaded.
-        $ec = 0; [void][PInj]::GetExitCodeThread($t, [ref]$ec)
-        W "inject call complete (LoadLibraryW exit=0x$("{0:x}" -f $ec); 0 = load FAILED)"
-        # Independent confirmation: is the DLL actually in the target's module list?
-        Start-Sleep -Seconds 2
-        $name = [IO.Path]::GetFileName($dll)
-        try {
-            $mod = Get-Process -Id $proc.Id -Module -ErrorAction Stop | Where-Object { $_.ModuleName -ieq $name }
-            if ($mod) { W "VERIFIED: $name is loaded in pid $($proc.Id)  ($($mod.FileName))" }
-            else      { W "WARNING: $name NOT present in pid $($proc.Id) module list after inject" }
-        } catch { W "module verify inconclusive (enum failed: $($_.Exception.Message))" }
-    } | Out-Null
-    Write-Host "(primal-mod) injector armed (post-boot; result -> _primal/primal-inject.log; mod runtime -> _primal/isle_mod.log)"
-}
+# NOTE: the old DLL-injection job (LoadLibraryW via CreateRemoteThread) lived here.
+# The pak needs no injection - it is a content pak the engine mounts from the Paks
+# dir at startup - so that block was removed with the DLL lane. See git history of
+# this file (PTEggos) for the injector if a DLL lane is ever revived for Evrima.
 
 Dbg "launching (server will detach; we supervise the real process)"
 # Launch form matches Hex's proven dedicated command (map URL carries the port; no
 # -QueryPort / -stdout). -MULTIHOME (dash flag) via @mhArgs + EOS_OVERRIDE_HOST_IP (env,
 # set above) = the working per-IP combo.
-& $exe @mhArgs @fdArgs "/Game/TheIsle/Maps/Game/Gateway/Gateway?Port=$env:SERVER_PORT" -log `
+& $exe @mhArgs @fdArgs @ptArgs "/Game/TheIsle/Maps/Game/Gateway/Gateway?Port=$env:SERVER_PORT" -log `
     '-ini:Engine:[EpicOnlineServices]:DedicatedServerClientId=xyza7891gk5PRo3J7G9puCJGFJjmEguW' `
     '-ini:Engine:[EpicOnlineServices]:DedicatedServerClientSecret=pKWl6t5i9NJK8gTpVlAxzENZ65P8hYzodV8Dqe5Rlc8'
 
