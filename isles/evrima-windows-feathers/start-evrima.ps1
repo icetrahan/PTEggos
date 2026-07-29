@@ -47,12 +47,29 @@ function EnvOr([string]$v, [string]$fb) { if ([string]::IsNullOrWhiteSpace($v)) 
 # Trim here, at the single point of entry, so the launch flag and Engine.ini can
 # never disagree or carry whitespace again. Never log the value - length only.
 # ---------------------------------------------------------------------------
-# Trim() alone only fixes WHITESPACE. We have not proven the stray byte is
-# whitespace, so EXTRACT the key by its own shape instead: phsk_ + 48 hex chars.
-# Whatever surrounds it - quote, semicolon, NUL, BOM, newline - is discarded, and
-# the result is either a structurally valid key or empty. Falls back to the
-# trimmed raw value if the pattern doesn't match, so a future key format change
-# degrades to today's behaviour instead of silently blanking the token.
+# ⚠️ DEFENCE-IN-DEPTH ONLY - this is NOT the fix for the tokenlen=54 bug.
+#
+# Settled by measurement 2026-07-29, do not re-derive:
+#   * This block has NEVER stripped a byte in production. Every boot logs
+#     `rawLen=53 finalLen=53 strippedBytes=0`.
+#   * The panel TRIMS trailing whitespace on write, so a dirty value cannot even
+#     be stored in the egg variable. Tested: wrote key+space (54 B), panel stored
+#     53 B, sha256 unchanged. Via the panel path this code is UNREACHABLE.
+#   * What actually fixed tokenlen=54 was removing the SECOND token source
+#     (-PrimalToken, see the launch section) - BUGS #436. 05:29 boot and 05:33
+#     boot differed ONLY by that flag: 54 -> 53, with this block present and
+#     inert in both.
+#
+# It stays because it is free and it covers a write path the panel doesn't police
+# (a direct panel-DB edit, a future provisioning script). ⛔ But do NOT treat it
+# as the thing keeping auth alive, and do NOT "simplify" the launch flag back on
+# because this looks like it would catch the result - it would not. The two
+# load-bearing pieces are: -PrimalToken OFF, and Engine.ini written with LF.
+#
+# Extract the key by its own shape: phsk_ + 48 hex chars. Whatever surrounds it -
+# quote, semicolon, NUL, BOM, newline - is discarded. Falls back to the trimmed
+# raw value if the pattern doesn't match, so a future key-format change degrades
+# to today's behaviour instead of silently blanking the token.
 $phskRaw = '' + $env:PHSK_KEY
 $phsk    = $phskRaw.Trim()
 $phskM   = [regex]::Match($phskRaw, 'phsk_[0-9a-fA-F]{48}')
@@ -309,13 +326,18 @@ if ($env:ENABLE_PRIMAL_MOD -eq '1' -and $phsk) {
     Write-Host "(config) Engine.ini: no Primal session block (mod disabled or no PHSK_KEY)"
 }
 
-# 🔴 LF LINE ENDINGS, DELIBERATELY. The mod's ApiToken read keeps a trailing CR
-# in the value: with CRLF the server booted `tokenlen=54` for a 53-char phsk_ key
-# and every data-plane call came back 401. The proven-working reference server is
-# Linux (LF-only Engine.ini) and boots `tokenlen=53`. UE's own config parser is
-# fine either way - this only bites the mod - so we match the format that is
+# 🔴 LF LINE ENDINGS, DELIBERATELY - AND THIS ONE IS LOAD-BEARING.
+#
+# Engine.ini is now the SOLE token source (-PrimalToken is off, #436), so a CR
+# here lands straight in the token. Measured: with CRLF the 04:55 boot read
+# `ApiToken valueLen=54, last char code 13` and the mod booted tokenlen=54 ->
+# 401 on telemetry, commands and voice alike. The proven-working reference server
+# is Linux (LF-only Engine.ini) and boots 53. UE's own config parser copes with
+# either - only the mod's read keeps the CR - so we write the format that is
 # proven to authenticate. Use WriteAllText, NOT Set-Content: Set-Content appends
 # a platform line terminator and would re-introduce a CR on the last line.
+# ⛔ Do not "tidy" this back to Set-Content / CRLF. It is one of the two things
+# holding auth up (the other is -PrimalToken staying off).
 $eng = $eng -replace "`r", ""
 [System.IO.File]::WriteAllText((Join-Path $cfgDir 'Engine.ini'), $eng, [System.Text.Encoding]::ASCII)
 Write-Host "(config) wrote Engine.ini (LF endings; CR would land inside the token - 401)"
