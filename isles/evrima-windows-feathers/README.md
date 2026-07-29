@@ -61,12 +61,42 @@ one by exactly one line:
 | Where | Live | Committed |
 |---|---|---|
 | `RCON_PASSWORD` variable default | *(the real value)* | `""` |
-| `start-evrima.ps1` line 56 `RconPassword` fallback | *(the same literal)* | `'CHANGEME'` |
+| `start-evrima.ps1` `RconPassword` fallback in the DEFAULTS block | *(the same literal)* | `'CHANGEME'` |
 
-Restore both from `primal-credentials.env` before importing this egg for real
-use. sha256 of the wrapper: live `03479537eced420aa0f5a2317c3e41d63139f940ebcda04794e39d0c1d194cbf`
-(28,403 B) → committed `2c1a8aa395d0ff017fa1fd1c940d2d73f21c9f3ae2a177071ef6ce2b8a4c8c51`
-(28,396 B).
+Restore both from `primal-credentials.env` before importing this egg for real use.
+
+⚠️ **Do not hand-edit the base64 in the egg JSON.** Change the loose files, then:
+
+```
+python isles/evrima-windows-feathers/embed.py    # re-embed + refresh verify.py's sha
+python isles/evrima-windows-feathers/verify.py   # the gate
+```
+
+sha256 of the committed wrapper: **`e4e341ba40bb7403a45bdb0968067286a235c18eebb169591a8f58303bf78e57`**
+(44,280 B), recorded in `verify.py` as `WRAPPER_SHA` and refreshed by `embed.py`.
+The live wrapper differs by the one RCON line above, so its sha will not match —
+that is expected, and `verify.py` compares the *committed* file only.
+
+⚠️ The line references and shas in this section have gone stale twice (they still
+named the pre-BUILD-39 28 KB wrapper as of 2026-07-29). Anchor on block names, not
+line numbers, and let `embed.py` own the sha.
+
+## 🔴 ASCII ONLY in `start-evrima.ps1`
+
+The wrapper is UTF-8 **without a BOM**, so PowerShell 5.1 on the feathers node
+decodes it as CP1252. Several multi-byte characters (`—`, `🔴`, `⛔`) decode to
+byte `0x94`, which PowerShell treats as a **quote character** — enough of them and
+the script stops parsing, which means the server does not boot. Adding five emoji
+to comments broke it exactly this way on 2026-07-29 (BUGS #448).
+
+⛔ Keep comments and strings inside this file to plain ASCII. Before committing:
+
+```
+powershell -NoProfile -Command "$e=$null; [System.Management.Automation.Language.Parser]::ParseFile('isles/evrima-windows-feathers/start-evrima.ps1',[ref]$null,[ref]$e); $e"
+```
+
+Silence means it parses. (The other files in this directory are not executed by
+PowerShell and are unaffected.)
 
 Swept clean for `phsk_` / `phdk_` / `ptlc_` / `ptla_` values — the two `phsk_`
 hits are the *name* of the `PHSK_KEY` variable ("Server Key (phsk_)"), whose

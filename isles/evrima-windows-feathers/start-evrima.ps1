@@ -7,9 +7,16 @@
 #
 # Settings are layered, later overrides earlier:
 #   1. DEFAULTS (below)                      baseline
-#   2. EGG VARIABLES ($env:*)                the ~12 common knobs + 3 CSV lists
-#   3. JSON OVERLAY (_primal/server-config.json)   Primal Hosted writes this for
-#      full customization (any field + arbitrary extra session keys). Optional.
+#   2. EGG VARIABLES ($env:*)                >> THE SOURCE OF TRUTH for every
+#      customer setting. The panel renders these, Ptero validates them server-side
+#      from the egg `rules`, and provisioning seeds them. Add a variable here when
+#      a customer needs a knob - that is the whole config-writer story (#356 T1(a)).
+#   3. JSON OVERLAY (_primal/server-config.json)   !! ADMIN ESCAPE HATCH ONLY.
+#      STOP: nothing on the platform writes this file. It outranks layer 2, so anything
+#      it sets is a field the customer's panel is now LYING about - measured live on
+#      93da0534, five fields, 2026-07-29. Use it only for `extra` keys that have no
+#      egg variable yet, and prefer promoting the key to a variable instead. Every
+#      override it performs is now named loudly on the console (rule 13).
 #
 # Ports come from Panel ALLOCATIONS (not variables, so not customer-editable):
 #   game/query = SERVER_PORT | queue = SERVER_PORT_1 | rcon = SERVER_PORT_2
@@ -124,6 +131,16 @@ $cfg = @{
     EnableMigration       = 'False'
     EnableMassMigration   = 'False'
     EnablePatrolZones     = 'False'
+    # ---- promoted 2026-07-29 (#356 T1(a)): these three were the last Game.ini keys
+    # reachable ONLY through the server-config.json overlay's `extra` map. Defaults
+    # below are the values the template used to hardcode, so a server that leaves the
+    # new variables alone renders a BYTE-IDENTICAL Game.ini. ----
+    MapName               = 'Gateway'
+    QueueEnabled          = 'True'
+    # Empty = the AISpawnInterval line is OMITTED from Game.ini entirely (the game
+    # then uses its own internal default). Same idiom as -PrimalForceDino: we do not
+    # know the engine default, so we refuse to guess one and pin it on every server.
+    AISpawnInterval       = ''
     Extra                 = @{}   # arbitrary [tigamesession] key=value (overlay only)
 }
 
@@ -160,12 +177,76 @@ $cfg.SpawnPlants         = To-Bool $env:SPAWN_PLANTS          $cfg.SpawnPlants
 $cfg.EnableMigration     = To-Bool $env:ENABLE_MIGRATION      $cfg.EnableMigration
 $cfg.EnableMassMigration = To-Bool $env:ENABLE_MASS_MIGRATION $cfg.EnableMassMigration
 $cfg.EnablePatrolZones   = To-Bool $env:ENABLE_PATROL_ZONES   $cfg.EnablePatrolZones
+# ---- promoted 2026-07-29 (#356 T1(a)) ----
+if ($env:MAP_NAME)          { $cfg.MapName         = $env:MAP_NAME }
+if ($env:AI_SPAWN_INTERVAL) { $cfg.AISpawnInterval = $env:AI_SPAWN_INTERVAL }
+$cfg.QueueEnabled        = To-Bool $env:QUEUE_ENABLED         $cfg.QueueEnabled
+
+# ---------------------------------------------------------------------------
+# cfg key -> the egg variable that feeds it. Used ONLY to make an overlay
+# override name the panel field it is contradicting. Keys with no egg variable
+# (Extra, AISpawnInterval before it was promoted) are deliberately absent.
+# ---------------------------------------------------------------------------
+# NOTE: keys are QUOTED deliberately. verify.py enforces rule 10 by rejecting any
+# assignment of the RCON-password default to something other than the CHANGEME
+# placeholder, and an unquoted key in this table reads to that regex as exactly such
+# an assignment. Quoting keeps the secret guard strict instead of loosening it to
+# accommodate a lookup table. (Spelling the pattern out here would trip it too.)
+$eggVarFor = @{
+    'ServerName' = 'SERVER_NAME'; 'MaxPlayers' = 'MAX_PLAYERS'
+    'ServerPasswordEnabled' = 'SERVER_PASSWORD_ENABLED'; 'ServerPassword' = 'SERVER_PASSWORD'
+    'RconEnabled' = 'RCON_ENABLED'; 'RconPassword' = 'RCON_PASSWORD'
+    'Discord' = 'DISCORD_URL'; 'CorpseDecay' = 'CORPSE_DECAY'
+    'AdminSteamIds' = 'ADMIN_STEAM_IDS'; 'VipSteamIds' = 'VIP_STEAM_IDS'
+    'AllowedClasses' = 'ALLOWED_CLASSES'; 'EnableHumans' = 'ENABLE_HUMANS'
+    'DayLength' = 'SERVER_DAY_LENGTH'; 'NightLength' = 'SERVER_NIGHT_LENGTH'
+    'GrowthMultiplier' = 'GROWTH_MULTIPLIER'; 'EnableGlobalChat' = 'ENABLE_GLOBAL_CHAT'
+    'EnableAI' = 'ENABLE_AI'; 'AIDensity' = 'AI_DENSITY'; 'SpawnFish' = 'SPAWN_FISH'
+    'EnableMutations' = 'ENABLE_MUTATIONS'; 'EnableDiets' = 'ENABLE_DIETS'
+    'FallDamage' = 'FALL_DAMAGE'; 'AllowReplay' = 'ALLOW_REPLAY'
+    'DynamicWeather' = 'DYNAMIC_WEATHER'; 'WhitelistEnabled' = 'WHITELIST_ENABLED'
+    'SpawnPlants' = 'SPAWN_PLANTS'; 'PlantMultiplier' = 'PLANT_MULTIPLIER'
+    'EnableMigration' = 'ENABLE_MIGRATION'; 'EnableMassMigration' = 'ENABLE_MASS_MIGRATION'
+    'EnablePatrolZones' = 'ENABLE_PATROL_ZONES'
+    'MapName' = 'MAP_NAME'; 'QueueEnabled' = 'QUEUE_ENABLED'; 'AISpawnInterval' = 'AI_SPAWN_INTERVAL'
+}
+# Snapshot what the panel's own variables (+ defaults) would render, so the overlay
+# pass below can say exactly which fields it is about to contradict. Lists are
+# flattened to a comparable string; nothing here is used for rendering.
+function Snap($c) {
+    $s = @{}
+    foreach ($k in $c.Keys) {
+        if ($k -eq 'Extra') { continue }
+        $v = $c[$k]
+        $s[$k] = if ($v -is [Array]) { ($v -join ',') } else { "$v" }
+    }
+    return $s
+}
+$preOverlay = Snap $cfg
 
 # ---------------------------------------------------------------------------
 # 3) JSON OVERLAY (Primal Hosted). Optional; overrides everything above.
 #    Shape: { "ServerName": "...", "MaxPlayers": 200, "AllowedClasses": [...],
 #             "AdminSteamIds": [...], "extra": { "ServerDayLengthMinutes": "60", ... } }
 # ---------------------------------------------------------------------------
+# !! THE OVERLAY IS AN ADMIN ESCAPE HATCH, NOT A CONFIG WRITER (#356 T1(a), 2026-07-29).
+#
+# Ice's ruling: egg VARIABLES are the single source of truth for customer settings.
+# Provisioning and the panel write variables; nothing on the platform writes this file.
+# It survives only for keys that have no variable yet (the `extra` map).
+#
+# WHY THIS BLOCK NOW SHOUTS. This layer silently outranks the panel, and on
+# 2026-07-29 that was measured doing real damage on a live customer (93da0534):
+# the panel showed MAX_PLAYERS=300 / RCON off / no RCON password, while the rendered
+# Game.ini had MaxPlayerCount=250 / bRconEnabled=True / a real password - five fields
+# where the customer's own panel was lying to them, and one of them meant a live RCON
+# port they could not see or rotate. It also invented BUGS #20's phantom "23 species"
+# scare: the auditor read the egg variable, the overlay had pinned 21, and nobody
+# compared them.
+#
+# Rule 13: a path that declines to do its work must say so distinguishably. Discarding
+# the panel's value IS declining, so every override is now named on the console with
+# both values. DO NOT make this quiet again.
 $overlay = Join-Path $tmpl 'server-config.json'
 if (Test-Path $overlay) {
     Write-Host "(config) applying Primal Hosted overlay: server-config.json"
@@ -178,6 +259,37 @@ if (Test-Path $overlay) {
             'extra'          { foreach ($e in $p.Value.PSObject.Properties) { $cfg.Extra[$e.Name] = "$($e.Value)" } }
             default          { if ($cfg.ContainsKey($p.Name)) { $cfg[$p.Name] = "$($p.Value)" } }
         }
+    }
+
+    # --- name every field the overlay just took away from the panel ---
+    $postOverlay = Snap $cfg
+    $overridden  = @()
+    foreach ($k in ($preOverlay.Keys | Sort-Object)) {
+        if ($postOverlay[$k] -ne $preOverlay[$k]) { $overridden += $k }
+    }
+    if ($overridden.Count) {
+        Write-Host ""
+        Write-Host "(config) *** OVERLAY OVERRODE $($overridden.Count) PANEL FIELD(S) - the panel now DISAGREES with this server's Game.ini:"
+        foreach ($k in $overridden) {
+            $ev   = if ($eggVarFor.ContainsKey($k)) { $eggVarFor[$k] } else { '(no egg variable)' }
+            $was  = $preOverlay[$k]; $now = $postOverlay[$k]
+            # Never print a secret; length is enough to see that it changed.
+            if ($k -match 'Password') { $was = "<len $($was.Length)>"; $now = "<len $($now.Length)>" }
+            elseif ($was.Length -gt 90) { $was = $was.Substring(0, 90) + '...' }
+            if ($now.Length -gt 90 -and $k -notmatch 'Password') { $now = $now.Substring(0, 90) + '...' }
+            Write-Host ("           $k  (panel var $ev)")
+            Write-Host ("             panel/default -> '$was'")
+            Write-Host ("             overlay WINS  -> '$now'")
+        }
+        Write-Host "(config)    Fix: move these values into the egg variables and delete them from server-config.json."
+        Write-Host ""
+        Dbg ("overlay overrode panel fields: " + ($overridden -join ','))
+    } else {
+        Write-Host "(config) overlay changed no panel-visible field (extra-only or redundant) - panel and Game.ini agree"
+    }
+    if ($cfg.Extra.Keys.Count) {
+        Write-Host ("(config) overlay 'extra' sets {0} key(s) with no panel surface at all: {1}" -f `
+                    $cfg.Extra.Keys.Count, (($cfg.Extra.Keys | Sort-Object) -join ', '))
     }
 }
 
@@ -269,6 +381,9 @@ $scalars = @{
     '{{EnableMigration}}'       = $cfg.EnableMigration
     '{{EnableMassMigration}}'   = $cfg.EnableMassMigration
     '{{EnablePatrolZones}}'     = $cfg.EnablePatrolZones
+    '{{MapName}}'               = $cfg.MapName
+    '{{QueueEnabled}}'          = $cfg.QueueEnabled
+    '{{AISpawnInterval}}'       = $cfg.AISpawnInterval
     '{{GamePort}}'              = "$env:SERVER_PORT"    # game + query
     '{{QueuePort}}'             = "$env:SERVER_PORT_1"
     '{{RconPort}}'              = "$env:SERVER_PORT_2"
@@ -276,6 +391,13 @@ $scalars = @{
 }
 $gi = Get-Content (Join-Path $tmpl 'Game.ini.tmpl') -Raw
 foreach ($k in $scalars.Keys) { $gi = $gi.Replace($k, [string]$scalars[$k]) }
+
+# AISpawnInterval is OPT-IN: an unset variable removes the line entirely rather than
+# pinning a guessed engine default on every server. Stripped by name (never "drop all
+# empty values") because ServerPassword= legitimately renders empty.
+if ([string]::IsNullOrWhiteSpace($cfg.AISpawnInterval)) {
+    $gi = $gi -replace "(?m)^\s*AISpawnInterval\s*=\s*\r?\n", ''
+}
 
 # --- overlay "extra": generic [tigamesession] key setter (override anything) ---
 foreach ($k in $cfg.Extra.Keys) {
