@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
-"""Re-embed the loose wrapper/template files into the egg JSON's install script.
+"""Re-embed the loose install/wrapper/template files into the egg JSON.
 
-The install script writes start-evrima.ps1 / Game.ini.tmpl / Engine.ini.tmpl from
-base64 blobs held inside `scripts.installation.script`. Editing the loose files is
-the reviewable half; this puts them back into the blob that actually ships.
+Two levels of nesting, both handled here:
 
-    python isles/evrima-windows-feathers/embed.py          # rewrite the JSON
+  install.ps1  -- the egg's `scripts.installation.script`, kept as a loose file
+                  because an 80 KB single-line JSON string cannot be reviewed.
+  the 3 blobs  -- start-evrima.ps1 / Game.ini.tmpl / Engine.ini.tmpl, written by
+                  install.ps1 from base64 held inside it.
+
+So the order is: refresh the base64 inside install.ps1 from the loose files, then
+install the whole of install.ps1 into the egg JSON.
+
+    python isles/evrima-windows-feathers/embed.py          # rewrite install.ps1 + the JSON
     python isles/evrima-windows-feathers/embed.py --check   # report drift, write nothing
 
 Then run verify.py, which is the gate (this script is the fixer, that one is the
@@ -29,6 +35,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 EGG = os.path.join(HERE, 'egg-evrima-windows-feathers.json')
 VERIFY = os.path.join(HERE, 'verify.py')
+INSTALL = os.path.join(HERE, 'install.ps1')
 # order matters: the order the install script writes them, same as verify.py
 FILES = ['Engine.ini.tmpl', 'Game.ini.tmpl', 'start-evrima.ps1']
 B64_RE = re.compile(r"FromBase64String\('([A-Za-z0-9+/=]+)'\)")
@@ -39,7 +46,9 @@ args = ap.parse_args()
 
 with open(EGG, encoding='utf-8') as fh:
     egg = json.load(fh)
-install = egg['scripts']['installation']['script']
+# install.ps1 is the source of truth; the JSON string is the shipped copy of it.
+with open(INSTALL, encoding='utf-8', newline='') as fh:
+    install = fh.read()
 
 found = B64_RE.findall(install)
 if len(found) != len(FILES):
@@ -57,11 +66,21 @@ for (name, raw, b64), old in zip(wanted, found):
     state = 'DRIFT' if b64 != old else 'ok   '
     print(f'{state} {name:<18} {len(raw):>6} B  sha256={hashlib.sha256(raw).hexdigest()}')
 
-if args.check:
-    print(f'{len(drift)} file(s) drifted' if drift else 'no drift')
-    sys.exit(1 if drift else 0)
+# The install script itself can drift from the JSON independently of the blobs --
+# that is the whole reason it is a loose file now. Report it as its own line rather
+# than folding it into the blob drift, so "no drift" can never mean "I only looked
+# at three of the four things".
+script_drift = egg['scripts']['installation']['script'] != install
+print(f"{'DRIFT' if script_drift else 'ok   '} {'install.ps1 -> egg JSON':<18} "
+      f"{len(install.encode('utf-8')):>6} B  "
+      f"sha256={hashlib.sha256(install.encode('utf-8')).hexdigest()}")
 
-if not drift:
+if args.check:
+    n = len(drift) + (1 if script_drift else 0)
+    print(f'{n} item(s) drifted' if n else 'no drift')
+    sys.exit(1 if n else 0)
+
+if not drift and not script_drift:
     print('no drift - egg JSON already matches the loose files, nothing written')
     sys.exit(0)
 
@@ -73,7 +92,12 @@ for (name, _raw, b64), match in zip(wanted, B64_RE.finditer(install)):
     out.append(b64)
     cursor = match.end(1)
 out.append(install[cursor:])
-egg['scripts']['installation']['script'] = ''.join(out)
+install = ''.join(out)
+
+# Keep the loose file truthful about the base64 it carries, then ship it.
+with open(INSTALL, 'w', encoding='utf-8', newline='') as fh:
+    fh.write(install)
+egg['scripts']['installation']['script'] = install
 
 # ensure_ascii=True (the default) is DELIBERATE: the egg as exported by Ptero escapes
 # non-ASCII as \uXXXX, and writing it back literally would touch unrelated lines (the
@@ -82,7 +106,8 @@ egg['scripts']['installation']['script'] = ''.join(out)
 with open(EGG, 'w', encoding='utf-8', newline='\n') as fh:
     json.dump(egg, fh, indent=4, ensure_ascii=True)
     fh.write('\n')
-print(f'rewrote {os.path.basename(EGG)}: re-embedded {", ".join(drift)}')
+changed = list(drift) + (['install.ps1'] if script_drift else [])
+print(f'rewrote {os.path.basename(EGG)}: re-embedded {", ".join(changed)}')
 
 # Keep verify.py's recorded wrapper sha honest, so drift is a hard FAIL rather than
 # an advisory note that survives three sessions.

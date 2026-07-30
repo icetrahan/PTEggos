@@ -29,6 +29,11 @@ the daemon ever reads. So:
 - Steps 1 and 2 are the ones that go live. Step 3 is what stops this folder
   rotting into a lie.
 
+An **install-script** change (`install.ps1`) is simpler — it ships in **one**
+place, the panel's egg 40 *Install script* field — but it only takes effect on a
+**new provision or a reinstall**. Existing volumes already ran the old one, so a
+fix like #346 protects the next customer, not the servers already installed.
+
 `git push` on this repo does not touch egg 40 — but it **does** trigger
 `.github/workflows/isles.yml` on any `isles/**` change, which rebuilds and pushes
 `ghcr.io/icetrahan/isles:{deathmatch,survival,legacy-survival,evrima-survival}`.
@@ -39,18 +44,76 @@ Those four are live images for the Linux eggs. Push deliberately.
 | File | What |
 |---|---|
 | `egg-evrima-windows-feathers.json` | PTDL_v2 export of egg 40, importable into the panel |
+| `install.ps1` | the **install script** (`scripts.installation.script`), extracted |
 | `start-evrima.ps1` | the boot wrapper, extracted from the install script's base64 |
 | `Game.ini.tmpl` / `Engine.ini.tmpl` | the two config templates, likewise extracted |
-| `verify.py` | proves each extracted file is byte-identical to its embedded blob |
+| `embed.py` | puts the loose files back into the egg JSON (the fixer) |
+| `verify.py` | proves every extracted file matches what ships (the judge) |
+| `gate_test.py` | drives `install.ps1`'s failure gate through 9 real states (#346) |
 
-The three loose files are **not** read from here by anything — the install script
-writes them from base64. They exist so a wrapper change is diffable in review
-instead of being a 37,872-character opaque token. `verify.py` is what keeps the
-two representations from drifting:
+None of the loose files are read from here by anything — `install.ps1` lives in the
+panel DB, and it writes the other three from base64. They exist so a change is
+diffable in review instead of being an 80,232-character opaque token. There are
+**two levels of nesting**: the three blobs live inside `install.ps1`, which in turn
+lives inside the JSON. `embed.py` walks both, `verify.py` gates both:
 
 ```bash
-python isles/evrima-windows-feathers/verify.py
+python isles/evrima-windows-feathers/embed.py     # after editing any loose file
+python isles/evrima-windows-feathers/verify.py    # the gate
+python isles/evrima-windows-feathers/gate_test.py # the install gate's own test
 ```
+
+## 🔴 The install script must FAIL when there is no bootable binary (#346)
+
+On 2026-07-28 this egg printed **`Install complete.`** and exited **0** after all
+five steamcmd attempts failed at connect with no game files on disk. Red got a
+permanently unbootable server that *reported success*. Ice made it an explicit
+**customer-#3 onboarding gate**. Three defects produced it, all now fixed in
+`install.ps1` and each **pinned by an assertion in `verify.py`** — a comment saying
+"don't undo this" has already failed elsewhere in this workspace:
+
+1. **No failing exit path.** The missing-exe branch logged
+   `WARNING: TheIsleServer.exe NOT found` — it already knew the terminal state —
+   then fell through to `Install complete.` and exit 0.
+2. **⭐ It checked the wrong file.** `server\TheIsleServer.exe` is a **0.23 MB thin
+   launcher**. The wrapper's own LAUNCH block says it deliberately does *not* run
+   it, and instead launches
+   `server\TheIsle\Binaries\Win64\TheIsleServer-Win64-Shipping.exe`, throwing
+   without it. Measured on live `93da0534` on 2026-07-30: **242,176 B vs
+   185,213,952 B**, a 765× difference.
+3. **The retry loop broke on that same wrong file.** The thin launcher lands in the
+   first seconds of a ~70 GB pull, so the loop stopped retrying while the install
+   had barely started — the five attempts were spent, not used.
+
+The gate is now the binary the wrapper launches, and a failure exits 1 with a
+greppable class: `NO-OUTBOUND`, `STEAM-UNREACHABLE`, `DNS-BROKEN`, `DISK-FULL`,
+`STEAMCMD-FAILED`, `INCOMPLETE-PULL`, `TRUNCATED-BINARY`, `STEAMCMD-MISSING`.
+`INCOMPLETE-PULL` is the exact state the old script called complete.
+
+⚠️ **Why the classes matter, not just the exit code.** steamcmd is a native exe, so
+its non-zero exit does **not** throw under `$ErrorActionPreference='Stop'` — which
+is why five failures passed unnoticed. Nothing in the script now infers success
+from the absence of an exception; the terminal gate reads the filesystem the
+wrapper reads, and every non-success path names itself.
+
+⛔ **This does NOT close #347.** `feathers` failing to notify the panel is a defect
+in the Go Wings fork on win1, whose source is not in this workspace. When the box
+has no outbound, the notify dies too and the panel stays wedged on *installing*
+regardless of our exit code — so the `NO-OUTBOUND` message names that explicitly
+and points at the live recovery (admin **Toggle Install Status → Reinstall**). That
+is documentation of #347, not a fix for it.
+
+The one-time cause on the day was **ReliableSite's DDoS mitigation false-positiving
+on steamcmd's pull** and cutting the box's outbound. Protection is off on the box
+until they fix detection; the egg must hard-fail regardless of the cause.
+
+### Wasted egress, fixed with it
+
+The old self-heal deleted `steamapps` from attempt 2 on **unconditionally**, so the
+4.4 GB partial was re-fetched on every one of five attempts that could not reach
+Steam at all. The self-heal now probes first and **announces the skip** when Steam
+is unreachable — a partial download is only suspect if the pull could actually
+reach Steam.
 
 ## Scrubbed values (rule 10)
 
@@ -81,7 +144,7 @@ that is expected, and `verify.py` compares the *committed* file only.
 named the pre-BUILD-39 28 KB wrapper as of 2026-07-29). Anchor on block names, not
 line numbers, and let `embed.py` own the sha.
 
-## 🔴 ASCII ONLY in `start-evrima.ps1`
+## 🔴 ASCII ONLY in `start-evrima.ps1` **and `install.ps1`**
 
 The wrapper is UTF-8 **without a BOM**, so PowerShell 5.1 on the feathers node
 decodes it as CP1252. Several multi-byte characters (`—`, `🔴`, `⛔`) decode to
@@ -95,8 +158,12 @@ to comments broke it exactly this way on 2026-07-29 (BUGS #448).
 powershell -NoProfile -Command "$e=$null; [System.Management.Automation.Language.Parser]::ParseFile('isles/evrima-windows-feathers/start-evrima.ps1',[ref]$null,[ref]$e); $e"
 ```
 
-Silence means it parses. (The other files in this directory are not executed by
-PowerShell and are unaffected.)
+Silence means it parses. Do the same for `install.ps1` — it runs on the same node
+under the same decode. `verify.py` now enforces the ASCII half of this for both
+files automatically; the parse check above is still a manual step.
+
+(The remaining files in this directory are not executed by PowerShell and are
+unaffected.)
 
 Swept clean for `phsk_` / `phdk_` / `ptlc_` / `ptla_` values — the two `phsk_`
 hits are the *name* of the `PHSK_KEY` variable ("Server Key (phsk_)"), whose

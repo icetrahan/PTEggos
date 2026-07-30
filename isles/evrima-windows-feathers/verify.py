@@ -19,6 +19,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 EGG = os.path.join(HERE, 'egg-evrima-windows-feathers.json')
+INSTALL = os.path.join(HERE, 'install.ps1')
 # order matters: this is the order the install script writes them
 FILES = ['Engine.ini.tmpl', 'Game.ini.tmpl', 'start-evrima.ps1']
 # the sha256 of the *committed* (rcon-scrubbed) wrapper. The live one differs by
@@ -35,6 +36,51 @@ ok = True
 if len(blobs) != len(FILES):
     print(f'FAIL: expected {len(FILES)} embedded blobs, found {len(blobs)}')
     sys.exit(1)
+
+# --- the install script itself ------------------------------------------------
+# It is a loose file for the same reason the wrapper is: an 80 KB single-line JSON
+# string cannot be reviewed. Prove the shipped copy still equals the reviewable one.
+loose_install = open(INSTALL, encoding='utf-8', newline='').read()
+if loose_install == install:
+    print(f'ok    {"install.ps1":<18} {len(loose_install.encode("utf-8")):>6} B  '
+          f'sha256={hashlib.sha256(loose_install.encode("utf-8")).hexdigest()}')
+else:
+    ok = False
+    print(f'FAIL  install.ps1        differs from the egg JSON install script '
+          f'({len(loose_install)} chars vs {len(install)} chars) -> run embed.py')
+
+# The install script runs on the feathers node under the same CP1252 decode as the
+# wrapper, so the same ASCII-only rule applies (BUGS #448 killed a boot this way).
+non_ascii = [(i, l) for i, l in enumerate(loose_install.split('\n'), 1)
+             if any(ord(c) > 127 for c in l)]
+if non_ascii:
+    ok = False
+    print(f'FAIL  install.ps1 has {len(non_ascii)} non-ASCII line(s), first at '
+          f'line {non_ascii[0][0]} -- PS 5.1 decodes those as quote chars')
+
+# --- BUGS #346 regression pins ------------------------------------------------
+# The install script reported 'Install complete.' with exit 0 after five failed
+# steamcmd attempts and no game files, and it checked the 0.23 MB thin launcher
+# instead of the 177 MB binary start-evrima.ps1 actually launches. Ice made both an
+# explicit customer-#3 onboarding gate. A comment saying "don't undo this" has
+# already failed elsewhere in this workspace, so the properties are asserted.
+GATE_EXE = 'TheIsle\\Binaries\\Win64\\TheIsleServer-Win64-Shipping.exe'
+if GATE_EXE not in loose_install:
+    ok = False
+    print(f'FAIL  install.ps1 no longer gates on {GATE_EXE} (#346) -- the root '
+          f'TheIsleServer.exe is a 0.23 MB launcher and proves nothing')
+if not re.search(r'^\s*exit 1\s*$', loose_install, re.M):
+    ok = False
+    print('FAIL  install.ps1 has no failing exit path (#346) -- a missing binary '
+          'must exit 1 so the panel marks the install failed')
+# Exactly one reachable success line. Two would mean a path prints it on the way to
+# a failure; zero would mean a healthy install never reports itself.
+success_lines = re.findall(r"^\s*Write-Output 'Install complete\.'\s*$",
+                           loose_install, re.M)
+if len(success_lines) != 1:
+    ok = False
+    print(f'FAIL  install.ps1 has {len(success_lines)} executable '
+          f"\"Install complete.\" lines, expected exactly 1 (#346)")
 
 for name, b64 in zip(FILES, blobs):
     embedded = base64.b64decode(b64)
@@ -57,7 +103,7 @@ if wrapper_sha != WRAPPER_SHA:
 # rule 10: no secret VALUES in repo files. phsk_ appears as the PHSK_KEY
 # variable's *name* ("Server Key (phsk_)"), so it is not swept for here.
 blob = open(EGG, encoding='utf-8').read()
-for name in FILES:
+for name in FILES + ['install.ps1']:
     blob += open(os.path.join(HERE, name), encoding='utf-8', errors='replace').read()
 for pat in ('phdk_', 'ptlc_', 'ptla_'):
     if pat in blob:
