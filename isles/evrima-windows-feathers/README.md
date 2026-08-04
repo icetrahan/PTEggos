@@ -135,8 +135,8 @@ python isles/evrima-windows-feathers/embed.py    # re-embed + refresh verify.py'
 python isles/evrima-windows-feathers/verify.py   # the gate
 ```
 
-sha256 of the committed wrapper: **`e4e341ba40bb7403a45bdb0968067286a235c18eebb169591a8f58303bf78e57`**
-(44,280 B), recorded in `verify.py` as `WRAPPER_SHA` and refreshed by `embed.py`.
+sha256 of the committed wrapper: **`0cec5d848761854e1b9e0f53f949781a341e2dedcce948a1e094465d5ad568c6`**
+(46,224 B), recorded in `verify.py` as `WRAPPER_SHA` and refreshed by `embed.py`.
 The live wrapper differs by the one RCON line above, so its sha will not match —
 that is expected, and `verify.py` compares the *committed* file only.
 
