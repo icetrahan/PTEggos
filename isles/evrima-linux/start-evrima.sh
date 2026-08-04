@@ -609,15 +609,44 @@ EOS_ID=$(env_or "${EOS_CLIENT_ID:-}" "xyza7891gk5PRo3J7G9puCJGFJjmEguW")
 EOS_SECRET=$(env_or "${EOS_CLIENT_SECRET:-}" "pKWl6t5i9NJK8gTpVlAxzENZ65P8hYzodV8Dqe5Rlc8")
 
 EXTRA_ARGS=()
-# Multihome: bind + ADVERTISE one specific public IP (per-IP DDoS isolation).
-# EOS_OVERRIDE_HOST_IP is the load-bearing half: -MULTIHOME only binds; EOS
-# still advertises the primary egress IP without it (egg 40, solved 2026-07-14).
-# Node 1 is single-IP today so this is normally omitted entirely.
-MULTIHOME=$(env_or "${MULTIHOME_IP:-}" "${SERVER_IP:-}")
+# ---------------------------------------------------------------------------
+# 🔴 MULTIHOME IS OPT-IN HERE, AND MUST NOT DEFAULT TO $SERVER_IP.
+#
+# Egg 40 defaults it to the allocation IP that feathers injects as SERVER_IP,
+# and that is correct THERE: on the native-Windows node the public IP really is
+# on the box's own interface. In a Docker container it is NOT - the container
+# sees only its bridge address, so `-MULTIHOME=<public ip>` makes UE try to bind
+# an address it does not have:
+#
+#   LogNet: Warning: Could not create socket for bind address 172.93.100.254,
+#           got error BSD IPv4/6: binding to port 25053 failed (21)
+#   LogNet: Error: LoadMap: failed to Listen(...Gateway?Name=Player?listen)
+#
+# The server then never listens, never creates an EOS session, and therefore can
+# NEVER be ingested into the in-game community list - which is the entire reason
+# this egg exists (#652). Measured on the proving server 2026-08-04; carrying the
+# egg-40 line over unchanged is what produced it.
+#
+# The proven-working Linux references (egg 17 / the listing-test clone) pass no
+# -MULTIHOME at all and are listed, so all-interfaces is the right default here.
+# MULTIHOME_IP survives as an ADMIN escape hatch for a future multi-IP node, and
+# only takes effect when someone sets it deliberately.
+# ---------------------------------------------------------------------------
+MULTIHOME=$(echo -n "${MULTIHOME_IP:-}" | tr -d '[:space:]')
 if [ -n "$MULTIHOME" ] && [ "$MULTIHOME" != "0.0.0.0" ] && [[ "$MULTIHOME" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
-    EXTRA_ARGS+=("-MULTIHOME=$MULTIHOME")
-    export EOS_OVERRIDE_HOST_IP="$MULTIHOME"
-    log "start: EOS_OVERRIDE_HOST_IP=$MULTIHOME (advertise this IP to the server browser)"
+    # Refuse an address this container cannot actually bind, rather than letting
+    # UE fail to listen and look like a mysterious "server won't start".
+    if ip -4 addr show 2>/dev/null | grep -q "inet ${MULTIHOME}/"; then
+        EXTRA_ARGS+=("-MULTIHOME=$MULTIHOME")
+        export EOS_OVERRIDE_HOST_IP="$MULTIHOME"
+        log "start: MULTIHOME=$MULTIHOME + EOS_OVERRIDE_HOST_IP (advertise this IP to the server browser)"
+    else
+        warn "MULTIHOME_IP=$MULTIHOME is NOT on any interface in this container - IGNORING it."
+        warn "Binding it would fail (BSD error 21) and the server would never listen or"
+        warn "create an EOS session. Binding all interfaces instead."
+    fi
+elif [ -n "${SERVER_IP:-}" ]; then
+    log "start: multihome not set - binding all interfaces (SERVER_IP=${SERVER_IP} is deliberately NOT used; a container cannot bind it)"
 fi
 # -PrimalForceDino is INERT in a cooked server (#501) - the Engine.ini
 # ForceDinoList key above is what the pak loads. Passed anyway for parity with
