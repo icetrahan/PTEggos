@@ -97,7 +97,7 @@ $defaultClasses = @(
     'Tenontosaurus','Carnotaurus','Ceratosaurus','Deinosuchus','Dilophosaurus',
     'Herrerasaurus','Omniraptor','Pteranodon','Troodon','Beipiaosaurus','Gallimimus',
     'Diabloceratops','Triceratops','Allosaurus','Tyrannosaurus','Kentrosaurus',
-    'Baryonyx','Oviraptor'
+    'Austroraptor'
 )
 $cfg = @{
     ServerName            = 'Primal Heaven Evrima'
@@ -424,14 +424,44 @@ Write-Host "(config) rendered Game.ini (players=$($cfg.MaxPlayers), classes=$($c
 # is NEVER stored in the template - the template stays secret-free, rule 10).
 # -PrimalToken is still passed on the launch line as the override path.
 $eng = Get-Content (Join-Path $tmpl 'Engine.ini.tmpl') -Raw
+
+# --- pak config keys that are NOT the token ---------------------------------
+# #501: GetCommandLine() returns nothing in a cooked server build, so the pak
+# reads these from Engine.ini. -PrimalForceDino is still passed on the launch
+# line below, but it is INERT - the ini key is what the pak actually loads.
+# #572: config ARRAYS do not load. Every value here is ONE csv STRING.
+$pakForceDino = ('' + $env:PRIMAL_FORCE_DINO).Trim()
+# 2026-08-03: fallback REMOVED (Isle update 24542870). Ice reported Baryonyx and
+# Oviraptor. This hardcoded default silently force-RE-ADDED them at boot even
+# after they were stripped from ALLOWED_CLASSES, because Config_Scan hits on
+# AllowedClasses OR ForceAllowSet. Empty now means force nothing.
+$pakExtra = [ordered]@{
+    # Trike corpse cleanup - ON by Ice's call 2026-08-01. Lane B advised holding
+    # it OFF on customers until #573; Ice overrode that deliberately.
+    # Key names + value forms are the PAK'S: True/False (not 1/0), csv (not array).
+    'BodySweepOn'   = 'True'
+    'BodySweepList' = 'Triceratops'
+    'BodyHoldSec'   = '10.0'
+}
+# PRIMAL_MOD_INI="Key=Value;Other=1" overrides/extends the above with no script edit.
+if ($env:PRIMAL_MOD_INI) {
+    foreach ($pair in ($env:PRIMAL_MOD_INI -split ';')) {
+        $kv = $pair.Trim(); if (-not $kv) { continue }
+        $eq = $kv.IndexOf('='); if ($eq -lt 1) { Write-Host "(config) WARNING ignoring malformed PRIMAL_MOD_INI entry '$kv'"; continue }
+        $pakExtra[$kv.Substring(0, $eq).Trim()] = $kv.Substring($eq + 1).Trim()
+    }
+}
+
 if ($env:ENABLE_PRIMAL_MOD -eq '1' -and $phsk) {
     $dataBase   = (EnvOr $env:PRIMAL_DATA_BASE 'https://data.primalhosted.com').TrimEnd('/')
     $sessHeader = '[/Game/TheIsle/Core/Session/BP_TIGameSession.BP_TIGameSession_C]'
-    $sessBlock  = @(
-        $sessHeader,
-        "ApiToken=$phsk",
-        "PollURL=$dataBase/v1/commands/text"
-    ) -join "`r`n"
+    $sessLines  = New-Object System.Collections.Generic.List[string]
+    $sessLines.Add($sessHeader)
+    $sessLines.Add("ApiToken=$phsk")
+    $sessLines.Add("PollURL=$dataBase/v1/commands/text")
+    if ($pakForceDino) { $sessLines.Add("ForceDinoList=$pakForceDino") }
+    foreach ($pk in $pakExtra.Keys) { $sessLines.Add("$pk=$($pakExtra[$pk])") }
+    $sessBlock = ($sessLines -join "`r`n")
     # Idempotent: if the template ever grows this section, REPLACE it rather than
     # appending a second copy (UE takes the first, so a duplicate would silently
     # win with the wrong value).
@@ -444,6 +474,7 @@ if ($env:ENABLE_PRIMAL_MOD -eq '1' -and $phsk) {
         $eng = $eng.TrimEnd() + "`r`n`r`n" + $sessBlock + "`r`n"
     }
     Write-Host "(config) Engine.ini: Primal session block set (tokenlen=$($phsk.Length), poll=$dataBase/v1/commands/text)"
+    Write-Host "(config) Engine.ini: pak keys ForceDinoList=$pakForceDino $(($pakExtra.Keys | ForEach-Object { "$_=$($pakExtra[$_])" }) -join ' ')"
 } else {
     Write-Host "(config) Engine.ini: no Primal session block (mod disabled or no PHSK_KEY)"
 }
