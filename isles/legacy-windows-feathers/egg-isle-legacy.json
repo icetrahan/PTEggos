@@ -1,0 +1,382 @@
+{
+    "_comment": "PRIMAL HOSTED \u2014 The Isle: Legacy (UE4.25, app 412680 -beta public). Sibling of the Evrima egg; feathers/Windows node. Import via Nests -> Import Egg.",
+    "meta": {
+        "version": "PTDL_v2",
+        "update_url": null
+    },
+    "exported_at": "2026-07-11T18:05:15+00:00",
+    "name": "The Isle: Legacy (Windows / feathers)",
+    "author": "admin@primalhosted.com",
+    "description": "The Isle LEGACY dedicated server (SteamCMD app 412680, branch public, UE4.25). Installs ONCE (frozen build, no updates). Every boot: renders the Legacy Game.ini (igamesession/GameSession/igamemode) + MOTD, syncs server mods (grouping-aware, install/uninstall), then launches Shipping directly with ?game={mode}?listen. Map: Isle_V3 / Thenyaw / TestLevel.",
+    "features": null,
+    "docker_images": {
+        "Windows SteamCMD": "windows/steamcmd"
+    },
+    "file_denylist": [],
+    "startup": "powershell -NoProfile -ExecutionPolicy Bypass -File _primal\\start-legacy.ps1",
+    "config": {
+        "files": "{}",
+        "startup": "{\"done\": [\"Bringing World\", \"Match State Changed\", \"InProgress\"]}",
+        "logs": "{}",
+        "stop": "^C"
+    },
+    "scripts": {
+        "installation": {
+            "script": "$ErrorActionPreference = 'Stop'\n$root = (Get-Location).Path\n$game = Join-Path $root 'server'\n$sc   = Join-Path $root 'steamcmd'\n$prim = Join-Path $root '_primal'\nforeach ($d in $game, $sc, $prim) { New-Item -ItemType Directory -Force -Path $d | Out-Null }\n\nWrite-Output 'Downloading SteamCMD...'\n$zip = Join-Path $sc 'steamcmd.zip'\nInvoke-WebRequest -Uri 'https://steamcdn-a.akamaihd.net/client/installer/steamcmd.zip' -OutFile $zip\nExpand-Archive -Path $zip -DestinationPath $sc -Force\n$steam = Join-Path $sc 'steamcmd.exe'\n\nWrite-Output 'Bootstrapping SteamCMD (self-update)...'\n& $steam +quit\n\n# The Isle Legacy = app 412680, branch `public` (~2.3GB). First app_update can fail\n# with \"Missing configuration\" (app-config not cached) OR leave a wedged steamapps\n# folder; either way we retry, and after a miss we NUKE steamapps to self-heal (the\n# 2026-07-09 update outage \u2014 a stale appmanifest/`downloading` blocked every retry).\n$serverExe = Join-Path $game 'TheIsle\\Binaries\\Win64\\TheIsleServer-Win64-Shipping.exe'\n$steamApps = Join-Path $game 'steamapps'\n$maxTries  = 5\nfor ($i = 1; $i -le $maxTries; $i++) {\n  Write-Output \"Installing The Isle: Legacy (app 412680, public) - attempt $i/$maxTries (~2.3GB)...\"\n  & $steam +force_install_dir $game +login anonymous +app_update 412680 -beta public validate +quit\n  if (Test-Path $serverExe) { Write-Output 'Legacy server files present.'; break }\n  Write-Output '(self-heal) app not installed yet - deleting steamapps and retrying in 10s...'\n  if (Test-Path $steamApps) { Remove-Item -Recurse -Force $steamApps -ErrorAction SilentlyContinue }\n  Start-Sleep -Seconds 10\n}\n\n$prereq = Join-Path $game 'Engine\\Extras\\Redist\\en-us\\UE4PrereqSetup_x64.exe'\nif (Test-Path $prereq) {\n  Write-Output 'Installing UE4 prerequisites (VC++ redistributables)...'\n  Start-Process -FilePath $prereq -ArgumentList '/quiet','/norestart' -Wait\n}\n\nWrite-Output 'Writing Primal startup wrapper (_primal\\start-legacy.ps1)...'\n[IO.File]::WriteAllBytes((Join-Path $prim 'start-legacy.ps1'), [Convert]::FromBase64String('IyBQcmltYWwgLSBUaGUgSXNsZTogTEVHQUNZIHN0YXJ0dXAgd3JhcHBlciAoZmVhdGhlcnMgLyBuYXRpdmUtV2luZG93cyBub2RlKS4KIwojIExlZ2FjeSA9IFN0ZWFtQ01EIGFwcCA0MTI2ODAsIGJyYW5jaCBgcHVibGljYCAoVUUgNC4yNS40KS4gSU5TVEFMTCBPTkNFLCBORVZFUgojIFVQREFURSAtIHRoZSBidWlsZCBpcyBmcm96ZW4sIHNvIHRoZXJlIGlzIE5PIFN0ZWFtQ01EIHVwZGF0ZSBvbiBib290IChhbiB1cGRhdGUKIyB3b3VsZCBvbmx5IHJpc2sgYnJlYWtpbmcgYSB3b3JraW5nIGluc3RhbGwpLiBEb3duc2lkZTogYSBjcmFzaCBjYW4gd2lwZSBmaWxlcywKIyBzbyB3ZSBSRS1SRU5ERVIgR2FtZS5pbmkgKyBSRS1TWU5DIG1vZHMgZXZlcnkgYm9vdCB0byBzZWxmLWhlYWwuCiMKIyBFYWNoIGJvb3Q6IHJlbmRlciBHYW1lLmluaSAoTGVnYWN5IHNjaGVtYSkgKyBNT1REIC0+IHN5bmMgc2VydmVyIG1vZHMgLT4gbGF1bmNoLgojCiMgTGF1bmNoIChJY2UncyBjYW5vbmljYWwgTGVnYWN5IGNvbW1hbmQpOgojICAgVGhlSXNsZVNlcnZlci1XaW42NC1TaGlwcGluZy5leGUge01hcH0/UG9ydD17cH0/UXVlcnlQb3J0PXtxfT9NYXhQbGF5ZXJzPXttfT9nYW1lPXttb2RlfT9saXN0ZW4gLWxvZwojICAgLSA/Z2FtZSAoU3Vydml2YWx8U2FuZGJveCkgYW5kID9saXN0ZW4gYXJlIFJFUVVJUkVEICh3aXRob3V0IHRoZW0gdGhlIHNlcnZlcgojICAgICBleGl0cyBpbW1lZGlhdGVseSkuIE5PIC1NVUxUSUhPTUUgLyAtc3Rkb3V0IChMZWdhY3kgZG9lc24ndCB3YW50IHRoZW0pLgojICAgLSBSb290IFRoZUlzbGVTZXJ2ZXIuZXhlIGlzIGEgZGVhZCBsYXVuY2hlciBzaGltOyBydW4gU2hpcHBpbmcgZGlyZWN0bHkuCgokRXJyb3JBY3Rpb25QcmVmZXJlbmNlID0gJ1N0b3AnCiRyb290ICAgID0gKEdldC1Mb2NhdGlvbikuUGF0aAokZ2FtZSAgICA9IEpvaW4tUGF0aCAkcm9vdCAnc2VydmVyJwokZXhlICAgICA9IEpvaW4tUGF0aCAkZ2FtZSAnVGhlSXNsZVxCaW5hcmllc1xXaW42NFxUaGVJc2xlU2VydmVyLVdpbjY0LVNoaXBwaW5nLmV4ZScKJGlzbGVMb2cgPSBKb2luLVBhdGggJGdhbWUgJ1RoZUlzbGVcU2F2ZWRcTG9nc1xUaGVJc2xlLmxvZycKJHNhdmVkRGlyPSBKb2luLVBhdGggJGdhbWUgJ1RoZUlzbGVcU2F2ZWQnCiRjZmdEaXIgID0gSm9pbi1QYXRoICRnYW1lICdUaGVJc2xlXFNhdmVkXENvbmZpZ1xXaW5kb3dzU2VydmVyJwokcGFrc0RpciA9IEpvaW4tUGF0aCAkZ2FtZSAnVGhlSXNsZVxDb250ZW50XFBha3MnCiRtb2RzU3JjID0gSm9pbi1QYXRoICRyb290ICdfbW9kcycKCmZ1bmN0aW9uIFRvLUJvb2woW3N0cmluZ10kdiwgW3N0cmluZ10kZmIpIHsKICAgIGlmIChbc3RyaW5nXTo6SXNOdWxsT3JXaGl0ZVNwYWNlKCR2KSkgeyByZXR1cm4gJGZiIH0KICAgIGlmICgkdiAtbWF0Y2ggJ14oMXx0cnVlfHllc3xvbikkJykgeyByZXR1cm4gJ3RydWUnIH0gZWxzZSB7IHJldHVybiAnZmFsc2UnIH0KfQpmdW5jdGlvbiBTcGxpdC1Dc3YoW3N0cmluZ10kdikgewogICAgaWYgKFtzdHJpbmddOjpJc051bGxPcldoaXRlU3BhY2UoJHYpKSB7IHJldHVybiBAKCkgfQogICAgcmV0dXJuIEAoJHYgLXNwbGl0ICdbLFxyXG5dKycgfCBGb3JFYWNoLU9iamVjdCB7ICRfLlRyaW0oKSB9IHwgV2hlcmUtT2JqZWN0IHsgJF8gLW5lICcnIH0pCn0KZnVuY3Rpb24gRW52T3IoW3N0cmluZ10kdiwgW3N0cmluZ10kZmIpIHsgaWYgKFtzdHJpbmddOjpJc051bGxPcldoaXRlU3BhY2UoJHYpKSB7IHJldHVybiAkZmIgfSBlbHNlIHsgcmV0dXJuICR2IH0gfQoKIyDilIDilIAgc2V0dGluZ3MgKGRlZmF1bHRzIDwtIGVnZyB2YXJzKSDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIAKJHNlcnZlck5hbWUgPSBFbnZPciAkZW52OlNFUlZFUl9OQU1FICdQcmltYWwgSG9zdGVkIC0gTGVnYWN5JwokbWF4UGxheWVycyA9IEVudk9yICRlbnY6TUFYX1BMQVlFUlMgJzEwMCcKJGdhbWVNb2RlICAgPSBFbnZPciAkZW52OkdBTUVfTU9ERSAnU3Vydml2YWwnICAgICAgICAgICAgICAgICAjIFN1cnZpdmFsIHwgU2FuZGJveAokcGFzc3dvcmQgICA9IEVudk9yICRlbnY6U0VSVkVSX1BBU1NXT1JEICcnCiRnYW1lUG9ydCAgID0gRW52T3IgJGVudjpTRVJWRVJfUE9SVCAnNzc3NycKJHF1ZXJ5UG9ydCAgPSBFbnZPciAkZW52OlNFUlZFUl9QT1JUXzEgKFtzdHJpbmddKFtpbnRdJGdhbWVQb3J0ICsgMSkpCgojIG1hcDogYWNjZXB0IGEgc2hvcnQga2V5IG9yIGEgZnVsbCBwYXRoIChkZWZhdWx0IElzbGVfVjMpCiRNQVBTID0gQHsKICAgICdJc2xlX1YzJyAgID0gJy9HYW1lL1RoZUlzbGUvTWFwcy9MYW5kc2NhcGUzL0lzbGVfVjMnCiAgICAnVjMnICAgICAgICA9ICcvR2FtZS9UaGVJc2xlL01hcHMvTGFuZHNjYXBlMy9Jc2xlX1YzJwogICAgJ1RoZW55YXcnICAgPSAnL0dhbWUvVGhlSXNsZS9NYXBzL1RoZW55YXdfSXNsYW5kL1RoZW55YXdfSXNsYW5kJwogICAgJ1Rlc3RMZXZlbCcgPSAnL0dhbWUvVGhlSXNsZS9NYXBzL0RldmVsb3Blci9EVl9UZXN0TGV2ZWwnCn0KJG1hcEluID0gRW52T3IgJGVudjpNQVAgJ0lzbGVfVjMnCiRtYXAgICA9IGlmICgkTUFQUy5Db250YWluc0tleSgkbWFwSW4pKSB7ICRNQVBTWyRtYXBJbl0gfSBlbHNlaWYgKCRtYXBJbiAtbGlrZSAnL0dhbWUvKicpIHsgJG1hcEluIH0gZWxzZSB7ICRNQVBTWydJc2xlX1YzJ10gfQoKJGFkbWlucyAgICAgICAgPSBTcGxpdC1Dc3YgJGVudjpBRE1JTl9TVEVBTV9JRFMKJGRpc2FibGVkRGlub3MgPSBTcGxpdC1Dc3YgJGVudjpESVNBQkxFRF9ESU5PUwokbW90ZCAgICAgICAgICA9IEVudk9yICRlbnY6TU9URCAnJwoKIyDilIDilIAgUkVOREVSIEdhbWUuaW5pIChMZWdhY3kgc2NoZW1hOiBpZ2FtZXNlc3Npb24gKyBFbmdpbmUuR2FtZVNlc3Npb24gKyBpZ2FtZW1vZGUpIOKUgOKUgApOZXctSXRlbSAtSXRlbVR5cGUgRGlyZWN0b3J5IC1Gb3JjZSAtUGF0aCAkY2ZnRGlyIHwgT3V0LU51bGwKJGFkbWluTGluZXMgPSBpZiAoJGFkbWlucy5Db3VudCkgeyAoJGFkbWlucyB8IEZvckVhY2gtT2JqZWN0IHsgIlNlcnZlckFkbWlucz0kXyIgfSkgLWpvaW4gImByYG4iIH0gZWxzZSB7ICdTZXJ2ZXJBZG1pbnM9JyB9CiRkaW5vTGluZXMgID0gaWYgKCRkaXNhYmxlZERpbm9zLkNvdW50KSB7ICgkZGlzYWJsZWREaW5vcyB8IEZvckVhY2gtT2JqZWN0IHsgIkRpc2FibGVkRGlub3NhdXJzPSRfIiB9KSAtam9pbiAiYHJgbiIgfSBlbHNlIHsgJ0Rpc2FibGVkRGlub3NhdXJzPScgfQoKJGdpID0gQCIKWy9zY3JpcHQvdGhlaXNsZS5pZ2FtZXNlc3Npb25dClNlcnZlck5hbWU9JHNlcnZlck5hbWUKU2VydmVyUGFzc3dvcmQ9JHBhc3N3b3JkCmJTZXJ2ZXJEYXRhYmFzZT10cnVlCmJTZXJ2ZXJBbGxvd0NoYXQ9JChUby1Cb29sICRlbnY6QUxMT1dfQ0hBVCAndHJ1ZScpCmJTZXJ2ZXJHbG9iYWxDaGF0PSQoVG8tQm9vbCAkZW52OkdMT0JBTF9DSEFUICd0cnVlJykKYlNlcnZlck5hbWVUYWdzPSQoVG8tQm9vbCAkZW52Ok5BTUVfVEFHUyAndHJ1ZScpCmJTZXJ2ZXJHcm93dGg9JChUby1Cb29sICRlbnY6R1JPV1RIICd0cnVlJykKYlNlcnZlckZhbGxEYW1hZ2U9JChUby1Cb29sICRlbnY6RkFMTF9EQU1BR0UgJ3RydWUnKQpiU2VydmVyQWxsb3dUdXJuSW5QbGFjZT0kKFRvLUJvb2wgJGVudjpUVVJOX0lOX1BMQUNFICd0cnVlJykKYlNlcnZlckFsbG93UmVwbGF5UmVjb3JkaW5nPSQoVG8tQm9vbCAkZW52OkFMTE9XX1JFUExBWSAndHJ1ZScpClNlcnZlckRlYWRCb2R5VGltZT0kKEVudk9yICRlbnY6REVBRF9CT0RZX1RJTUUgJzIwMCcpClNlcnZlclJlc3Bhd25UaW1lPSQoRW52T3IgJGVudjpSRVNQQVdOX1RJTUUgJzMwJykKU2VydmVyTG9nb3V0VGltZT0kKEVudk9yICRlbnY6TE9HT1VUX1RJTUUgJzYwJykKU2VydmVyRm9vdHByaW50TGlmZXRpbWU9JChFbnZPciAkZW52OkZPT1RQUklOVF9MSUZFVElNRSAnNjAnKQpiU2VydmVyTmVzdGluZz0kKFRvLUJvb2wgJGVudjpORVNUSU5HICd0cnVlJykKYlNlcnZlclNjZW50PSQoVG8tQm9vbCAkZW52OlNDRU5UICdmYWxzZScpCmJTZXJ2ZXJBST0kKFRvLUJvb2wgJGVudjpFTkFCTEVfQUkgJ3RydWUnKQpTZXJ2ZXJBSU1heD0kKEVudk9yICRlbnY6QUlfTUFYICcxMDAnKQpTZXJ2ZXJBSVJhdGU9JChFbnZPciAkZW52OkFJX1JBVEUgJzEuNScpCmJTZXJ2ZXJBSVBsYXllclNwYXducz0kKFRvLUJvb2wgJGVudjpBSV9QTEFZRVJfU1BBV05TICd0cnVlJykKJGFkbWluTGluZXMKClsvU2NyaXB0L0VuZ2luZS5HYW1lU2Vzc2lvbl0KTWF4UGxheWVycz0kbWF4UGxheWVycwoKWy9zY3JpcHQvdGhlaXNsZS5pZ2FtZW1vZGVdClNlcnZlclN0YXJ0aW5nVGltZT0kKEVudk9yICRlbnY6U1RBUlRJTkdfVElNRSAnMzQxJykKYlNlcnZlckR5bmFtaWNUaW1lT2ZEYXk9JChUby1Cb29sICRlbnY6RFlOQU1JQ19USU1FICcwJykKU2VydmVyRGF5TGVuZ3RoPSQoRW52T3IgJGVudjpEQVlfTEVOR1RIICczMCcpCiRkaW5vTGluZXMKIkAKU2V0LUNvbnRlbnQgLVBhdGggKEpvaW4tUGF0aCAkY2ZnRGlyICdHYW1lLmluaScpIC1WYWx1ZSAkZ2kgLUVuY29kaW5nIGFzY2lpCldyaXRlLUhvc3QgIihjb25maWcpIHJlbmRlcmVkIExlZ2FjeSBHYW1lLmluaSAocGxheWVycz0kbWF4UGxheWVycywgbW9kZT0kZ2FtZU1vZGUsIGFkbWlucz0kKCRhZG1pbnMuQ291bnQpLCBkaXNhYmxlZD0kKCRkaXNhYmxlZERpbm9zLkNvdW50KSkiCgojIOKUgOKUgCBNT1REIChlbXB0eSBmaWxlID0gbm8gTU9URCBwb3B1cDsgdGV4dCA9IHNob3duIHRvIHBsYXllcnMgb24gam9pbikg4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSACk5ldy1JdGVtIC1JdGVtVHlwZSBEaXJlY3RvcnkgLUZvcmNlIC1QYXRoICRzYXZlZERpciB8IE91dC1OdWxsClNldC1Db250ZW50IC1QYXRoIChKb2luLVBhdGggJHNhdmVkRGlyICdNT1RELnR4dCcpIC1WYWx1ZSAkbW90ZCAtRW5jb2RpbmcgdXRmOCAtTm9OZXdsaW5lCldyaXRlLUhvc3QgIihjb25maWcpIHdyb3RlIE1PVEQgKCQoJG1vdGQuTGVuZ3RoKSBjaGFycykiCgojIOKUgOKUgCBNT0QgU1lOQyAoc2VydmVyLXNpZGUgLnBhaysuc2lnIGludG8gQ29udGVudC9QYWtzOyBzZXJ2ZXIgbXVzdCBiZSBvZmZsaW5lLAojICAgIHdoaWNoIGl0IGlzIGhlcmUgcHJlLWxhdW5jaCkuIFJlLXN5bmNlZCBldmVyeSBib290IHNvIGEgY3Jhc2gtd2lwZSBzZWxmLWhlYWxzLgojICAgIEdyb3VwaW5nIG1vZHMgYXJlIG11dHVhbGx5IGV4Y2x1c2l2ZTsgdmFyaWFudCBtb2RzIHBpY2sgYSBidWlsZCBieSBncm91cGluZy4g4pSACiRNT0RfQ0FUQUxPRyA9IEB7CiAgICAnVW5pdmVyc2FsR3JvdXBpbmcnICA9IEB7IGZvbGRlciA9ICdVbml2ZXJzYWxHcm91cGluZyc7ICBmaWxlID0gJ1RoZUlzbGUtV2luZG93c1NlcnZlcl96VW5pdmVyc2FsR3JvdXBpbmcnIH0KICAgICdEaWV0R3JvdXBpbmcnICAgICAgID0gQHsgZm9sZGVyID0gJ0RpZXRHcm91cGluZyc7ICAgICAgIGZpbGUgPSAnVGhlSXNsZS1XaW5kb3dzU2VydmVyX3pEaWV0R3JvdXBpbmcnIH0KICAgICdIZXJiaWVHcm91cGluZycgICAgID0gQHsgZm9sZGVyID0gJ0hlcmJpZUdyb3VwaW5nJzsgICAgIGZpbGUgPSAnVGhlSXNsZS1XaW5kb3dzU2VydmVyX3pIZXJiaWVHcm91cGluZycgfQogICAgJ1VuaXZlcnNhbERldkNvbG9ycycgPSBAeyBmb2xkZXIgPSAnVW5pdmVyc2FsRGV2Q29sb3JzJzsgZmlsZSA9ICdUaGVJc2xlLVdpbmRvd3NTZXJ2ZXJfVW5pdmVyc2FsRGV2Q29sb3JzJyB9CiAgICAnQW5reUJvbmVicmVhaycgICAgICA9IEB7IGZvbGRlciA9ICdBbmt5Qm9uZWJyZWFrJzsgICAgICBmaWxlID0gJ1RoZUlzbGUtV2luZG93c1NlcnZlcl96ekFua3lCb25lYnJlYWsnIH0KICAgICdQYWNoeUJvbmVCcmVhaycgICAgID0gQHsgZm9sZGVyID0gJ1BhY2h5Qm9uZUJyZWFrJzsgICAgIGZpbGUgPSAnVGhlSXNsZS1XaW5kb3dzU2VydmVyX3pQYWNoeUJvbmVCcmVhaycgfQogICAgJ0VuaGFuY2VkUGFyYScgICA9IEB7IGZvbGRlciA9ICdFbmhhbmNlZFBhcmEnOyAgIHZhcmlhbnRzID0gQHsgbm9uZT0nVGhlSXNsZS1XaW5kb3dzU2VydmVyX3pFbmhhbmNlZFBhcmFfRGVmYXVsdEdyb3VwaW5nJzsgaGVyYmllPSdUaGVJc2xlLVdpbmRvd3NTZXJ2ZXJfekVuaGFuY2VkUGFyYV9EaWV0SGVyYmllR3JvdXBpbmcnOyBkaWV0PSdUaGVJc2xlLVdpbmRvd3NTZXJ2ZXJfekVuaGFuY2VkUGFyYV9EaWV0SGVyYmllR3JvdXBpbmcnOyB1bml2ZXJzYWw9J1RoZUlzbGUtV2luZG93c1NlcnZlcl96RW5oYW5jZWRQYXJhX1VuaXZlcnNhbEdyb3VwaW5nJyB9IH0KICAgICdFbmhhbmNlZEF1c3RybycgPSBAeyBmb2xkZXIgPSAnRW5oYW5jZWRBdXN0cm8nOyB2YXJpYW50cyA9IEB7IG5vbmU9J1RoZUlzbGUtV2luZG93c1NlcnZlcl96ekVuaGFuY2VkQXVzdHJvX0RlZmF1bHRHcm91cGluZyc7IGhlcmJpZT0nVGhlSXNsZS1XaW5kb3dzU2VydmVyX3p6RW5oYW5jZWRBdXN0cm9fRGVmYXVsdEdyb3VwaW5nJzsgZGlldD0nVGhlSXNsZS1XaW5kb3dzU2VydmVyX3p6RW5oYW5jZWRBdXN0cm9fVW5pdmVyc2FsRGlldEdyb3VwaW5nJzsgdW5pdmVyc2FsPSdUaGVJc2xlLVdpbmRvd3NTZXJ2ZXJfenpFbmhhbmNlZEF1c3Ryb19Vbml2ZXJzYWxEaWV0R3JvdXBpbmcnIH0gfQogICAgJ0VuaGFuY2VkQmFyeScgICA9IEB7IGZvbGRlciA9ICdFbmhhbmNlZEJhcnknOyAgIHZhcmlhbnRzID0gQHsgbm9uZT0nVGhlSXNsZS1XaW5kb3dzU2VydmVyX3p6RW5oYW5jZWRCYXJ5X0RlZmF1bHRHcm91cGluZyc7IGhlcmJpZT0nVGhlSXNsZS1XaW5kb3dzU2VydmVyX3p6RW5oYW5jZWRCYXJ5X0RlZmF1bHRHcm91cGluZyc7IGRpZXQ9J1RoZUlzbGUtV2luZG93c1NlcnZlcl96ekVuaGFuY2VkQmFyeV9Vbml2ZXJzYWxEaWV0R3JvdXBpbmcnOyB1bml2ZXJzYWw9J1RoZUlzbGUtV2luZG93c1NlcnZlcl96ekVuaGFuY2VkQmFyeV9Vbml2ZXJzYWxEaWV0R3JvdXBpbmcnIH0gfQogICAgJ0V4dHJlbWVVdGFoJyAgICA9IEB7IGZvbGRlciA9ICdFeHRyZW1lVXRhaCc7ICAgIHZhcmlhbnRzID0gQHsgbm9uZT0nVGhlSXNsZS1XaW5kb3dzU2VydmVyX3pFeHRyZW1lVXRhaF9EZWZhdWx0R3JvdXBpbmcnOyBoZXJiaWU9J1RoZUlzbGUtV2luZG93c1NlcnZlcl96RXh0cmVtZVV0YWhfRGVmYXVsdEdyb3VwaW5nJzsgZGlldD0nVGhlSXNsZS1XaW5kb3dzU2VydmVyX3pFeHRyZW1lVXRhaF9EaWV0VW5pdmVyc2FsR3JvdXBpbmcnOyB1bml2ZXJzYWw9J1RoZUlzbGUtV2luZG93c1NlcnZlcl96RXh0cmVtZVV0YWhfRGlldFVuaXZlcnNhbEdyb3VwaW5nJyB9IH0KICAgICdVdGFoR29yZScgICAgICAgPSBAeyBmb2xkZXIgPSAnVXRhaEdvcmUnOyAgICAgICB2YXJpYW50cyA9IEB7IG5vbmU9J1RoZUlzbGUtV2luZG93c1NlcnZlcl96VXRhaEdvcmVfRGVmYXVsdEdyb3VwaW5nJzsgaGVyYmllPSdUaGVJc2xlLVdpbmRvd3NTZXJ2ZXJfelV0YWhHb3JlX0RlZmF1bHRHcm91cGluZyc7IGRpZXQ9J1RoZUlzbGUtV2luZG93c1NlcnZlcl96VXRhaEdvcmVfRGlldFVuaXZlcnNhbEdyb3VwaW5nJzsgdW5pdmVyc2FsPSdUaGVJc2xlLVdpbmRvd3NTZXJ2ZXJfelV0YWhHb3JlX0RpZXRVbml2ZXJzYWxHcm91cGluZycgfSB9Cn0KZnVuY3Rpb24gTW9kLUZpbGVzKCRtLCAkZ3JvdXBpbmcpIHsKICAgIGlmICgkbS52YXJpYW50cykgeyAkYmFzZSA9ICRtLnZhcmlhbnRzWyRncm91cGluZ107IGlmICgtbm90ICRiYXNlKSB7ICRiYXNlID0gJG0udmFyaWFudHNbJ25vbmUnXSB9IH0gZWxzZSB7ICRiYXNlID0gJG0uZmlsZSB9CiAgICByZXR1cm4gJGJhc2UKfQojIHJlc29sdmUgdGhlIERFU0lSRUQgbW9kIHNldCAoZ3JvdXBpbmcgbW9kICsgZW5hYmxlZCBhZGRvbnMsIG1pbnVzIGluY29tcGF0aWJpbGl0aWVzKQokZ3JvdXBpbmcgPSAoRW52T3IgJGVudjpHUk9VUElOR19NT0QgJ25vbmUnKS5Ub0xvd2VyKCkKJGdyb3VwTW9kTmFtZSA9IEB7ICd1bml2ZXJzYWwnPSdVbml2ZXJzYWxHcm91cGluZyc7ICdkaWV0Jz0nRGlldEdyb3VwaW5nJzsgJ2hlcmJpZSc9J0hlcmJpZUdyb3VwaW5nJyB9WyRncm91cGluZ10KJHdhbnRNb2RzID0gTmV3LU9iamVjdCBTeXN0ZW0uQ29sbGVjdGlvbnMuR2VuZXJpYy5MaXN0W3N0cmluZ10KaWYgKCRncm91cE1vZE5hbWUpIHsgJHdhbnRNb2RzLkFkZCgkZ3JvdXBNb2ROYW1lKSB9CmZvcmVhY2ggKCRtb2QgaW4gKFNwbGl0LUNzdiAkZW52OkVOQUJMRURfTU9EUykpIHsgaWYgKCRNT0RfQ0FUQUxPRy5Db250YWluc0tleSgkbW9kKSkgeyAkd2FudE1vZHMuQWRkKCRtb2QpIH0gfQppZiAoJHdhbnRNb2RzIC1jb250YWlucyAnRXh0cmVtZVV0YWgnIC1hbmQgJHdhbnRNb2RzIC1jb250YWlucyAnVXRhaEdvcmUnKSB7CiAgICBXcml0ZS1Ib3N0ICIobW9kcykgV0FSTklORzogRXh0cmVtZVV0YWggYW5kIFV0YWhHb3JlIGFyZSBpbmNvbXBhdGlibGUgLSBrZWVwaW5nIEV4dHJlbWVVdGFoLCBkcm9wcGluZyBVdGFoR29yZSIKICAgICR3YW50TW9kcy5SZW1vdmUoJ1V0YWhHb3JlJykgfCBPdXQtTnVsbAp9CgojIHN0YWdlIHRoZSBtb2QgbGlicmFyeSBmcm9tIFIyIGlmIHdlIG5lZWQgbW9kcyBhbmQgaXQgaXNuJ3QgcHJlc2VudCAoYWxzbyBzZWxmLWhlYWxzIGEgY3Jhc2gtd2lwZTsKIyB2YW5pbGxhIHNlcnZlcnMgbmV2ZXIgZG93bmxvYWQgaXQpLiBNT0RTX1VSTCBjYW4gYmUgb3ZlcnJpZGRlbiB2aWEgdGhlIExFR0FDWV9NT0RTX1VSTCBlZ2cgdmFyLgokTU9EU19VUkwgPSBFbnZPciAkZW52OkxFR0FDWV9NT0RTX1VSTCAnaHR0cHM6Ly9wdWItZmI2ZmRjYzJjZTkxNDc3NWJhNDFjOTgxM2Y4MGRjMTAucjIuZGV2L2xlZ2FjeS1tb2RzLnppcCcKaWYgKCR3YW50TW9kcy5Db3VudCAtZ3QgMCAtYW5kIC1ub3QgKFRlc3QtUGF0aCAoSm9pbi1QYXRoICRtb2RzU3JjICdVbml2ZXJzYWxHcm91cGluZycpKSkgewogICAgV3JpdGUtSG9zdCAiKG1vZHMpIHN0YWdpbmcgbW9kIGxpYnJhcnkgZnJvbSBSMi4uLiIKICAgIE5ldy1JdGVtIC1JdGVtVHlwZSBEaXJlY3RvcnkgLUZvcmNlIC1QYXRoICRtb2RzU3JjIHwgT3V0LU51bGwKICAgICR6aXAgPSBKb2luLVBhdGggJHJvb3QgJ2xlZ2FjeS1tb2RzLnppcCcKICAgIHRyeSB7CiAgICAgICAgJFByb2dyZXNzUHJlZmVyZW5jZSA9ICdTaWxlbnRseUNvbnRpbnVlJwogICAgICAgIEludm9rZS1XZWJSZXF1ZXN0IC1VcmkgJE1PRFNfVVJMIC1PdXRGaWxlICR6aXAgLVVzZUJhc2ljUGFyc2luZwogICAgICAgIEV4cGFuZC1BcmNoaXZlIC1QYXRoICR6aXAgLURlc3RpbmF0aW9uUGF0aCAkbW9kc1NyYyAtRm9yY2UKICAgICAgICBSZW1vdmUtSXRlbSAkemlwIC1Gb3JjZSAtRXJyb3JBY3Rpb24gU2lsZW50bHlDb250aW51ZQogICAgICAgIFdyaXRlLUhvc3QgIihtb2RzKSBzdGFnZWQgJCgoR2V0LUNoaWxkSXRlbSAkbW9kc1NyYyAtRGlyZWN0b3J5IC1FcnJvckFjdGlvbiBTaWxlbnRseUNvbnRpbnVlKS5Db3VudCkgbW9kIGZvbGRlcnMiCiAgICB9IGNhdGNoIHsgV3JpdGUtSG9zdCAiKG1vZHMpIEVSUk9SIHN0YWdpbmcgbW9kczogJF8iIH0KfQoKIyBzeW5jIENvbnRlbnQvUGFrczogc3RyaXAgYWxsIG1hbmFnZWQgcGFrcyAoc28gZGlzYWJsaW5nIHJlbW92ZXMgdGhlbSksIHRoZW4gY29weSBzZWxlY3RlZCB2YXJpYW50cwpOZXctSXRlbSAtSXRlbVR5cGUgRGlyZWN0b3J5IC1Gb3JjZSAtUGF0aCAkcGFrc0RpciB8IE91dC1OdWxsCmZvcmVhY2ggKCRtIGluICRNT0RfQ0FUQUxPRy5WYWx1ZXMpIHsKICAgICRiYXNlcyA9IGlmICgkbS52YXJpYW50cykgeyAkbS52YXJpYW50cy5WYWx1ZXMgfCBTZWxlY3QtT2JqZWN0IC1VbmlxdWUgfSBlbHNlIHsgQCgkbS5maWxlKSB9CiAgICBmb3JlYWNoICgkYiBpbiAkYmFzZXMpIHsKICAgICAgICBSZW1vdmUtSXRlbSAoSm9pbi1QYXRoICRwYWtzRGlyICIkYi5wYWsiKSAtRm9yY2UgLUVycm9yQWN0aW9uIFNpbGVudGx5Q29udGludWUKICAgICAgICBSZW1vdmUtSXRlbSAoSm9pbi1QYXRoICRwYWtzRGlyICIkYi5zaWciKSAtRm9yY2UgLUVycm9yQWN0aW9uIFNpbGVudGx5Q29udGludWUKICAgIH0KfQokaW5zdGFsbGVkID0gQCgpCmZvcmVhY2ggKCRtb2QgaW4gKCR3YW50TW9kcyB8IFNlbGVjdC1PYmplY3QgLVVuaXF1ZSkpIHsKICAgICRtID0gJE1PRF9DQVRBTE9HWyRtb2RdOyAkYmFzZSA9IE1vZC1GaWxlcyAkbSAkZ3JvdXBpbmcKICAgICRzcmNQYWsgPSBKb2luLVBhdGggJG1vZHNTcmMgIiQoJG0uZm9sZGVyKVwkYmFzZS5wYWsiCiAgICAkc3JjU2lnID0gSm9pbi1QYXRoICRtb2RzU3JjICIkKCRtLmZvbGRlcilcJGJhc2Uuc2lnIgogICAgaWYgKFRlc3QtUGF0aCAkc3JjUGFrKSB7CiAgICAgICAgQ29weS1JdGVtICRzcmNQYWsgJHBha3NEaXIgLUZvcmNlCiAgICAgICAgaWYgKFRlc3QtUGF0aCAkc3JjU2lnKSB7IENvcHktSXRlbSAkc3JjU2lnICRwYWtzRGlyIC1Gb3JjZSB9CiAgICAgICAgJGluc3RhbGxlZCArPSAiJG1vZCgkKFtyZWdleF06OlJlcGxhY2UoJGJhc2UsJ14uKl8nLCcnKSkpIgogICAgfSBlbHNlIHsgV3JpdGUtSG9zdCAiKG1vZHMpIG1pc3Npbmcgc291cmNlIHBhayBmb3IgJHttb2R9OiAkc3JjUGFrIiB9Cn0KV3JpdGUtSG9zdCAiKG1vZHMpIGdyb3VwaW5nPSRncm91cGluZyBpbnN0YWxsZWQ9WyQoJGluc3RhbGxlZCAtam9pbiAnLCAnKV0iCgojIHJlbmRlci1vbmx5IGhvb2sgKGxvY2FsIGNvbmZpZy9tb2Qtc3luYyB0ZXN0cyk6IFBSSU1BTF9SRU5ERVJfT05MWT0xIC0+IHN0b3AgaGVyZQppZiAoJGVudjpQUklNQUxfUkVOREVSX09OTFkgLWVxICcxJykgeyBXcml0ZS1Ib3N0ICcocmVuZGVyLW9ubHkpIGRvbmUnOyBleGl0IDAgfQoKaWYgKC1ub3QgKFRlc3QtUGF0aCAkZXhlKSkgeyB0aHJvdyAic2VydmVyIGJpbmFyeSBtaXNzaW5nOiAkZXhlIChpbnN0YWxsIGRpZCBub3QgZmluaXNoKSIgfQoKIyDilIDilIAgUHJpbWFsIERMTCBtb2Q6IGRvd25sb2FkLWJ5LXZlcnNpb24gKGRlcGxveW1lbnQgcGlwZWxpbmUpLiBNYW5pZmVzdCBjYXJyaWVzCiMgICAge3ZlcnNpb24sIGRsbF91cmwsIHNoYTI1Nn07IG9ubHkgcmUtZG93bmxvYWRzIHdoZW4gdGhlIHZlcnNpb24gY2hhbmdlcy4gVGhlCiMgICAgaW5qZWN0aW9uIGl0c2VsZiBpcyBhcm1lZCBqdXN0IGJlZm9yZSBsYXVuY2ggKGJlbG93KS4gUHVibGlzaCBuZXcgdmVyc2lvbnMKIyAgICB3aXRoIGlzbGVfbW9kX2xlZ2FjeS9wdWJsaXNoX2RsbC5weSDigJQgc2VlIFBSSU1BTF9NT0RfUElQRUxJTkUubWQuCiRwcmltYWxEaXIgPSBKb2luLVBhdGggJHJvb3QgJ19wcmltYWwnCiRwcmltYWxEbGwgPSBKb2luLVBhdGggJHByaW1hbERpciAnTGVnYWN5TW9kLmRsbCcKJHByaW1hbFZlckZpbGUgPSBKb2luLVBhdGggJHByaW1hbERpciAncHJpbWFsLW1vZC52ZXJzaW9uJwppZiAoJGVudjpFTkFCTEVfUFJJTUFMX01PRCAtZXEgJzEnKSB7CiAgICAkbWFuaWZlc3RVcmwgPSBFbnZPciAkZW52OlBSSU1BTF9NT0RfTUFOSUZFU1QgJ2h0dHBzOi8vcHViLWZiNmZkY2MyY2U5MTQ3NzViYTQxYzk4MTNmODBkYzEwLnIyLmRldi9wcmltYWwtbW9kL2xhdGVzdC5qc29uJwogICAgdHJ5IHsKICAgICAgICAkUHJvZ3Jlc3NQcmVmZXJlbmNlID0gJ1NpbGVudGx5Q29udGludWUnCiAgICAgICAgJG0gPSBJbnZva2UtUmVzdE1ldGhvZCAtVXJpICRtYW5pZmVzdFVybCAtVGltZW91dFNlYyAyMAogICAgICAgICRoYXZlVmVyID0gaWYgKFRlc3QtUGF0aCAkcHJpbWFsVmVyRmlsZSkgeyAoR2V0LUNvbnRlbnQgJHByaW1hbFZlckZpbGUgLVJhdykuVHJpbSgpIH0gZWxzZSB7ICcnIH0KICAgICAgICBpZiAoJG0udmVyc2lvbiAtbmUgJGhhdmVWZXIgLW9yIC1ub3QgKFRlc3QtUGF0aCAkcHJpbWFsRGxsKSkgewogICAgICAgICAgICBXcml0ZS1Ib3N0ICIocHJpbWFsLW1vZCkgdXBkYXRpbmcgJyRoYXZlVmVyJyAtPiAnJCgkbS52ZXJzaW9uKScuLi4iCiAgICAgICAgICAgIEludm9rZS1XZWJSZXF1ZXN0IC1VcmkgJG0uZGxsX3VybCAtT3V0RmlsZSAkcHJpbWFsRGxsIC1Vc2VCYXNpY1BhcnNpbmcKICAgICAgICAgICAgJHNoYSA9IChHZXQtRmlsZUhhc2ggJHByaW1hbERsbCAtQWxnb3JpdGhtIFNIQTI1NikuSGFzaC5Ub0xvd2VyKCkKICAgICAgICAgICAgaWYgKCRzaGEgLW5lICgiIiArICRtLnNoYTI1NikuVG9Mb3dlcigpKSB7CiAgICAgICAgICAgICAgICBXcml0ZS1Ib3N0ICIocHJpbWFsLW1vZCkgc2hhMjU2IE1JU01BVENIIChnb3QgJHNoYSkgLSBkaXNjYXJkaW5nIgogICAgICAgICAgICAgICAgUmVtb3ZlLUl0ZW0gJHByaW1hbERsbCAtRm9yY2UgLUVycm9yQWN0aW9uIFNpbGVudGx5Q29udGludWUKICAgICAgICAgICAgfSBlbHNlIHsKICAgICAgICAgICAgICAgIFNldC1Db250ZW50IC1QYXRoICRwcmltYWxWZXJGaWxlIC1WYWx1ZSAkbS52ZXJzaW9uIC1FbmNvZGluZyBhc2NpaQogICAgICAgICAgICAgICAgV3JpdGUtSG9zdCAiKHByaW1hbC1tb2QpIERMTCAkKCRtLnZlcnNpb24pIHJlYWR5ICgkKCRtLnNpemUpIGJ5dGVzKSIKICAgICAgICAgICAgfQogICAgICAgIH0gZWxzZSB7IFdyaXRlLUhvc3QgIihwcmltYWwtbW9kKSB1cCB0byBkYXRlICgkaGF2ZVZlcikiIH0KICAgIH0gY2F0Y2ggeyBXcml0ZS1Ib3N0ICIocHJpbWFsLW1vZCkgbWFuaWZlc3QvZG93bmxvYWQgZmFpbGVkOiAkXyIgfQoKICAgICMgUGVyLXNlcnZlciBtb2QgY29uZmlnOiB0aGUgRExMIGF1dGhlbnRpY2F0ZXMgKyBwb2xscyBPTkxZIHRoaXMgc2VydmVyJ3MKICAgICMgY29tbWFuZHMgdXNpbmcgaXRzIG93biBwaHNrXyBrZXkuIEtleXMgbWF0Y2ggbGVnYWN5X21vZC5jcHAncyBwYXJzZXIKICAgICMgKGNvbW1hbmRfcG9sbF91cmwgLyBjb21tYW5kX2tleSAvIGxpY2Vuc2Vfa2V5IC8gcnRfYmFzZV91cmwgLyBzZXJ2ZXJfaWQpLgogICAgIyBXcml0dGVuIGJlc2lkZSB0aGUgRExMIChtb2R1bGUgZGlyKSAtIHdoZXJlIHRoZSBETEwgU0hPVUxEIHJlYWQgaXQgb25jZSB0aGUKICAgICMgaGFyZGNvZGVkIGRldiBwYXRoIGluIGxvYWRfY29uZmlnKCkgaXMgY2hhbmdlZCB0byBtb2R1bGVfZGlyZWN0b3J5KCkuCiAgICBpZiAoJGVudjpQSFNLX0tFWSkgewogICAgICAgICRkYXRhQmFzZSA9IEVudk9yICRlbnY6UFJJTUFMX0RBVEFfQkFTRSAnaHR0cHM6Ly9kYXRhLnByaW1hbGhvc3RlZC5jb20nCiAgICAgICAgJHJ0QmFzZSAgID0gRW52T3IgJGVudjpQUklNQUxfUlRfQkFTRSAgICdodHRwczovL3J0LnByaW1hbGhvc3RlZC5jb20nCiAgICAgICAgJHNpZCA9IEVudk9yICRlbnY6U0VSVkVSX05BTUUgJ2xlZ2FjeScKICAgICAgICAkY2ZnID0gQCgKICAgICAgICAgICAgJyMgUHJpbWFsIEhvc3RlZCAtIGF1dG8tZ2VuZXJhdGVkIGVhY2ggYm9vdCBmcm9tIHRoZSBzZXJ2ZXIgcGhza18ga2V5LiBEbyBub3QgZWRpdC4nLAogICAgICAgICAgICAiY29tbWFuZF9wb2xsX3VybD0kZGF0YUJhc2UvdjEvY29tbWFuZHMiLAogICAgICAgICAgICAiY29tbWFuZF9rZXk9JCgkZW52OlBIU0tfS0VZKSIsCiAgICAgICAgICAgICJsaWNlbnNlX2tleT0kKCRlbnY6UEhTS19LRVkpIiwKICAgICAgICAgICAgInJ0X2Jhc2VfdXJsPSRydEJhc2UiLAogICAgICAgICAgICAic2VydmVyX2lkPSRzaWQiLAogICAgICAgICAgICAnY29tbWFuZF9wb2xsX2ludGVydmFsX21zPTIwMDAnCiAgICAgICAgKSAtam9pbiAiYG4iCiAgICAgICAgU2V0LUNvbnRlbnQgLVBhdGggKEpvaW4tUGF0aCAkcHJpbWFsRGlyICdsZWdhY3lfYW50aWNoZWF0LmNmZycpIC1WYWx1ZSAkY2ZnIC1FbmNvZGluZyBhc2NpaQogICAgICAgIFdyaXRlLUhvc3QgIihwcmltYWwtbW9kKSB3cm90ZSBsZWdhY3lfYW50aWNoZWF0LmNmZyAocGVyLXNlcnZlciBrZXksIHBvbGw9JGRhdGFCYXNlL3YxL2NvbW1hbmRzKSIKICAgIH0gZWxzZSB7CiAgICAgICAgV3JpdGUtSG9zdCAiKHByaW1hbC1tb2QpIG5vIFBIU0tfS0VZIHNldCAtIG1vZCB3aWxsIHJ1biB3aXRob3V0IGEgZGF0YS1wbGFuZSBrZXkiCiAgICB9Cn0gZWxzZSB7CiAgICBXcml0ZS1Ib3N0ICIocHJpbWFsLW1vZCkgZGlzYWJsZWQgKEVOQUJMRV9QUklNQUxfTU9EICE9IDEpIgp9CgojIOKUgOKUgCBMQVVOQ0ggKyBzdXBlcnZpc2Ug4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSACiMgVUUgd3JpdGVzIHRvIHN0ZGVyciBpbiBub3JtYWwgb3BlcmF0aW9uOyAnU3RvcCcgd291bGQgdHVybiB0aGF0IGludG8gYQojIE5hdGl2ZUNvbW1hbmRFcnJvciB0aGF0IGtpbGxzIHRoZSB3cmFwcGVyLiAnQ29udGludWUnIGxldHMgaXQgZmxvdyB0byBmZWF0aGVycy4KJEVycm9yQWN0aW9uUHJlZmVyZW5jZSA9ICdDb250aW51ZScKJHVybCA9ICIkbWFwYD9Qb3J0PSRnYW1lUG9ydGA/UXVlcnlQb3J0PSRxdWVyeVBvcnRgP01heFBsYXllcnM9JG1heFBsYXllcnNgP2dhbWU9JGdhbWVNb2RlYD9saXN0ZW4iCldyaXRlLUhvc3QgIihzdGFydCkgJChHZXQtRGF0ZSAtRm9ybWF0IEhIOm1tOnNzKSBsYXVuY2hpbmc6ICR1cmwiCiRiZWZvcmUgPSBAKEdldC1Qcm9jZXNzIFRoZUlzbGVTZXJ2ZXItV2luNjQtU2hpcHBpbmcgLUVycm9yQWN0aW9uIFNpbGVudGx5Q29udGludWUgfCBTZWxlY3QtT2JqZWN0IC1FeHBhbmRQcm9wZXJ0eSBJZCkKCiMgUHJpbWFsIERMTCBtb2QgaW5qZWN0aW9uIChkZXBsb3ltZW50IHNjYWZmb2xkKS4gQXJtIGEgYmFja2dyb3VuZCBqb2IgdGhhdCB3YWl0cwojIGZvciB0aGUgTkVXIHNlcnZlciBwcm9jZXNzLCB0aGVuIExvYWRMaWJyYXJ5Vy1pbmplY3RzIHRoZSBETEwgdmlhIENyZWF0ZVJlbW90ZVRocmVhZAojIChzYW1lIHRlY2huaXF1ZSBhcyBpc2xlX21vZF9yZWJ1aWxkL2luamVjdF9pc2xlX21vZC5weSwgZG9uZSBpbi1wcm9jZXNzIHdpdGggUC9JbnZva2UKIyBzbyB0aGUgY29udGFpbmVyIG5lZWRzIG5vIFB5dGhvbikuIFJlc3VsdCAtPiBfcHJpbWFsL3ByaW1hbC1pbmplY3QubG9nLiBUaGUgZmluYWwKIyBsaXZlIGluamVjdCArIGNvbW1hbmQtZmV0Y2ggdmVyaWZpY2F0aW9uIGlzIHRoZSByZW1haW5pbmcgImxhc3QgYml0IG9mIHRlc3RpbmciLgppZiAoJGVudjpFTkFCTEVfUFJJTUFMX01PRCAtZXEgJzEnIC1hbmQgKFRlc3QtUGF0aCAkcHJpbWFsRGxsKSkgewogICAgJGluakxvZyA9IEpvaW4tUGF0aCAkcHJpbWFsRGlyICdwcmltYWwtaW5qZWN0LmxvZycKICAgIFN0YXJ0LUpvYiAtTmFtZSBwcmltYWwtaW5qZWN0IC1Bcmd1bWVudExpc3QgJHByaW1hbERsbCwgJGJlZm9yZSwgJGluakxvZyAtU2NyaXB0QmxvY2sgewogICAgICAgIHBhcmFtKCRkbGwsICRiZWZvcmVJZHMsICRsb2cpCiAgICAgICAgZnVuY3Rpb24gVygkbSkgeyAiJChHZXQtRGF0ZSAtRm9ybWF0ICdISDptbTpzcycpICRtIiB8IE91dC1GaWxlIC1GaWxlUGF0aCAkbG9nIC1BcHBlbmQgLUVuY29kaW5nIGFzY2lpIH0KICAgICAgICBBZGQtVHlwZSAtVHlwZURlZmluaXRpb24gQCcKdXNpbmcgU3lzdGVtOyB1c2luZyBTeXN0ZW0uUnVudGltZS5JbnRlcm9wU2VydmljZXM7CnB1YmxpYyBzdGF0aWMgY2xhc3MgUEluaiB7CiAgW0RsbEltcG9ydCgia2VybmVsMzIiLCBTZXRMYXN0RXJyb3I9dHJ1ZSldIHB1YmxpYyBzdGF0aWMgZXh0ZXJuIEludFB0ciBPcGVuUHJvY2Vzcyh1aW50IGEsIGJvb2wgaW5oLCB1aW50IHBpZCk7CiAgW0RsbEltcG9ydCgia2VybmVsMzIiLCBTZXRMYXN0RXJyb3I9dHJ1ZSldIHB1YmxpYyBzdGF0aWMgZXh0ZXJuIEludFB0ciBWaXJ0dWFsQWxsb2NFeChJbnRQdHIgaCwgSW50UHRyIGFkZHIsIHVpbnQgc3osIHVpbnQgdHlwLCB1aW50IHByb3QpOwogIFtEbGxJbXBvcnQoImtlcm5lbDMyIiwgU2V0TGFzdEVycm9yPXRydWUpXSBwdWJsaWMgc3RhdGljIGV4dGVybiBib29sIFdyaXRlUHJvY2Vzc01lbW9yeShJbnRQdHIgaCwgSW50UHRyIGFkZHIsIGJ5dGVbXSBidWYsIHVpbnQgc3osIG91dCBVSW50UHRyIHdyb3RlKTsKICBbRGxsSW1wb3J0KCJrZXJuZWwzMiIsIENoYXJTZXQ9Q2hhclNldC5BbnNpLCBTZXRMYXN0RXJyb3I9dHJ1ZSldIHB1YmxpYyBzdGF0aWMgZXh0ZXJuIEludFB0ciBHZXRNb2R1bGVIYW5kbGVBKHN0cmluZyBuKTsKICBbRGxsSW1wb3J0KCJrZXJuZWwzMiIsIENoYXJTZXQ9Q2hhclNldC5BbnNpLCBTZXRMYXN0RXJyb3I9dHJ1ZSldIHB1YmxpYyBzdGF0aWMgZXh0ZXJuIEludFB0ciBHZXRQcm9jQWRkcmVzcyhJbnRQdHIgaCwgc3RyaW5nIG4pOwogIFtEbGxJbXBvcnQoImtlcm5lbDMyIiwgU2V0TGFzdEVycm9yPXRydWUpXSBwdWJsaWMgc3RhdGljIGV4dGVybiBJbnRQdHIgQ3JlYXRlUmVtb3RlVGhyZWFkKEludFB0ciBoLCBJbnRQdHIgc2EsIHVpbnQgc3osIEludFB0ciBzdGFydCwgSW50UHRyIGFyZywgdWludCBmbCwgSW50UHRyIHRpZCk7CiAgW0RsbEltcG9ydCgia2VybmVsMzIiLCBTZXRMYXN0RXJyb3I9dHJ1ZSldIHB1YmxpYyBzdGF0aWMgZXh0ZXJuIHVpbnQgV2FpdEZvclNpbmdsZU9iamVjdChJbnRQdHIgaCwgdWludCBtcyk7CiAgW0RsbEltcG9ydCgia2VybmVsMzIiLCBTZXRMYXN0RXJyb3I9dHJ1ZSldIHB1YmxpYyBzdGF0aWMgZXh0ZXJuIGJvb2wgR2V0RXhpdENvZGVUaHJlYWQoSW50UHRyIGgsIG91dCB1aW50IGNvZGUpOwp9CidACiAgICAgICAgIj09PT09IHByaW1hbC1pbmplY3QgJChHZXQtRGF0ZSAtRm9ybWF0IG8pID09PT09IiB8IE91dC1GaWxlIC1GaWxlUGF0aCAkbG9nIC1FbmNvZGluZyBhc2NpaQogICAgICAgICRwcm9jID0gJG51bGwKICAgICAgICBmb3IgKCRpID0gMDsgJGkgLWx0IDYwIC1hbmQgLW5vdCAkcHJvYzsgJGkrKykgewogICAgICAgICAgICBTdGFydC1TbGVlcCAtTWlsbGlzZWNvbmRzIDUwMAogICAgICAgICAgICAkcHJvYyA9IEdldC1Qcm9jZXNzIFRoZUlzbGVTZXJ2ZXItV2luNjQtU2hpcHBpbmcgLUVycm9yQWN0aW9uIFNpbGVudGx5Q29udGludWUgfCBXaGVyZS1PYmplY3QgeyAkYmVmb3JlSWRzIC1ub3Rjb250YWlucyAkXy5JZCB9IHwgU2VsZWN0LU9iamVjdCAtRmlyc3QgMQogICAgICAgIH0KICAgICAgICBpZiAoLW5vdCAkcHJvYykgeyBXICdubyBzZXJ2ZXIgcHJvY2VzcyBhcHBlYXJlZCAtIGFib3J0IGluamVjdCc7IHJldHVybiB9CiAgICAgICAgU3RhcnQtU2xlZXAgLVNlY29uZHMgMTAgICAjIGxldCB0aGUgc2VydmVyIGZpbmlzaCBpbml0IGJlZm9yZSBpbmplY3RpbmcKICAgICAgICBXICJpbmplY3RpbmcgaW50byBwaWQgJCgkcHJvYy5JZCk6ICRkbGwiCiAgICAgICAgJGJ5dGVzID0gW1N5c3RlbS5UZXh0LkVuY29kaW5nXTo6VW5pY29kZS5HZXRCeXRlcygkZGxsICsgW2NoYXJdMCkKICAgICAgICAkaCA9IFtQSW5qXTo6T3BlblByb2Nlc3MoMHgxRjBGRkYsICRmYWxzZSwgW3VpbnQzMl0kcHJvYy5JZCkKICAgICAgICBpZiAoJGggLWVxIFtJbnRQdHJdOjpaZXJvKSB7IFcgJ09wZW5Qcm9jZXNzIGZhaWxlZCc7IHJldHVybiB9CiAgICAgICAgJGFkZHIgPSBbUElual06OlZpcnR1YWxBbGxvY0V4KCRoLCBbSW50UHRyXTo6WmVybywgW3VpbnQzMl0kYnl0ZXMuTGVuZ3RoLCAweDMwMDAsIDB4MDQpCiAgICAgICAgaWYgKCRhZGRyIC1lcSBbSW50UHRyXTo6WmVybykgeyBXICdWaXJ0dWFsQWxsb2NFeCBmYWlsZWQnOyByZXR1cm4gfQogICAgICAgICR3cm90ZSA9IFtVSW50UHRyXTo6WmVybwogICAgICAgIFt2b2lkXVtQSW5qXTo6V3JpdGVQcm9jZXNzTWVtb3J5KCRoLCAkYWRkciwgJGJ5dGVzLCBbdWludDMyXSRieXRlcy5MZW5ndGgsIFtyZWZdJHdyb3RlKQogICAgICAgICRsbCA9IFtQSW5qXTo6R2V0UHJvY0FkZHJlc3MoW1BJbmpdOjpHZXRNb2R1bGVIYW5kbGVBKCdrZXJuZWwzMi5kbGwnKSwgJ0xvYWRMaWJyYXJ5VycpCiAgICAgICAgJHQgPSBbUElual06OkNyZWF0ZVJlbW90ZVRocmVhZCgkaCwgW0ludFB0cl06Olplcm8sIDAsICRsbCwgJGFkZHIsIDAsIFtJbnRQdHJdOjpaZXJvKQogICAgICAgIGlmICgkdCAtZXEgW0ludFB0cl06Olplcm8pIHsgVyAnQ3JlYXRlUmVtb3RlVGhyZWFkIGZhaWxlZCc7IHJldHVybiB9CiAgICAgICAgW3ZvaWRdW1BJbmpdOjpXYWl0Rm9yU2luZ2xlT2JqZWN0KCR0LCAxNTAwMCkKICAgICAgICAjIExvYWRMaWJyYXJ5VydzIHJldHVybiAoSE1PRFVMRSwgbG93IDMyIGJpdHMpIGlzIHRoZSByZW1vdGUgdGhyZWFkIGV4aXQgY29kZToKICAgICAgICAjIDAgPT4gbG9hZCBGQUlMRUQgKGJhZCBkZXBzIC8gYml0bmVzcyAvIERsbE1haW4gY3Jhc2gpOyBub24temVybyA9PiBsb2FkZWQuCiAgICAgICAgJGVjID0gMDsgW3ZvaWRdW1BJbmpdOjpHZXRFeGl0Q29kZVRocmVhZCgkdCwgW3JlZl0kZWMpCiAgICAgICAgVyAiaW5qZWN0IGNhbGwgY29tcGxldGUgKExvYWRMaWJyYXJ5VyBleGl0PTB4JCgiezA6eH0iIC1mICRlYyk7IDAgPSBsb2FkIEZBSUxFRCkiCiAgICAgICAgU3RhcnQtU2xlZXAgLVNlY29uZHMgMgogICAgICAgICRuYW1lID0gW0lPLlBhdGhdOjpHZXRGaWxlTmFtZSgkZGxsKQogICAgICAgIHRyeSB7CiAgICAgICAgICAgICRtb2QgPSBHZXQtUHJvY2VzcyAtSWQgJHByb2MuSWQgLU1vZHVsZSAtRXJyb3JBY3Rpb24gU3RvcCB8IFdoZXJlLU9iamVjdCB7ICRfLk1vZHVsZU5hbWUgLWllcSAkbmFtZSB9CiAgICAgICAgICAgIGlmICgkbW9kKSB7IFcgIlZFUklGSUVEOiAkbmFtZSBpcyBsb2FkZWQgaW4gcGlkICQoJHByb2MuSWQpICAoJCgkbW9kLkZpbGVOYW1lKSkiIH0KICAgICAgICAgICAgZWxzZSAgICAgIHsgVyAiV0FSTklORzogJG5hbWUgTk9UIHByZXNlbnQgaW4gcGlkICQoJHByb2MuSWQpIG1vZHVsZSBsaXN0IGFmdGVyIGluamVjdCIgfQogICAgICAgIH0gY2F0Y2ggeyBXICJtb2R1bGUgdmVyaWZ5IGluY29uY2x1c2l2ZSAoZW51bSBmYWlsZWQ6ICQoJF8uRXhjZXB0aW9uLk1lc3NhZ2UpKSIgfQogICAgfSB8IE91dC1OdWxsCiAgICBXcml0ZS1Ib3N0ICIocHJpbWFsLW1vZCkgaW5qZWN0b3IgYXJtZWQgKHBvc3QtYm9vdDsgcmVzdWx0IC0+IF9wcmltYWwvcHJpbWFsLWluamVjdC5sb2c7IG1vZCBydW50aW1lIC0+IF9wcmltYWwvbGVnYWN5X21vZC5sb2cpIgp9CgojIE11bHRpaG9tZSAob3B0LWluKTogTGVnYWN5IGhpc3RvcmljYWxseSBsYXVuY2hlZCBXSVRIT1VUIC1NVUxUSUhPTUUuIEZvciBwZXItc2VydmVyCiMgRERvUyBpc29sYXRpb24geW91IGNhbiBiaW5kL2FkdmVydGlzZSBPTkUgc3BlY2lmaWMgcHVibGljIElQIGJ5IHNldHRpbmcgdGhlCiMgTVVMVElIT01FX0lQIGVnZyB2YXIuIExlZnQgQkxBTksgKGRlZmF1bHQpID0gdW5jaGFuZ2VkIGJlaGF2aW91ciAoYmluZCBhbGwKIyBpbnRlcmZhY2VzKSBzbyB0aGUgbGl2ZSBPVkggYm94IGlzIHVudG91Y2hlZC4g4pqg77iPIHRlc3Qgb24gYSBzcGFyZSBzZXJ2ZXIgZmlyc3QgLQojIHNvbWUgTGVnYWN5IGJ1aWxkcyBhcmUgcGlja3kgYWJvdXQgZXh0cmEgZW5naW5lIGFyZ3MuCiRtaEFyZ3MgPSBAKCkKaWYgKCRlbnY6TVVMVElIT01FX0lQIC1hbmQgJGVudjpNVUxUSUhPTUVfSVAgLW5lICcwLjAuMC4wJyAtYW5kICRlbnY6TVVMVElIT01FX0lQIC1tYXRjaCAnXlxkezEsM30oXC5cZHsxLDN9KXszfSQnKSB7CiAgICAkbWhBcmdzID0gQCgiLU1VTFRJSE9NRT0kKCRlbnY6TVVMVElIT01FX0lQKSIpCiAgICBXcml0ZS1Ib3N0ICIoc3RhcnQpIG11bHRpaG9tZSBiaW5kID0gJCgkZW52Ok1VTFRJSE9NRV9JUCkiCn0KCiMgRm9yZWdyb3VuZCBsYXVuY2g6IGlmIExlZ2FjeSBydW5zIGluLXByb2Nlc3MsIHRoaXMgQkxPQ0tTIGZvciB0aGUgc2VydmVyJ3Mgd2hvbGUKIyBsaWZlIGFuZCBpdHMgc3Rkb3V0IHN0cmVhbXMgc3RyYWlnaHQgdG8gZmVhdGhlcnMgKGNvcnJlY3QpLiBJZiBpbnN0ZWFkIGl0IGRldGFjaGVzLAojIGAmYCByZXR1cm5zIGZhc3QgYW5kIHdlIGZhbGwgdGhyb3VnaCB0byBmaW5kICsgc3VwZXJ2aXNlIHRoZSBkZXRhY2hlZCBwcm9jZXNzLgomICRleGUgJHVybCBAbWhBcmdzIC1sb2cKCiRwcm9jID0gR2V0LVByb2Nlc3MgVGhlSXNsZVNlcnZlci1XaW42NC1TaGlwcGluZyAtRXJyb3JBY3Rpb24gU2lsZW50bHlDb250aW51ZSB8CiAgICAgICAgV2hlcmUtT2JqZWN0IHsgJGJlZm9yZSAtbm90Y29udGFpbnMgJF8uSWQgfSB8IFNlbGVjdC1PYmplY3QgLUZpcnN0IDEKaWYgKCRwcm9jKSB7CiAgICBXcml0ZS1Ib3N0ICIoc3RhcnQpIHN1cGVydmlzaW5nIGRldGFjaGVkIHNlcnZlciBwaWQgJCgkcHJvYy5JZCkiCiAgICAkcG9zID0gMAogICAgd2hpbGUgKC1ub3QgJHByb2MuSGFzRXhpdGVkKSB7CiAgICAgICAgaWYgKFRlc3QtUGF0aCAkaXNsZUxvZykgewogICAgICAgICAgICB0cnkgewogICAgICAgICAgICAgICAgJGZzID0gW0lPLkZpbGVdOjpPcGVuKCRpc2xlTG9nLCBbSU8uRmlsZU1vZGVdOjpPcGVuLCBbSU8uRmlsZUFjY2Vzc106OlJlYWQsIFtJTy5GaWxlU2hhcmVdOjpSZWFkV3JpdGUpCiAgICAgICAgICAgICAgICBpZiAoJGZzLkxlbmd0aCAtbHQgJHBvcykgeyAkcG9zID0gMCB9CiAgICAgICAgICAgICAgICBpZiAoJGZzLkxlbmd0aCAtZ3QgJHBvcykgeyAkZnMuUG9zaXRpb24gPSAkcG9zOyAkc3IgPSBOZXctT2JqZWN0IElPLlN0cmVhbVJlYWRlcigkZnMpOyAkdCA9ICRzci5SZWFkVG9FbmQoKTsgaWYgKCR0KSB7IFtDb25zb2xlXTo6T3V0LldyaXRlKCR0KSB9OyAkcG9zID0gJGZzLlBvc2l0aW9uOyAkc3IuRGlzcG9zZSgpIH0KICAgICAgICAgICAgICAgICRmcy5EaXNwb3NlKCkKICAgICAgICAgICAgfSBjYXRjaCB7IH0KICAgICAgICB9CiAgICAgICAgU3RhcnQtU2xlZXAgLU1pbGxpc2Vjb25kcyA3NTAKICAgICAgICAkcHJvYy5SZWZyZXNoKCkKICAgIH0KfQpXcml0ZS1Ib3N0ICIoZXhpdCkgJChHZXQtRGF0ZSAtRm9ybWF0IEhIOm1tOnNzKSBMZWdhY3kgc2VydmVyIHByb2Nlc3MgZW5kZWQ7IGZlYXRoZXJzIHdpbGwgcmVzdGFydCBwZXIgcG9saWN5LiIK'))\n\nif (Test-Path $serverExe) { Write-Output 'OK: Legacy server binary present.' } else { Write-Output 'WARNING: Legacy server binary NOT found - verify the install.' }\nWrite-Output 'Install complete.'\n",
+            "container": "windows/steamcmd",
+            "entrypoint": "powershell"
+        }
+    },
+    "variables": [
+        {
+            "name": "Server Name",
+            "description": "Server Name (rendered into the Legacy Game.ini / launch each boot).",
+            "env_variable": "SERVER_NAME",
+            "default_value": "Primal Hosted - Legacy",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:120",
+            "field_type": "text"
+        },
+        {
+            "name": "Max Players",
+            "description": "Max Players (rendered into the Legacy Game.ini / launch each boot).",
+            "env_variable": "MAX_PLAYERS",
+            "default_value": "100",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|min:1|max:300",
+            "field_type": "text"
+        },
+        {
+            "name": "Game Mode",
+            "description": "Game Mode (rendered into the Legacy Game.ini / launch each boot).",
+            "env_variable": "GAME_MODE",
+            "default_value": "Survival",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:Survival,Sandbox",
+            "field_type": "text"
+        },
+        {
+            "name": "Map",
+            "description": "Isle_V3 / Thenyaw / TestLevel",
+            "env_variable": "MAP",
+            "default_value": "Isle_V3",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:Isle_V3,Thenyaw,TestLevel",
+            "field_type": "text"
+        },
+        {
+            "name": "Server Password",
+            "description": "Server Password (rendered into the Legacy Game.ini / launch each boot).",
+            "env_variable": "SERVER_PASSWORD",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:64",
+            "field_type": "text"
+        },
+        {
+            "name": "Admin Steam64 IDs",
+            "description": "Comma-separated Steam64 IDs -> ServerAdmins",
+            "env_variable": "ADMIN_STEAM_IDS",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Disabled Dinos",
+            "description": "Comma-separated Character Classes to remove, e.g. UtahAdultS",
+            "env_variable": "DISABLED_DINOS",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string",
+            "field_type": "text"
+        },
+        {
+            "name": "MOTD",
+            "description": "Message of the day (empty = none). Newlines preserved into MOTD.txt.",
+            "env_variable": "MOTD",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:2000",
+            "field_type": "text"
+        },
+        {
+            "name": "Allow Chat",
+            "description": "Allow Chat (rendered into the Legacy Game.ini / launch each boot).",
+            "env_variable": "ALLOW_CHAT",
+            "default_value": "1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:0,1",
+            "field_type": "text"
+        },
+        {
+            "name": "Global Chat",
+            "description": "Global Chat (rendered into the Legacy Game.ini / launch each boot).",
+            "env_variable": "GLOBAL_CHAT",
+            "default_value": "1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:0,1",
+            "field_type": "text"
+        },
+        {
+            "name": "Name Tags",
+            "description": "Name Tags (rendered into the Legacy Game.ini / launch each boot).",
+            "env_variable": "NAME_TAGS",
+            "default_value": "1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:0,1",
+            "field_type": "text"
+        },
+        {
+            "name": "Growth",
+            "description": "Growth (rendered into the Legacy Game.ini / launch each boot).",
+            "env_variable": "GROWTH",
+            "default_value": "1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:0,1",
+            "field_type": "text"
+        },
+        {
+            "name": "Fall Damage",
+            "description": "Fall Damage (rendered into the Legacy Game.ini / launch each boot).",
+            "env_variable": "FALL_DAMAGE",
+            "default_value": "1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:0,1",
+            "field_type": "text"
+        },
+        {
+            "name": "Turn In Place",
+            "description": "Turn In Place (rendered into the Legacy Game.ini / launch each boot).",
+            "env_variable": "TURN_IN_PLACE",
+            "default_value": "1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:0,1",
+            "field_type": "text"
+        },
+        {
+            "name": "Allow Replay",
+            "description": "Allow Replay (rendered into the Legacy Game.ini / launch each boot).",
+            "env_variable": "ALLOW_REPLAY",
+            "default_value": "1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:0,1",
+            "field_type": "text"
+        },
+        {
+            "name": "Dead Body Time (s)",
+            "description": "Dead Body Time (s) (rendered into the Legacy Game.ini / launch each boot).",
+            "env_variable": "DEAD_BODY_TIME",
+            "default_value": "200",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|min:0",
+            "field_type": "text"
+        },
+        {
+            "name": "Respawn Time (s)",
+            "description": "Respawn Time (s) (rendered into the Legacy Game.ini / launch each boot).",
+            "env_variable": "RESPAWN_TIME",
+            "default_value": "30",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|min:0",
+            "field_type": "text"
+        },
+        {
+            "name": "Logout Time (s)",
+            "description": "Logout Time (s) (rendered into the Legacy Game.ini / launch each boot).",
+            "env_variable": "LOGOUT_TIME",
+            "default_value": "60",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|min:0",
+            "field_type": "text"
+        },
+        {
+            "name": "Footprint Lifetime (s)",
+            "description": "Footprint Lifetime (s) (rendered into the Legacy Game.ini / launch each boot).",
+            "env_variable": "FOOTPRINT_LIFETIME",
+            "default_value": "60",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|min:0",
+            "field_type": "text"
+        },
+        {
+            "name": "Nesting",
+            "description": "Nesting (rendered into the Legacy Game.ini / launch each boot).",
+            "env_variable": "NESTING",
+            "default_value": "1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:0,1",
+            "field_type": "text"
+        },
+        {
+            "name": "Scent",
+            "description": "Scent (rendered into the Legacy Game.ini / launch each boot).",
+            "env_variable": "SCENT",
+            "default_value": "0",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:0,1",
+            "field_type": "text"
+        },
+        {
+            "name": "Enable AI",
+            "description": "Enable AI (rendered into the Legacy Game.ini / launch each boot).",
+            "env_variable": "ENABLE_AI",
+            "default_value": "1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:0,1",
+            "field_type": "text"
+        },
+        {
+            "name": "AI Max",
+            "description": "AI Max (rendered into the Legacy Game.ini / launch each boot).",
+            "env_variable": "AI_MAX",
+            "default_value": "100",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|min:0|max:500",
+            "field_type": "text"
+        },
+        {
+            "name": "AI Rate",
+            "description": "AI Rate (rendered into the Legacy Game.ini / launch each boot).",
+            "env_variable": "AI_RATE",
+            "default_value": "1.5",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|numeric",
+            "field_type": "text"
+        },
+        {
+            "name": "AI Player Spawns",
+            "description": "AI Player Spawns (rendered into the Legacy Game.ini / launch each boot).",
+            "env_variable": "AI_PLAYER_SPAWNS",
+            "default_value": "1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:0,1",
+            "field_type": "text"
+        },
+        {
+            "name": "Starting Time",
+            "description": "Starting Time (rendered into the Legacy Game.ini / launch each boot).",
+            "env_variable": "STARTING_TIME",
+            "default_value": "341",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|min:0|max:1440",
+            "field_type": "text"
+        },
+        {
+            "name": "Dynamic Time Of Day",
+            "description": "Dynamic Time Of Day (rendered into the Legacy Game.ini / launch each boot).",
+            "env_variable": "DYNAMIC_TIME",
+            "default_value": "0",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:0,1",
+            "field_type": "text"
+        },
+        {
+            "name": "Day Length (min)",
+            "description": "Day Length (min) (rendered into the Legacy Game.ini / launch each boot).",
+            "env_variable": "DAY_LENGTH",
+            "default_value": "30",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|min:1",
+            "field_type": "text"
+        },
+        {
+            "name": "Grouping Mod",
+            "description": "Mutually-exclusive grouping mod",
+            "env_variable": "GROUPING_MOD",
+            "default_value": "none",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:none,universal,diet,herbie",
+            "field_type": "text"
+        },
+        {
+            "name": "Enabled Mods",
+            "description": "CSV: UniversalDevColors,EnhancedPara,EnhancedAustro,EnhancedBary,ExtremeUtah,UtahGore,PachyBoneBreak,AnkyBonebreak",
+            "env_variable": "ENABLED_MODS",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Primal Mod (DLL)",
+            "description": "Install + inject the Primal DLL mod (version-checked from R2 each boot)",
+            "env_variable": "ENABLE_PRIMAL_MOD",
+            "default_value": "0",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "required|string|in:0,1",
+            "field_type": "text"
+        },
+        {
+            "name": "Primal Mod Manifest",
+            "description": "Override the DLL manifest URL (blank = default R2 latest.json)",
+            "env_variable": "PRIMAL_MOD_MANIFEST",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "nullable|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Server Key (phsk_)",
+            "description": "Per-server data-plane key \u2014 set automatically at provision time. The mod authenticates + fetches ONLY this server's commands with it.",
+            "env_variable": "PHSK_KEY",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "nullable|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Multihome IP",
+            "description": "Opt-in: bind/advertise a specific public IP (per-server DDoS isolation). Blank = bind all interfaces (default). Test on a spare server first.",
+            "env_variable": "MULTIHOME_IP",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "nullable|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Multihome Mode",
+            "description": "How to apply MULTIHOME_IP on Legacy (Steam, not EOS). cli = -MULTIHOME= engine arg; url = ?MultiHome= in the travel URL (the documented Legacy form); both = apply both. Default cli. A/B test on a spare server to see which one makes the client connect to the dedicated IP.",
+            "env_variable": "MULTIHOME_MODE",
+            "default_value": "cli",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "nullable|string|in:cli,url,both",
+            "field_type": "text"
+        }
+    ]
+}
