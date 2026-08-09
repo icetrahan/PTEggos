@@ -439,16 +439,56 @@ $pakExtra = [ordered]@{
     # Trike corpse cleanup - ON by Ice's call 2026-08-01. Lane B advised holding
     # it OFF on customers until #573; Ice overrode that deliberately.
     # Key names + value forms are the PAK'S: True/False (not 1/0), csv (not array).
-    'BodySweepOn'   = 'True'
-    'BodySweepList' = 'Triceratops'
-    'BodyHoldSec'   = '10.0'
+    #
+    # ⭐ #1071: every numeric pak key needs its paired `*Set` sentinel or the pak
+    # reads it as UNSET and its baked default stands. Before this, BodySweepOn +
+    # BodySweepList + BodyHoldSec were written but BodyHoldSet was NOT, so the 10s
+    # hold was SILENTLY IGNORED (baked default held). The `*Set=True` lines below
+    # are what actually make these values take effect.
+    'BodySweepOn'     = 'True'
+    'BodySweepList'   = 'Triceratops'
+    'BodyHoldSec'     = '10.0'
+    'BodyHoldSet'     = 'True'      # #1071: makes BodyHoldSec=10.0 actually apply
+    'BodySweepLiftZ'  = '150000'    # explicit = our prior baked default
+    'BSLiftSet'       = 'True'      # #1071: makes BodySweepLiftZ apply
+    # Tree knockdown OFF on all servers by Ice's call (2026-08-09). Baked pak
+    # default is True; this forces it False everywhere.
+    'TreeKnockdownOn' = 'False'
 }
+# --- AIMaxCount: global AI population ceiling, a panel knob (default 40) --------
+# One server-wide cap (NOT per-species). Exposed as egg var AI_MAX_COUNT so it is
+# tunable from the panel; always written so a change there takes effect on reboot.
+$aiMaxCount = ('' + $env:AI_MAX_COUNT).Trim()
+if ($aiMaxCount) { $pakExtra['AIMaxCount'] = $aiMaxCount }
+# --- SpeciesCap: per-species player caps, a panel knob (default empty = none) ---
+# Format is one csv STRING (#572), e.g. "Tyrannosaurus:2,Deinosuchus:3". Empty =>
+# no caps. NOTE (#1070b): SpeciesCapList ALSO gates the B110 corpse census today;
+# the mod session's B118 decouples that, so census works whether or not caps are set.
+$speciesCapList  = ('' + $env:SPECIES_CAP_LIST).Trim()
+$speciesCapEvery = ('' + $env:SPECIES_CAP_EVERY).Trim()
+if ($speciesCapList)  { $pakExtra['SpeciesCapList']  = $speciesCapList }
+if ($speciesCapEvery) { $pakExtra['SpeciesCapEvery'] = $speciesCapEvery }
 # PRIMAL_MOD_INI="Key=Value;Other=1" overrides/extends the above with no script edit.
 if ($env:PRIMAL_MOD_INI) {
     foreach ($pair in ($env:PRIMAL_MOD_INI -split ';')) {
         $kv = $pair.Trim(); if (-not $kv) { continue }
         $eq = $kv.IndexOf('='); if ($eq -lt 1) { Write-Host "(config) WARNING ignoring malformed PRIMAL_MOD_INI entry '$kv'"; continue }
         $pakExtra[$kv.Substring(0, $eq).Trim()] = $kv.Substring($eq + 1).Trim()
+    }
+}
+
+# --- PrimalModLogging: an OPS OVERRIDE Ice sets by hand for testing (#1071) -----
+# Deliberately NOT an egg var and NOT baked - it must default to the pak's own
+# value. But the full-section REPLACE below would wipe a hand-edit, so carry
+# forward any value already present in the live Engine.ini. Net effect: the egg
+# never sets it, and never stomps it either. Ice's env hatch PRIMAL_MOD_INI still
+# wins over a carried-forward value (it is applied to $pakExtra above).
+$preserveModLogging = $null
+if (-not $pakExtra.Contains('PrimalModLogging')) {
+    $liveEnginePath = Join-Path $cfgDir 'Engine.ini'
+    if (Test-Path $liveEnginePath) {
+        $curEng = Get-Content $liveEnginePath -Raw
+        if ($curEng -match "(?m)^\s*PrimalModLogging\s*=\s*(.+?)\s*$") { $preserveModLogging = $Matches[1] }
     }
 }
 
@@ -461,6 +501,10 @@ if ($env:ENABLE_PRIMAL_MOD -eq '1' -and $phsk) {
     $sessLines.Add("PollURL=$dataBase/v1/commands/text")
     if ($pakForceDino) { $sessLines.Add("ForceDinoList=$pakForceDino") }
     foreach ($pk in $pakExtra.Keys) { $sessLines.Add("$pk=$($pakExtra[$pk])") }
+    if ($preserveModLogging) {
+        $sessLines.Add("PrimalModLogging=$preserveModLogging")
+        Write-Host "(config) Engine.ini: preserved hand-set PrimalModLogging=$preserveModLogging (#1071)"
+    }
     $sessBlock = ($sessLines -join "`r`n")
     # Idempotent: if the template ever grows this section, REPLACE it rather than
     # appending a second copy (UE takes the first, so a duplicate would silently
