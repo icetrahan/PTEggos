@@ -413,6 +413,77 @@ if ([string]::IsNullOrWhiteSpace($cfg.AISpawnInterval)) {
     $gi = $gi -replace "(?m)^\s*AISpawnInterval\s*=\s*\r?\n", ''
 }
 
+# --- AI LEARNING (#1099) -----------------------------------------------------
+# The Isle ships this subsystem with every gate TRUE and the upload endpoint
+# baked at a third party (#877). Our servers point it at our own capture worker.
+#
+# ⭐ WHY IT IS HERE AND NOT HAND-EDITED INTO A VOLUME'S Game.ini.tmpl. It WAS
+# hand-edited into 9ef0f72e's template on 2026-08-07 - correctly, since Game.ini
+# is regenerated every boot (#878). But that made the template a SIXTH config
+# store: per-volume, hand-edited, with no writer, reader, validation or panel
+# surface, and an egg REINSTALL silently deletes it under a clean "Install
+# complete." (#1099, the #1080 shape). Ice ruled 2026-08-10: fold it into the egg
+# properly. So it renders from here, and survives every future reinstall.
+#
+# 🔴 FAIL-CLOSED, AND THE TOKEN NEVER LIVES IN THIS REPO. The URLs carry a live
+# capture token in their PATH and PTEggos is PUBLIC (#1064 - we have been caught
+# by exactly this once). They are egg VARIABLES with EMPTY defaults, set per
+# server in the panel. No URLs (or the master switch off) => the whole section is
+# OMITTED and the subsystem keeps the game's own behaviour. We never render a
+# half-configured block: a gate set true with a blank endpoint is the shape that
+# uploads somewhere we did not choose.
+#
+# ⚠️ Declared in the egg JSON on purpose (#1091): EggUpdateImporterService DELETES
+# any variable the imported JSON does not declare, silently and with no
+# activity_logs entry. A hand-added variable here would not survive the next import.
+$aiOn       = ('' + $env:AI_LEARNING_ENABLED).Trim()
+$aiUpload   = ('' + $env:AI_LEARNING_UPLOAD_URL).Trim()
+$aiManifest = ('' + $env:AI_LEARNING_MANIFEST_URL).Trim()
+if ($aiOn -match '^(1|true|yes|on)$' -and $aiUpload -and $aiManifest) {
+    # URLs MUST stay quoted - unquoted they truncate at the // (#878).
+    # MaxTrainingFilesPerUpload=7 (engine default 16) is the sentinel that proves
+    # the file bound; keep it or the "did it load" check loses its control.
+    # The old hand-edited template carried a comment header here. It is NOT
+    # reproduced verbatim: it said "Added to the TEMPLATE, not to Game.ini",
+    # which stopped being true the moment this block moved into the wrapper.
+    # Shipping a stale explanation onto every server is how a doc becomes a lie.
+    $aiLines = @(
+        '',
+        '; ---------------------------------------------------------------------------',
+        '; AI learning -- rendered by start-evrima.ps1 from egg variables (#1099).',
+        '; The Isle ships this subsystem with every gate true and the upload endpoint',
+        '; baked at a third party (#877). Both endpoints below are OURS, and they are',
+        '; egg VARIABLES because their path carries a live token and PTEggos is a',
+        '; PUBLIC repo (#1064). No URLs => this whole section is omitted.',
+        '; Sentinel MaxTrainingFilesPerUpload=7 (engine default 16) proves it bound.',
+        '; URLs MUST stay quoted -- unquoted they truncate at the // (#878).',
+        '; ---------------------------------------------------------------------------',
+        '[/Script/TheIsle.TIAILearningWorldSubsystem]',
+        'bEnableLearningDataUploads=True',
+        'bEnablePlayerDemonstrationLearning=True',
+        'bEnableSharedSpeciesLearning=True',
+        'bEnableProfileDeploymentSync=True',
+        ('LearningUploadEndpoint="{0}"' -f $aiUpload),
+        ('LearningProfileManifestEndpoint="{0}"' -f $aiManifest),
+        'LearningUploadIntervalSeconds=20',
+        'LearningProfileSyncIntervalSeconds=30',
+        'MaxTrainingFilesPerUpload=7'
+    )
+    # Idempotent, same reason as the Engine.ini session block: UE takes the FIRST
+    # section, so appending a second copy would silently win with the wrong value.
+    if ($gi -match "(?m)^\s*\[/Script/TheIsle\.TIAILearningWorldSubsystem\]") {
+        $gi = [regex]::Replace($gi,
+            "(?ms)^\s*\[/Script/TheIsle\.TIAILearningWorldSubsystem\].*?(?=^\s*\[|\z)",
+            (($aiLines[1..($aiLines.Count-1)] -join "`r`n") + "`r`n`r`n"), 1)
+    } else {
+        $gi = $gi.TrimEnd() + "`r`n" + ($aiLines -join "`r`n") + "`r`n"
+    }
+    Write-Host "(config) Game.ini: AI-learning section rendered (endpoints from egg variables)"
+} else {
+    $why = if (-not ($aiOn -match '^(1|true|yes|on)$')) { 'AI_LEARNING_ENABLED is off' } else { 'endpoint variable(s) empty' }
+    Write-Host "(config) Game.ini: AI-learning section OMITTED ($why) - the game's own defaults apply"
+}
+
 Set-Content -Path (Join-Path $cfgDir 'Game.ini') -Value $gi -Encoding ascii
 Write-Host ("(config) rendered Game.ini from {0} config (players={1}, classes={2}, admins={3}, vips={4})" -f `
             $cfgSource, $cfg.MaxPlayers, $classes.Count, $cfg.AdminSteamIds.Count, $cfg.VipSteamIds.Count)
@@ -493,8 +564,17 @@ if ($ms) {
 
 # --- #1071 SENTINELS, DERIVED. Never authored, never a panel field. ------------
 # Paired with their numeric by construction, so the two can no longer drift.
-if ($pakExtra.Contains('BodyHoldSec'))    { $pakExtra['BodyHoldSet'] = 'True' }
-if ($pakExtra.Contains('BodySweepLiftZ')) { $pakExtra['BSLiftSet']   = 'True' }
+# ⚠️ Inserted IMMEDIATELY AFTER their numeric, not appended, so the rendered
+# Engine.ini keeps the byte order it has always had. UE does not care about key
+# order inside a section, but the cutover's proof is a byte-diff against the live
+# file, and a reordering diff is noise that hides a real one.
+$pakOrdered = [ordered]@{}
+foreach ($k in $pakExtra.Keys) {
+    $pakOrdered[$k] = $pakExtra[$k]
+    if ($k -eq 'BodyHoldSec')    { $pakOrdered['BodyHoldSet'] = 'True' }
+    if ($k -eq 'BodySweepLiftZ') { $pakOrdered['BSLiftSet']   = 'True' }
+}
+$pakExtra = $pakOrdered
 
 # --- EMPTY IS NOT ZERO: these two OMIT their line so the pak's own default holds.
 $speciesCapList = ''
