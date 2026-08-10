@@ -5,18 +5,19 @@
 # The customer never edits Game.ini directly (The Isle corrupts it) - they edit
 # DATA, and we render fresh each boot. Corruption becomes a non-issue.
 #
-# Settings are layered, later overrides earlier:
-#   1. DEFAULTS (below)                      baseline
-#   2. EGG VARIABLES ($env:*)                >> THE SOURCE OF TRUTH for every
-#      customer setting. The panel renders these, Ptero validates them server-side
-#      from the egg `rules`, and provisioning seeds them. Add a variable here when
-#      a customer needs a knob - that is the whole config-writer story (#356 T1(a)).
-#   3. JSON OVERLAY (_primal/server-config.json)   !! ADMIN ESCAPE HATCH ONLY.
-#      STOP: nothing on the platform writes this file. It outranks layer 2, so anything
-#      it sets is a field the customer's panel is now LYING about - measured live on
-#      93da0534, five fields, 2026-07-29. Use it only for `extra` keys that have no
-#      egg variable yet, and prefer promoting the key to a variable instead. Every
-#      override it performs is now named loudly on the console (rule 13).
+# Settings come from ONE place (Ice's ruling, 2026-08-10 - supersedes #24/#356):
+#   1. DEFAULTS (below)   baseline, used ONLY when the plane has never been reached
+#   2. THE DATA PLANE     >> THE SINGLE SOURCE OF TRUTH. `GET /v1/boot-config`,
+#      authenticated with this server's own phsk key. The customer's Primal Hosted
+#      panel writes it; this script fetches and renders. Last-known-good is cached
+#      to _primal/boot-config.cache.json so a plane outage cannot stop a boot.
+#
+# ⛔ THE server-config.json OVERLAY IS GONE. It was a file nothing on the platform
+#    could write, and it silently outranked the customer's panel - it froze Dino
+#    Vibes' admin list in BOTH directions (an add and a removal both discarded,
+#    both sides reading 17, so every count check passed). #1101/#450/#20.
+#    ⛔ Do not reintroduce it, and do not add a customer setting as an egg
+#    variable: egg variables are BOOTSTRAP ONLY now (see section 2).
 #
 # Ports come from Panel ALLOCATIONS (not variables, so not customer-editable):
 #   game/query = SERVER_PORT | queue = SERVER_PORT_1 | rcon = SERVER_PORT_2
@@ -111,7 +112,9 @@ $cfg = @{
     AdminSteamIds         = @()
     VipSteamIds           = @()
     AllowedClasses        = $defaultClasses
-    # ---- gameplay knobs (customer-configurable via egg vars / overlay) ----
+    # ---- gameplay knobs (customer-configurable; canonical values come from
+    #      the data plane's `server_settings` block - these are the FIRST-BOOT
+    #      fallback only, and must stay equal to that block's declared defaults) ----
     EnableHumans          = 'True'
     DayLength             = '45'
     NightLength           = '20'
@@ -131,167 +134,178 @@ $cfg = @{
     EnableMigration       = 'False'
     EnableMassMigration   = 'False'
     EnablePatrolZones     = 'False'
-    # ---- promoted 2026-07-29 (#356 T1(a)): these three were the last Game.ini keys
-    # reachable ONLY through the server-config.json overlay's `extra` map. Defaults
-    # below are the values the template used to hardcode, so a server that leaves the
-    # new variables alone renders a BYTE-IDENTICAL Game.ini. ----
     MapName               = 'Gateway'
     QueueEnabled          = 'True'
     # Empty = the AISpawnInterval line is OMITTED from Game.ini entirely (the game
     # then uses its own internal default). Same idiom as -PrimalForceDino: we do not
     # know the engine default, so we refuse to guess one and pin it on every server.
     AISpawnInterval       = ''
-    Extra                 = @{}   # arbitrary [tigamesession] key=value (overlay only)
 }
+# ⛔ `Extra` IS GONE (Ice, 2026-08-10). It was the overlay's generic
+# `[tigamesession]` key setter - it could write ANY key under a name no allowlist
+# checked, so it could set MaxPlayerCount or RCON behind the panel's back. The
+# replacement for "a Game.ini key with no field" is to add it to the data plane's
+# `server_settings` block, which is a plane deploy - cheaper than an egg import,
+# and visible in the panel. ⛔ Do not reintroduce a generic key setter here.
 
 # ---------------------------------------------------------------------------
-# 2) EGG VARIABLE OVERRIDES
+# 2) CANONICAL CONFIG — fetched from the data plane (Ice's ruling, 2026-08-10)
 # ---------------------------------------------------------------------------
-if ($env:SERVER_NAME)      { $cfg.ServerName            = $env:SERVER_NAME }
-if ($env:MAX_PLAYERS)      { $cfg.MaxPlayers            = $env:MAX_PLAYERS }
-if ($env:SERVER_PASSWORD)  { $cfg.ServerPassword        = $env:SERVER_PASSWORD }
-if ($env:RCON_PASSWORD)    { $cfg.RconPassword          = $env:RCON_PASSWORD }
-if ($env:DISCORD_URL)      { $cfg.Discord               = $env:DISCORD_URL }
-if ($env:CORPSE_DECAY)     { $cfg.CorpseDecay           = $env:CORPSE_DECAY }
-$cfg.ServerPasswordEnabled = To-Bool $env:SERVER_PASSWORD_ENABLED $cfg.ServerPasswordEnabled
-$cfg.RconEnabled           = To-Bool $env:RCON_ENABLED           $cfg.RconEnabled
-if ($env:ADMIN_STEAM_IDS -ne $null) { $ids = Split-Csv $env:ADMIN_STEAM_IDS; if ($ids.Count) { $cfg.AdminSteamIds = $ids } }
-if ($env:VIP_STEAM_IDS   -ne $null) { $ids = Split-Csv $env:VIP_STEAM_IDS;   if ($ids.Count) { $cfg.VipSteamIds   = $ids } }
-if ($env:ALLOWED_CLASSES -ne $null) { $cl  = Split-Csv $env:ALLOWED_CLASSES; if ($cl.Count)  { $cfg.AllowedClasses = $cl } }
-if ($env:SERVER_DAY_LENGTH)   { $cfg.DayLength        = $env:SERVER_DAY_LENGTH }
-if ($env:SERVER_NIGHT_LENGTH) { $cfg.NightLength      = $env:SERVER_NIGHT_LENGTH }
-if ($env:GROWTH_MULTIPLIER)   { $cfg.GrowthMultiplier = $env:GROWTH_MULTIPLIER }
-if ($env:AI_DENSITY)          { $cfg.AIDensity        = $env:AI_DENSITY }
-if ($env:PLANT_MULTIPLIER)    { $cfg.PlantMultiplier  = $env:PLANT_MULTIPLIER }
-$cfg.EnableHumans        = To-Bool $env:ENABLE_HUMANS         $cfg.EnableHumans
-$cfg.EnableGlobalChat    = To-Bool $env:ENABLE_GLOBAL_CHAT    $cfg.EnableGlobalChat
-$cfg.EnableAI            = To-Bool $env:ENABLE_AI             $cfg.EnableAI
-$cfg.SpawnFish           = To-Bool $env:SPAWN_FISH            $cfg.SpawnFish
-$cfg.EnableMutations     = To-Bool $env:ENABLE_MUTATIONS      $cfg.EnableMutations
-$cfg.EnableDiets         = To-Bool $env:ENABLE_DIETS          $cfg.EnableDiets
-$cfg.FallDamage          = To-Bool $env:FALL_DAMAGE           $cfg.FallDamage
-$cfg.AllowReplay         = To-Bool $env:ALLOW_REPLAY          $cfg.AllowReplay
-$cfg.DynamicWeather      = To-Bool $env:DYNAMIC_WEATHER       $cfg.DynamicWeather
-$cfg.WhitelistEnabled    = To-Bool $env:WHITELIST_ENABLED     $cfg.WhitelistEnabled
-$cfg.SpawnPlants         = To-Bool $env:SPAWN_PLANTS          $cfg.SpawnPlants
-$cfg.EnableMigration     = To-Bool $env:ENABLE_MIGRATION      $cfg.EnableMigration
-$cfg.EnableMassMigration = To-Bool $env:ENABLE_MASS_MIGRATION $cfg.EnableMassMigration
-$cfg.EnablePatrolZones   = To-Bool $env:ENABLE_PATROL_ZONES   $cfg.EnablePatrolZones
-# ---- promoted 2026-07-29 (#356 T1(a)) ----
-if ($env:MAP_NAME)          { $cfg.MapName         = $env:MAP_NAME }
-if ($env:AI_SPAWN_INTERVAL) { $cfg.AISpawnInterval = $env:AI_SPAWN_INTERVAL }
-$cfg.QueueEnabled        = To-Bool $env:QUEUE_ENABLED         $cfg.QueueEnabled
+# ⭐ THIS IS THE SINGLE SOURCE OF TRUTH. It supersedes DECISIONS #24/#356, under
+# which egg VARIABLES were canonical and this script layered
+# defaults -> egg vars -> the server-config.json overlay.
+#
+# WHY IT CHANGED. Config lived in FIVE places that disagreed, and the overlay —
+# a file NOTHING on the platform could write — silently outranked the customer's
+# panel. Measured on Dino Vibes: the panel listed 17 admins INCLUDING Ice, the
+# overlay listed 17 EXCLUDING him, and Game.ini rendered the overlay's. Worse,
+# the freeze ran BOTH ways: an admin the owner had REMOVED was still live. One
+# add and one removal cancelled out, so both lists read 17 and every count-based
+# check ever run on that server passed (BUGS #1101, #450, #20).
+#
+# NOW: the panel writes the data plane; this script FETCHES and renders. Egg
+# variables are BOOTSTRAP ONLY (PHSK_KEY, ports, AUTO_UPDATE, ENABLE_PRIMAL_MOD,
+# FORCE_CLEAN_UPDATE, MULTIHOME_IP, PRIMAL_MOD_MANIFEST). ⛔ Do NOT re-add a
+# customer setting as an egg variable — that is how we get back to two stores.
+#
+# 🔴 THE FAIL-SAFE LADDER, AND ALL THREE RUNGS MUST STAY DISTINGUISHABLE.
+# A server MUST boot when the plane is unreachable, but it must NEVER quietly
+# render something other than what the owner saved. Hard rule 13: a skip is not
+# a success, and an unconfigured boot with a clean log is a server with NO
+# ADMINS. Each rung below prints its own sentence and none of them says "ok".
+#   1. FETCHED  -> render it, and cache it as last-known-good
+#   2. CACHED   -> plane unreachable; render the cache and SAY how old it is
+#   3. DEFAULTS -> no plane, no cache (first boot only); render defaults and SHOUT
+# ---------------------------------------------------------------------------
+$bootCache = Join-Path $tmpl 'boot-config.cache.json'
+$cfgSource = 'defaults'
+$canon     = $null
 
-# ---------------------------------------------------------------------------
-# cfg key -> the egg variable that feeds it. Used ONLY to make an overlay
-# override name the panel field it is contradicting. Keys with no egg variable
-# (Extra, AISpawnInterval before it was promoted) are deliberately absent.
-# ---------------------------------------------------------------------------
-# NOTE: keys are QUOTED deliberately. verify.py enforces rule 10 by rejecting any
-# assignment of the RCON-password default to something other than the CHANGEME
-# placeholder, and an unquoted key in this table reads to that regex as exactly such
-# an assignment. Quoting keeps the secret guard strict instead of loosening it to
-# accommodate a lookup table. (Spelling the pattern out here would trip it too.)
-$eggVarFor = @{
-    'ServerName' = 'SERVER_NAME'; 'MaxPlayers' = 'MAX_PLAYERS'
-    'ServerPasswordEnabled' = 'SERVER_PASSWORD_ENABLED'; 'ServerPassword' = 'SERVER_PASSWORD'
-    'RconEnabled' = 'RCON_ENABLED'; 'RconPassword' = 'RCON_PASSWORD'
-    'Discord' = 'DISCORD_URL'; 'CorpseDecay' = 'CORPSE_DECAY'
-    'AdminSteamIds' = 'ADMIN_STEAM_IDS'; 'VipSteamIds' = 'VIP_STEAM_IDS'
-    'AllowedClasses' = 'ALLOWED_CLASSES'; 'EnableHumans' = 'ENABLE_HUMANS'
-    'DayLength' = 'SERVER_DAY_LENGTH'; 'NightLength' = 'SERVER_NIGHT_LENGTH'
-    'GrowthMultiplier' = 'GROWTH_MULTIPLIER'; 'EnableGlobalChat' = 'ENABLE_GLOBAL_CHAT'
-    'EnableAI' = 'ENABLE_AI'; 'AIDensity' = 'AI_DENSITY'; 'SpawnFish' = 'SPAWN_FISH'
-    'EnableMutations' = 'ENABLE_MUTATIONS'; 'EnableDiets' = 'ENABLE_DIETS'
-    'FallDamage' = 'FALL_DAMAGE'; 'AllowReplay' = 'ALLOW_REPLAY'
-    'DynamicWeather' = 'DYNAMIC_WEATHER'; 'WhitelistEnabled' = 'WHITELIST_ENABLED'
-    'SpawnPlants' = 'SPAWN_PLANTS'; 'PlantMultiplier' = 'PLANT_MULTIPLIER'
-    'EnableMigration' = 'ENABLE_MIGRATION'; 'EnableMassMigration' = 'ENABLE_MASS_MIGRATION'
-    'EnablePatrolZones' = 'ENABLE_PATROL_ZONES'
-    'MapName' = 'MAP_NAME'; 'QueueEnabled' = 'QUEUE_ENABLED'; 'AISpawnInterval' = 'AI_SPAWN_INTERVAL'
-}
-# Snapshot what the panel's own variables (+ defaults) would render, so the overlay
-# pass below can say exactly which fields it is about to contradict. Lists are
-# flattened to a comparable string; nothing here is used for rendering.
-function Snap($c) {
-    $s = @{}
-    foreach ($k in $c.Keys) {
-        if ($k -eq 'Extra') { continue }
-        $v = $c[$k]
-        $s[$k] = if ($v -is [Array]) { ($v -join ',') } else { "$v" }
-    }
-    return $s
-}
-$preOverlay = Snap $cfg
-
-# ---------------------------------------------------------------------------
-# 3) JSON OVERLAY (Primal Hosted). Optional; overrides everything above.
-#    Shape: { "ServerName": "...", "MaxPlayers": 200, "AllowedClasses": [...],
-#             "AdminSteamIds": [...], "extra": { "ServerDayLengthMinutes": "60", ... } }
-# ---------------------------------------------------------------------------
-# !! THE OVERLAY IS AN ADMIN ESCAPE HATCH, NOT A CONFIG WRITER (#356 T1(a), 2026-07-29).
-#
-# Ice's ruling: egg VARIABLES are the single source of truth for customer settings.
-# Provisioning and the panel write variables; nothing on the platform writes this file.
-# It survives only for keys that have no variable yet (the `extra` map).
-#
-# WHY THIS BLOCK NOW SHOUTS. This layer silently outranks the panel, and on
-# 2026-07-29 that was measured doing real damage on a live customer (93da0534):
-# the panel showed MAX_PLAYERS=300 / RCON off / no RCON password, while the rendered
-# Game.ini had MaxPlayerCount=250 / bRconEnabled=True / a real password - five fields
-# where the customer's own panel was lying to them, and one of them meant a live RCON
-# port they could not see or rotate. It also invented BUGS #20's phantom "23 species"
-# scare: the auditor read the egg variable, the overlay had pinned 21, and nobody
-# compared them.
-#
-# Rule 13: a path that declines to do its work must say so distinguishably. Discarding
-# the panel's value IS declining, so every override is now named on the console with
-# both values. DO NOT make this quiet again.
-$overlay = Join-Path $tmpl 'server-config.json'
-if (Test-Path $overlay) {
-    Write-Host "(config) applying Primal Hosted overlay: server-config.json"
-    $o = Get-Content $overlay -Raw | ConvertFrom-Json
-    foreach ($p in $o.PSObject.Properties) {
-        switch ($p.Name) {
-            'AdminSteamIds'  { $cfg.AdminSteamIds  = @($p.Value) }
-            'VipSteamIds'    { $cfg.VipSteamIds    = @($p.Value) }
-            'AllowedClasses' { $cfg.AllowedClasses = @($p.Value) }
-            'extra'          { foreach ($e in $p.Value.PSObject.Properties) { $cfg.Extra[$e.Name] = "$($e.Value)" } }
-            default          { if ($cfg.ContainsKey($p.Name)) { $cfg[$p.Name] = "$($p.Value)" } }
+if ($phsk) {
+    $dataBaseCfg = (EnvOr $env:PRIMAL_DATA_BASE 'https://data.primalhosted.com').TrimEnd('/')
+    try {
+        $ProgressPreference = 'SilentlyContinue'
+        $canon = Invoke-RestMethod -Uri "$dataBaseCfg/v1/boot-config" -Headers @{ Authorization = "Bearer $phsk" } -TimeoutSec 20
+        $cfgSource = 'fetched'
+        # Cache only a FETCH. Writing the cache on any other path would let a
+        # degraded boot overwrite the last known-good with something worse.
+        try { ($canon | ConvertTo-Json -Depth 12) | Out-File -FilePath $bootCache -Encoding utf8 -Force } catch {
+            Write-Host "(config) WARNING could not write boot-config cache: $($_.Exception.Message)"
+        }
+    } catch {
+        $why = $_.Exception.Message
+        if (Test-Path $bootCache) {
+            try {
+                $canon = Get-Content $bootCache -Raw | ConvertFrom-Json
+                $cfgSource = 'cache'
+                $age = (New-TimeSpan -Start (Get-Item $bootCache).LastWriteTimeUtc -End (Get-Date).ToUniversalTime())
+                Write-Host ""
+                Write-Host "(config) *** DATA PLANE UNREACHABLE - RENDERING FROM CACHE ***"
+                Write-Host "(config)     reason: $why"
+                Write-Host ("(config)     cache written {0:N0} min ago (updatedAt={1})" -f $age.TotalMinutes, $canon.updatedAt)
+                Write-Host "(config)     ⚠ ANY PANEL CHANGE SINCE THEN IS NOT APPLIED ON THIS BOOT."
+                Write-Host ""
+            } catch {
+                Write-Host "(config) *** CACHE PRESENT BUT UNREADABLE ($($_.Exception.Message)) - falling through to defaults ***"
+                $canon = $null
+            }
+        } else {
+            Write-Host "(config) plane unreachable and no cache: $why"
         }
     }
+} else {
+    Write-Host "(config) no PHSK_KEY - cannot fetch canonical config"
+}
 
-    # --- name every field the overlay just took away from the panel ---
-    $postOverlay = Snap $cfg
-    $overridden  = @()
-    foreach ($k in ($preOverlay.Keys | Sort-Object)) {
-        if ($postOverlay[$k] -ne $preOverlay[$k]) { $overridden += $k }
-    }
-    if ($overridden.Count) {
-        Write-Host ""
-        Write-Host "(config) *** OVERLAY OVERRODE $($overridden.Count) PANEL FIELD(S) - the panel now DISAGREES with this server's Game.ini:"
-        foreach ($k in $overridden) {
-            $ev   = if ($eggVarFor.ContainsKey($k)) { $eggVarFor[$k] } else { '(no egg variable)' }
-            $was  = $preOverlay[$k]; $now = $postOverlay[$k]
-            # Never print a secret; length is enough to see that it changed.
-            if ($k -match 'Password') { $was = "<len $($was.Length)>"; $now = "<len $($now.Length)>" }
-            elseif ($was.Length -gt 90) { $was = $was.Substring(0, 90) + '...' }
-            if ($now.Length -gt 90 -and $k -notmatch 'Password') { $now = $now.Substring(0, 90) + '...' }
-            Write-Host ("           $k  (panel var $ev)")
-            Write-Host ("             panel/default -> '$was'")
-            Write-Host ("             overlay WINS  -> '$now'")
-        }
-        Write-Host "(config)    Fix: move these values into the egg variables and delete them from server-config.json."
-        Write-Host ""
-        Dbg ("overlay overrode panel fields: " + ($overridden -join ','))
-    } else {
-        Write-Host "(config) overlay changed no panel-visible field (extra-only or redundant) - panel and Game.ini agree"
-    }
-    if ($cfg.Extra.Keys.Count) {
-        Write-Host ("(config) overlay 'extra' sets {0} key(s) with no panel surface at all: {1}" -f `
-                    $cfg.Extra.Keys.Count, (($cfg.Extra.Keys | Sort-Object) -join ', '))
+if (-not $canon) {
+    Write-Host ""
+    Write-Host "(config) *** NO CANONICAL CONFIG AND NO CACHE - THIS SERVER IS UNCONFIGURED ***"
+    Write-Host "(config)     Booting on built-in defaults: NO ADMINS, NO VIPs, default dino roster."
+    Write-Host "(config)     Expected only on a server's FIRST boot. Otherwise the plane or the key is wrong."
+    Write-Host ""
+}
+Dbg "canonical config source=$cfgSource"
+
+# --- map the canonical block onto $cfg -------------------------------------
+# Every field is applied ONLY when the block actually carries it, so a plane
+# that ships a NEW field before this wrapper knows it cannot blank an old one.
+$ss = $null; $ms = $null
+if ($canon -and $canon.config) { $ss = $canon.config.server_settings; $ms = $canon.config.mod_settings }
+
+function Has($o, [string]$n) { return ($null -ne $o) -and ($null -ne $o.PSObject.Properties[$n]) }
+function PsBool($v) { if ($v) { return 'True' } else { return 'False' } }
+
+if ($ss) {
+    if (Has $ss 'serverName')            { $cfg.ServerName            = [string]$ss.serverName }
+    if (Has $ss 'maxPlayers')            { $cfg.MaxPlayers            = [string]$ss.maxPlayers }
+    if (Has $ss 'serverPassword')        { $cfg.ServerPassword        = [string]$ss.serverPassword }
+    if (Has $ss 'rconPassword')          { $cfg.RconPassword          = [string]$ss.rconPassword }
+    if (Has $ss 'discordUrl')            { $cfg.Discord               = [string]$ss.discordUrl }
+    if (Has $ss 'corpseDecay')           { $cfg.CorpseDecay           = [string]$ss.corpseDecay }
+    if (Has $ss 'serverPasswordEnabled') { $cfg.ServerPasswordEnabled = PsBool $ss.serverPasswordEnabled }
+    if (Has $ss 'rconEnabled')           { $cfg.RconEnabled           = PsBool $ss.rconEnabled }
+    # Lists: an EMPTY array is a legitimate value meaning "none" (admins/vips) or
+    # "use the default roster" (classes) — @() below, never a skip.
+    if (Has $ss 'adminSteamIds')  { $cfg.AdminSteamIds  = @($ss.adminSteamIds) }
+    if (Has $ss 'vipSteamIds')    { $cfg.VipSteamIds    = @($ss.vipSteamIds) }
+    if (Has $ss 'allowedClasses') { $cl = @($ss.allowedClasses); if ($cl.Count) { $cfg.AllowedClasses = $cl } }
+    if (Has $ss 'dayLengthMin')       { $cfg.DayLength        = [string]$ss.dayLengthMin }
+    if (Has $ss 'nightLengthMin')     { $cfg.NightLength      = [string]$ss.nightLengthMin }
+    if (Has $ss 'growthMultiplier')   { $cfg.GrowthMultiplier = [string]$ss.growthMultiplier }
+    if (Has $ss 'aiDensity')          { $cfg.AIDensity        = [string]$ss.aiDensity }
+    if (Has $ss 'plantMultiplier')    { $cfg.PlantMultiplier  = [string]$ss.plantMultiplier }
+    if (Has $ss 'enableHumans')       { $cfg.EnableHumans        = PsBool $ss.enableHumans }
+    if (Has $ss 'enableGlobalChat')   { $cfg.EnableGlobalChat    = PsBool $ss.enableGlobalChat }
+    if (Has $ss 'enableAi')           { $cfg.EnableAI            = PsBool $ss.enableAi }
+    if (Has $ss 'spawnFish')          { $cfg.SpawnFish           = PsBool $ss.spawnFish }
+    if (Has $ss 'enableMutations')    { $cfg.EnableMutations     = PsBool $ss.enableMutations }
+    if (Has $ss 'enableDiets')        { $cfg.EnableDiets         = PsBool $ss.enableDiets }
+    if (Has $ss 'fallDamage')         { $cfg.FallDamage          = PsBool $ss.fallDamage }
+    if (Has $ss 'allowReplay')        { $cfg.AllowReplay         = PsBool $ss.allowReplay }
+    if (Has $ss 'dynamicWeather')     { $cfg.DynamicWeather      = PsBool $ss.dynamicWeather }
+    if (Has $ss 'whitelistEnabled')   { $cfg.WhitelistEnabled    = PsBool $ss.whitelistEnabled }
+    if (Has $ss 'spawnPlants')        { $cfg.SpawnPlants         = PsBool $ss.spawnPlants }
+    if (Has $ss 'enableMigration')    { $cfg.EnableMigration     = PsBool $ss.enableMigration }
+    if (Has $ss 'enableMassMigration'){ $cfg.EnableMassMigration = PsBool $ss.enableMassMigration }
+    if (Has $ss 'enablePatrolZones')  { $cfg.EnablePatrolZones   = PsBool $ss.enablePatrolZones }
+    if (Has $ss 'mapName')            { $cfg.MapName             = [string]$ss.mapName }
+    if (Has $ss 'queueEnabled')       { $cfg.QueueEnabled        = PsBool $ss.queueEnabled }
+    # Empty is NOT zero: it omits the Game.ini line so the game's own default stands.
+    if (Has $ss 'aiSpawnInterval')    { $cfg.AISpawnInterval     = [string]$ss.aiSpawnInterval }
+
+    Write-Host ("(config) canonical config {0} (admins={1} vips={2} classes={3} players={4} scope={5} updatedAt={6})" -f `
+        $cfgSource.ToUpper(), $cfg.AdminSteamIds.Count, $cfg.VipSteamIds.Count, $cfg.AllowedClasses.Count, `
+        $cfg.MaxPlayers, $canon.scope.server_settings, $canon.updatedAt)
+}
+
+# 🔴 #1097 — the seat cap. The plane REFUSES an over-cap write, but it can only
+# CLAMP on read (a server must boot), so it reports what it clamped. Never let
+# that pass silently: a player count the owner did not choose is exactly the
+# "saved, but not what you asked for" class this whole change exists to kill.
+if ($canon -and $canon.clamped) {
+    foreach ($cl in @($canon.clamped)) {
+        Write-Host "(config) *** CLAMPED BY ENTITLEMENT: $($cl.key).$($cl.field) stored=$($cl.stored) -> applied=$($cl.applied) (your plan's limit)"
+        Dbg "entitlement clamp $($cl.key).$($cl.field) $($cl.stored)->$($cl.applied)"
     }
 }
+
+# --- LEGACY EGG VARIABLES: gone, and deliberately not silently ---------------
+# If a customer setting is still set as an egg variable, it is NO LONGER READ.
+# Say so once, loudly, rather than letting someone edit a dead field for a week.
+$deadVars = @('SERVER_NAME','MAX_PLAYERS','ADMIN_STEAM_IDS','VIP_STEAM_IDS','ALLOWED_CLASSES',
+              'SERVER_PASSWORD','SERVER_PASSWORD_ENABLED','RCON_ENABLED','RCON_PASSWORD','DISCORD_URL',
+              'CORPSE_DECAY','ENABLE_HUMANS','SERVER_DAY_LENGTH','SERVER_NIGHT_LENGTH','GROWTH_MULTIPLIER',
+              'ENABLE_GLOBAL_CHAT','ENABLE_AI','AI_DENSITY','SPAWN_FISH','ENABLE_MUTATIONS','ENABLE_DIETS',
+              'FALL_DAMAGE','ALLOW_REPLAY','DYNAMIC_WEATHER','WHITELIST_ENABLED','SPAWN_PLANTS',
+              'PLANT_MULTIPLIER','ENABLE_MIGRATION','ENABLE_MASS_MIGRATION','ENABLE_PATROL_ZONES',
+              'MAP_NAME','QUEUE_ENABLED','AI_SPAWN_INTERVAL','AI_MAX_COUNT','SPECIES_CAP_LIST',
+              'SPECIES_CAP_EVERY','PRIMAL_FORCE_DINO')
+$stillSet = @($deadVars | Where-Object { -not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) })
+if ($stillSet.Count -and $cfgSource -ne 'defaults') {
+    Write-Host "(config) NOTE $($stillSet.Count) legacy egg variable(s) are still set and are NO LONGER READ (config now comes from the panel):"
+    Write-Host "(config)      $($stillSet -join ', ')"
+}
+
 
 # ---------------------------------------------------------------------------
 # 1b) Update (skippable via AUTO_UPDATE=0)
@@ -399,14 +413,9 @@ if ([string]::IsNullOrWhiteSpace($cfg.AISpawnInterval)) {
     $gi = $gi -replace "(?m)^\s*AISpawnInterval\s*=\s*\r?\n", ''
 }
 
-# --- overlay "extra": generic [tigamesession] key setter (override anything) ---
-foreach ($k in $cfg.Extra.Keys) {
-    $line = "$k=$($cfg.Extra[$k])"
-    if ($gi -match "(?m)^\s*$([regex]::Escape($k))\s*=") { $gi = $gi -replace "(?m)^\s*$([regex]::Escape($k))\s*=.*$", $line }
-    else { $gi = $gi -replace "(?m)^(\[/script/theisle\.tigamesession\]\r?\n)", "`$1$line`r`n" }
-}
 Set-Content -Path (Join-Path $cfgDir 'Game.ini') -Value $gi -Encoding ascii
-Write-Host "(config) rendered Game.ini (players=$($cfg.MaxPlayers), classes=$($classes.Count), admins=$($cfg.AdminSteamIds.Count), vips=$($cfg.VipSteamIds.Count))"
+Write-Host ("(config) rendered Game.ini from {0} config (players={1}, classes={2}, admins={3}, vips={4})" -f `
+            $cfgSource, $cfg.MaxPlayers, $classes.Count, $cfg.AdminSteamIds.Count, $cfg.VipSteamIds.Count)
 
 # --- Engine.ini: static template (EOS creds etc.) + the Primal mod's config section ---
 #
@@ -430,59 +439,94 @@ $eng = Get-Content (Join-Path $tmpl 'Engine.ini.tmpl') -Raw
 # reads these from Engine.ini. -PrimalForceDino is still passed on the launch
 # line below, but it is INERT - the ini key is what the pak actually loads.
 # #572: config ARRAYS do not load. Every value here is ONE csv STRING.
-$pakForceDino = ('' + $env:PRIMAL_FORCE_DINO).Trim()
-# 2026-08-03: fallback REMOVED (Isle update 24542870). Ice reported Baryonyx and
-# Oviraptor. This hardcoded default silently force-RE-ADDED them at boot even
-# after they were stripped from ALLOWED_CLASSES, because Config_Scan hits on
-# AllowedClasses OR ForceAllowSet. Empty now means force nothing.
-$pakExtra = [ordered]@{
-    # Trike corpse cleanup - ON by Ice's call 2026-08-01. Lane B advised holding
-    # it OFF on customers until #573; Ice overrode that deliberately.
-    # Key names + value forms are the PAK'S: True/False (not 1/0), csv (not array).
-    #
-    # ⭐ #1071: every numeric pak key needs its paired `*Set` sentinel or the pak
-    # reads it as UNSET and its baked default stands. Before this, BodySweepOn +
-    # BodySweepList + BodyHoldSec were written but BodyHoldSet was NOT, so the 10s
-    # hold was SILENTLY IGNORED (baked default held). The `*Set=True` lines below
-    # are what actually make these values take effect.
-    'BodySweepOn'     = 'True'
-    'BodySweepList'   = 'Triceratops'
-    'BodyHoldSec'     = '10.0'
-    'BodyHoldSet'     = 'True'      # #1071: makes BodyHoldSec=10.0 actually apply
-    'BodySweepLiftZ'  = '150000'    # explicit = our prior baked default
-    'BSLiftSet'       = 'True'      # #1071: makes BodySweepLiftZ apply
-    # Tree knockdown OFF on all servers by Ice's call (2026-08-09). Baked pak
-    # default is True; this forces it False everywhere.
-    'TreeKnockdownOn' = 'False'
+# ⭐ THESE WERE FLEET-WIDE LITERALS UNTIL 2026-08-10. Ice ruled them PER-SERVER
+# (*"yes, with defaults: treeknockdownon = false and well... the rest whatever we
+# has set now is defaults"*), so they now come from the data plane's
+# `mod_settings` block. The values below are the FIRST-BOOT fallback and are
+# byte-identical to what this script used to hardcode - a server that has never
+# reached the plane still renders exactly the Engine.ini it rendered before.
+#
+# ⛔⛔ `BodyHoldSet` / `BSLiftSet` ARE NOT SETTINGS AND ARE NOT IN THE BLOCK.
+# They are #1071 WIRE SENTINELS: the pak reads a numeric key as UNSET (keeping
+# its baked default) unless the paired `*Set=True` is present too. Exposing one
+# as a panel field would ship a checkbox that, left off, makes `BodyHoldSec`
+# SILENTLY do nothing - #1071 re-created, customer-facing. They are DERIVED
+# below: emit the number => emit its sentinel, always, together, never apart.
+$modDefaults = [ordered]@{
+    BodySweepOn     = 'True'
+    BodySweepList   = 'Triceratops'
+    BodyHoldSec     = '10.0'
+    BodySweepLiftZ  = '150000'
+    TreeKnockdownOn = 'False'
+    AIMaxCount      = '40'
+    SpeciesCapEvery = '30'
 }
-# --- AIMaxCount: global AI population ceiling, a panel knob (default 40) --------
-# One server-wide cap (NOT per-species). Exposed as egg var AI_MAX_COUNT so it is
-# tunable from the panel; always written so a change there takes effect on reboot.
-$aiMaxCount = ('' + $env:AI_MAX_COUNT).Trim()
-if ($aiMaxCount) { $pakExtra['AIMaxCount'] = $aiMaxCount }
-# --- SpeciesCap: per-species player caps, a panel knob (default empty = none) ---
-# Format is one csv STRING (#572), e.g. "Tyrannosaurus:2,Deinosuchus:3". Empty =>
-# no caps. NOTE (#1070b): SpeciesCapList ALSO gates the B110 corpse census today;
-# the mod session's B118 decouples that, so census works whether or not caps are set.
-$speciesCapList  = ('' + $env:SPECIES_CAP_LIST).Trim()
-$speciesCapEvery = ('' + $env:SPECIES_CAP_EVERY).Trim()
-if ($speciesCapList)  { $pakExtra['SpeciesCapList']  = $speciesCapList }
-if ($speciesCapEvery) { $pakExtra['SpeciesCapEvery'] = $speciesCapEvery }
-# PRIMAL_MOD_INI="Key=Value;Other=1" overrides/extends the above with no script edit.
-if ($env:PRIMAL_MOD_INI) {
-    foreach ($pair in ($env:PRIMAL_MOD_INI -split ';')) {
-        $kv = $pair.Trim(); if (-not $kv) { continue }
-        $eq = $kv.IndexOf('='); if ($eq -lt 1) { Write-Host "(config) WARNING ignoring malformed PRIMAL_MOD_INI entry '$kv'"; continue }
-        $pakExtra[$kv.Substring(0, $eq).Trim()] = $kv.Substring($eq + 1).Trim()
-    }
+# Format a number the way this script always has, so the byte-identical render
+# test is not tripped by PowerShell's own stringification (10 -> "10", not "10.0").
+function ModNum($v, [string]$fallback, [int]$dp) {
+    if ($null -eq $v) { return $fallback }
+    try { return ([double]$v).ToString("F$dp", [Globalization.CultureInfo]::InvariantCulture) } catch { return $fallback }
 }
+function ModBool($v, [string]$fallback) {
+    if ($null -eq $v) { return $fallback }
+    if ($v -is [bool]) { if ($v) { return 'True' } else { return 'False' } }
+    return (To-Bool ([string]$v) $fallback)
+}
+# csv on the wire, ALWAYS (#572: config ARRAYS do not load in the pak).
+function ModCsv($v) {
+    if ($null -eq $v) { return '' }
+    return ((@($v) | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ -ne '' }) -join ',')
+}
+
+$pakExtra = [ordered]@{}
+foreach ($k in $modDefaults.Keys) { $pakExtra[$k] = $modDefaults[$k] }
+
+if ($ms) {
+    if (Has $ms 'bodySweepOn')     { $pakExtra['BodySweepOn']     = ModBool $ms.bodySweepOn     $modDefaults.BodySweepOn }
+    if (Has $ms 'treeKnockdownOn') { $pakExtra['TreeKnockdownOn'] = ModBool $ms.treeKnockdownOn $modDefaults.TreeKnockdownOn }
+    if (Has $ms 'bodySweepList')   { $pakExtra['BodySweepList']   = ModCsv  $ms.bodySweepList }
+    if (Has $ms 'bodyHoldSec')     { $pakExtra['BodyHoldSec']     = ModNum  $ms.bodyHoldSec     $modDefaults.BodyHoldSec 1 }
+    if (Has $ms 'bodySweepLiftZ')  { $pakExtra['BodySweepLiftZ']  = ModNum  $ms.bodySweepLiftZ  $modDefaults.BodySweepLiftZ 0 }
+    if (Has $ms 'aiMaxCount')      { $pakExtra['AIMaxCount']      = ModNum  $ms.aiMaxCount      $modDefaults.AIMaxCount 0 }
+    if (Has $ms 'speciesCapEvery') { $pakExtra['SpeciesCapEvery'] = ModNum  $ms.speciesCapEvery $modDefaults.SpeciesCapEvery 0 }
+}
+
+# --- #1071 SENTINELS, DERIVED. Never authored, never a panel field. ------------
+# Paired with their numeric by construction, so the two can no longer drift.
+if ($pakExtra.Contains('BodyHoldSec'))    { $pakExtra['BodyHoldSet'] = 'True' }
+if ($pakExtra.Contains('BodySweepLiftZ')) { $pakExtra['BSLiftSet']   = 'True' }
+
+# --- EMPTY IS NOT ZERO: these two OMIT their line so the pak's own default holds.
+$speciesCapList = ''
+if ($ms -and (Has $ms 'speciesCapList')) { $speciesCapList = ModCsv $ms.speciesCapList }
+if ($speciesCapList) { $pakExtra['SpeciesCapList'] = $speciesCapList }
+
+# ForceDinoList: same omit-when-empty idiom. 🔴 The value lands on the game's
+# LAUNCH LINE, where Compsognathus/Pterodactylus are an instant client crash and
+# a bricked character (#378), so the panel validates it against an ALLOW-LIST
+# before it ever reaches the plane. This script does not re-derive that list -
+# it renders what the gated writer stored.
+# 2026-08-03: the old hardcoded fallback was REMOVED (Isle update 24542870) -
+# it silently force-RE-ADDED Baryonyx/Oviraptor after they were stripped from
+# the roster, because Config_Scan hits on AllowedClasses OR ForceAllowSet.
+$pakForceDino = ''
+if ($ms -and (Has $ms 'forceDinoList')) { $pakForceDino = ModCsv $ms.forceDinoList }
+
+# ⛔ PRIMAL_MOD_INI IS GONE (#1094). It was documented as the ops escape hatch
+# ("overrides/extends the above with no script edit") and it was NEVER DECLARED
+# IN THE EGG, so Ptero never injected it and the branch could not fire - a hatch
+# that silently was not there. Per-server pak config is now a real panel surface
+# (`mod_settings`), which is what that hatch was pretending to be.
 
 # --- PrimalModLogging: an OPS OVERRIDE Ice sets by hand for testing (#1071) -----
 # Deliberately NOT an egg var and NOT baked - it must default to the pak's own
 # value. But the full-section REPLACE below would wipe a hand-edit, so carry
 # forward any value already present in the live Engine.ini. Net effect: the egg
-# never sets it, and never stomps it either. Ice's env hatch PRIMAL_MOD_INI still
-# wins over a carried-forward value (it is applied to $pakExtra above).
+# never sets it, and never stomps it either.
+# ⚠️ 2026-08-10: the old note here said "Ice's env hatch PRIMAL_MOD_INI still
+# wins over a carried-forward value". That hatch is gone (#1094 - it was never
+# declared in the egg, so it never fired), and nothing overrides this now: a
+# hand-set PrimalModLogging is simply carried forward, full stop.
 $preserveModLogging = $null
 if (-not $pakExtra.Contains('PrimalModLogging')) {
     $liveEnginePath = Join-Path $cfgDir 'Engine.ini'
