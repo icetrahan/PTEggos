@@ -598,21 +598,53 @@ if ($ms -and (Has $ms 'forceDinoList')) { $pakForceDino = ModCsv $ms.forceDinoLi
 # that silently was not there. Per-server pak config is now a real panel surface
 # (`mod_settings`), which is what that hatch was pretending to be.
 
-# --- PrimalModLogging: an OPS OVERRIDE Ice sets by hand for testing (#1071) -----
-# Deliberately NOT an egg var and NOT baked - it must default to the pak's own
-# value. But the full-section REPLACE below would wipe a hand-edit, so carry
-# forward any value already present in the live Engine.ini. Net effect: the egg
-# never sets it, and never stomps it either.
-# ⚠️ 2026-08-10: the old note here said "Ice's env hatch PRIMAL_MOD_INI still
-# wins over a carried-forward value". That hatch is gone (#1094 - it was never
-# declared in the egg, so it never fired), and nothing overrides this now: a
-# hand-set PrimalModLogging is simply carried forward, full stop.
-$preserveModLogging = $null
-if (-not $pakExtra.Contains('PrimalModLogging')) {
-    $liveEnginePath = Join-Path $cfgDir 'Engine.ini'
-    if (Test-Path $liveEnginePath) {
-        $curEng = Get-Content $liveEnginePath -Raw
-        if ($curEng -match "(?m)^\s*PrimalModLogging\s*=\s*(.+?)\s*$") { $preserveModLogging = $Matches[1] }
+# --- CARRY FORWARD every hand-set pak key this script does not own (#1137) -----
+# The emit below REPLACES the whole section, so any key it does not re-emit is
+# destroyed on every boot. Until now exactly ONE key survived that: the #1071
+# PrimalModLogging carry-forward, hardcoded by name. That made the config
+# mandate's delivery half unbuildable - the pak could declare a new Config
+# variable and read it, and nothing on this box could ever put it in the file
+# (#1137). BUILD 120's four IrisCensus* scalars are the first casualties: a
+# hand-added IrisCensusOn=True worked for exactly one boot, then reverted.
+# This generalises that one special case into the rule it always implied, so a
+# future pak knob needs NO wrapper edit to become settable.
+#
+# ⚠️ THE SET BELOW IS "KEYS THIS SCRIPT OWNS", NOT "KEYS IT EMITTED THIS BOOT" -
+# and that distinction is the whole correctness of this block. ForceDinoList and
+# SpeciesCapList are deliberately OMITTED when empty so the pak's own default
+# holds ("EMPTY IS NOT ZERO", above). Judged by what was emitted, clearing one in
+# the panel would carry its OLD value forward for ever and the setting would be
+# silently un-clearable - the plane would say empty and the box would not agree.
+#
+# ⛔ A carried key is operator-writable through the file manager, so the pak must
+# never read a key whose VALUE is a console command: config selects from a CLOSED
+# SET the pak owns (BUILD 120's IrisCensusCmds is the pattern). Otherwise this
+# block is customer-writable console execution on a box we run. That rule lives
+# with the pak and this loop cannot enforce it - it is stated here because this
+# is where the persistence it depends on was introduced.
+$pakManaged = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+foreach ($k in @('ApiToken', 'PollURL', 'ForceDinoList', 'SpeciesCapList')) { [void]$pakManaged.Add($k) }
+foreach ($k in $pakExtra.Keys) { [void]$pakManaged.Add($k) }
+
+$carried = [ordered]@{}
+$liveEnginePath = Join-Path $cfgDir 'Engine.ini'
+if (Test-Path $liveEnginePath) {
+    # Scope the scan to the pak's OWN section. The #1071 code this replaces used a
+    # bare whole-file regex, which would have matched a same-named key sitting in
+    # [Core.Log] or a game section and silently promoted it into the pak's block.
+    $curEng = Get-Content $liveEnginePath -Raw
+    $secMatch = [regex]::Match(
+        $curEng,
+        "(?ms)^\s*\[/Game/TheIsle/Core/Session/BP_TIGameSession\.BP_TIGameSession_C\][^\r\n]*\r?\n(.*?)(?=^\s*\[|\z)")
+    if ($secMatch.Success) {
+        foreach ($line in ($secMatch.Groups[1].Value -split "`r?`n")) {
+            if ($line -match '^\s*[;#]') { continue }
+            if ($line -notmatch '^\s*([A-Za-z0-9_]+)\s*=\s*(.*?)\s*$') { continue }
+            $ck = $Matches[1]; $cv = $Matches[2]
+            if ($pakManaged.Contains($ck)) { continue }
+            if ($carried.Contains($ck)) { continue }   # UE takes the FIRST copy; so do we
+            $carried[$ck] = $cv
+        }
     }
 }
 
@@ -625,9 +657,16 @@ if ($env:ENABLE_PRIMAL_MOD -eq '1' -and $phsk) {
     $sessLines.Add("PollURL=$dataBase/v1/commands/text")
     if ($pakForceDino) { $sessLines.Add("ForceDinoList=$pakForceDino") }
     foreach ($pk in $pakExtra.Keys) { $sessLines.Add("$pk=$($pakExtra[$pk])") }
-    if ($preserveModLogging) {
-        $sessLines.Add("PrimalModLogging=$preserveModLogging")
-        Write-Host "(config) Engine.ini: preserved hand-set PrimalModLogging=$preserveModLogging (#1071)"
+    foreach ($ck in $carried.Keys) { $sessLines.Add("$ck=$($carried[$ck])") }
+    # ⭐ Rule 13: a skip is not a success. This line prints on EVERY boot, in both
+    # states, so "nothing was hand-set" and "the carry-forward did not run" can
+    # never be the same silence - which is precisely how #1137 stayed invisible.
+    # ⛔ KEY NAMES ONLY, never values: ApiToken is excluded by $pakManaged, but a
+    # future carried key could hold a secret and this goes to the Ptero console.
+    if ($carried.Count) {
+        Write-Host "(config) Engine.ini: carried forward $($carried.Count) hand-set pak key(s) (#1137/#1071): $(($carried.Keys) -join ', ')"
+    } else {
+        Write-Host "(config) Engine.ini: carry-forward ran, no hand-set pak keys present (#1137)"
     }
     $sessBlock = ($sessLines -join "`r`n")
     # Idempotent: if the template ever grows this section, REPLACE it rather than
