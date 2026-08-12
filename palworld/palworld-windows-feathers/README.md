@@ -87,6 +87,20 @@ cleanly.
 Any other line typed into the panel console is forwarded to RCON, so
 `ShowPlayers`, `Broadcast <msg>` and `KickPlayer <steamid>` work from the panel.
 
+**The wrapper terminates the process; it never asks the engine to unwind.** The
+panel console is read from a background runspace parked in
+`[Console]::In.ReadLine()`, which never returns. `exit` waits on that runspace,
+so the wrapper outlives the game, feathers hangs in `stopping` holding its power
+lock, and restart never completes. `Terminate` closes the RCON socket and calls
+`[Environment]::Exit` — **and nothing else**. An earlier version stopped the
+runspace first "to be tidy" and hung identically, because `$ps.Stop()` waits on
+the very pipeline that is blocked. Do not reintroduce cleanup ahead of that exit.
+
+> ⚠️ **A reinstall truncates the server directory on feathers.** That is fine on a
+> fresh server and destroys a live world. To ship a wrapper change to a server
+> that holds a save, replace `_primal\start-palworld.ps1` over SFTP and restart —
+> do **not** reinstall. Reinstall is only the right tool before any save exists.
+
 ## Ports
 
 Primary allocation = the game port (UDP, Palworld default 8211). If a **second**
