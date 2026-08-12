@@ -424,11 +424,18 @@ function Terminate {
     # [Environment]::Exit terminates the process outright. Tear the runspace down
     # first so the normal path is still clean, but never depend on it.
     param([int]$Code = 0)
+    #
+    # Do NOT tidy the runspace up first. The first version of this function
+    # called $ps.Stop() before exiting and hung in exactly the same way it was
+    # written to prevent: Stop() waits for the pipeline to halt, and that
+    # pipeline is blocked inside a native [Console]::In.ReadLine() that never
+    # returns, so Stop() never returns either. The "tidy" teardown WAS the hang.
+    #
+    # Process exit reclaims the runspace, the thread and the handles. There is
+    # nothing here worth risking a hung stop for, so this does the one thing
+    # that cannot block: closing our own socket, then terminating.
+    #
     Rcon-Close
-    try { $ps.Stop() }    catch {}
-    try { $ps.Dispose() } catch {}
-    try { $rs.Close() }   catch {}
-    try { $rs.Dispose() } catch {}
     [Environment]::Exit($Code)
 }
 
