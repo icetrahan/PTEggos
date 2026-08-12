@@ -411,6 +411,27 @@ $ps = [powershell]::Create(); $ps.Runspace = $rs
 })
 $handle = $ps.BeginInvoke()
 
+function Terminate {
+    # MUST be [Environment]::Exit, not `exit`.
+    #
+    # `exit` asks the PowerShell engine to unwind, and the engine waits on the
+    # stdin runspace above - which is parked forever inside
+    # [Console]::In.ReadLine() and never returns. Measured 2026-08-11: the game
+    # process stopped and saved correctly, the wrapper then sat alive for five
+    # minutes, and feathers hung in "stopping" holding its power lock, so the
+    # restart never completed and each attempt orphaned another wrapper.
+    #
+    # [Environment]::Exit terminates the process outright. Tear the runspace down
+    # first so the normal path is still clean, but never depend on it.
+    param([int]$Code = 0)
+    Rcon-Close
+    try { $ps.Stop() }    catch {}
+    try { $ps.Dispose() } catch {}
+    try { $rs.Close() }   catch {}
+    try { $rs.Dispose() } catch {}
+    [Environment]::Exit($Code)
+}
+
 function Stop-Server {
     param([string]$Why)
     Say ('Stopping (' + $Why + ') - saving world first.')
@@ -420,13 +441,12 @@ function Stop-Server {
     $null = Rcon-Command 'Shutdown 1'
     for ($i = 0; $i -lt 60; $i++) {
         Pump-Log
-        if ($proc.HasExited) { Say 'Server exited cleanly.'; Rcon-Close; exit 0 }
+        if ($proc.HasExited) { Say 'Server exited cleanly.'; Terminate 0 }
         Start-Sleep -Seconds 1
     }
     Say 'Server did not exit within 60s of Shutdown - killing the process.'
     try { $proc.Kill() } catch {}
-    Rcon-Close
-    exit 0
+    Terminate 0
 }
 
 # --- supervise ---------------------------------------------------------------
@@ -437,8 +457,7 @@ while ($true) {
     if ($proc.HasExited) {
         Pump-Log
         Say ('Server process exited with code ' + $proc.ExitCode + '.')
-        Rcon-Close
-        exit $proc.ExitCode
+        Terminate $proc.ExitCode
     }
 
     Pump-Log
