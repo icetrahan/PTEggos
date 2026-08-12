@@ -1,7 +1,36 @@
 #!/usr/bin/env python3
 """Publish the Evrima startup wrapper (+ its .tmpl files) to R2 for fleet self-update.
 
-WHY THIS EXISTS
+🔴🔴 STOP — THIS LANE HAS NO CONSUMER ON WINDOWS. DO NOT PUBLISH. (#1283, 2026-08-12)
+--------------------------------------------------------------------------------
+Everything below this banner describes a self-update lane that **does not exist in
+`start-evrima.ps1`**. The Windows wrapper fetches manifests for the pak and for
+sigbypass; it has **no** wrapper-manifest fetch, and the strings this docstring
+promises — `PRIMAL_WRAPPER_AUTOUPDATE`, `PRIMAL_WRAPPER_PIN`, the parse-check before
+replacing a live file — appear **nowhere** in it. Only `isles/evrima-linux/
+start-evrima.sh` has a real consumer (and its own comment calls this the "live
+Windows lane", which is how the belief propagated).
+
+Verified from the consumer, not from this file: `primal-wrapper-evrima/latest.json`
+is live in R2 and advertises a **47,086 B** wrapper published 2026-08-01, while the
+wrappers actually on the fleet are 56,769 / 59,366 B and dated 08-10/08-11. If
+anything consumed that manifest those servers would have been overwritten *down* to
+47,086 B on their next boot. None were.
+
+⇒ Two consequences, and the second is the dangerous one:
+  1. Publishing here ships nothing. A change published and not egg-imported is NOT
+     on the fleet, however confidently this docstring reads.
+  2. 🔴 **The stale manifest is a loaded gun.** The moment someone writes the
+     consumer half, every Windows Evrima server downgrades to the 08-01 wrapper on
+     its next restart — and they restart ~10x/day (#1108). **Re-publish a current
+     version in the SAME commit that lands a consumer, or delete the manifest.**
+
+Ship a wrapper change the way it is actually shipped today: edit the loose file →
+`embed.py` → `verify.py` → commit → **hand-import the egg JSON into the panel**
+(egg 40 has no CI matrix entry, so CI publishes none of it), and hand-place the file
+on any existing server that needs it before its next boot.
+
+WHY THIS EXISTS (as originally written — read the banner above first)
 ---------------
 `_primal/start-evrima.ps1` is materialised exactly ONCE, by the egg's
 *installation* script, from a base64 blob. Pterodactyl runs installation scripts

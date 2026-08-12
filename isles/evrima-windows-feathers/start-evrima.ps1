@@ -893,12 +893,35 @@ if (-not (Test-Path $exe)) { throw "server binary missing: $exe (did SteamCMD fi
 # SetHostAddress) forces EOS to advertise THIS IP instead. Setting it == the multihome
 # IP is what makes per-IP isolation actually work end-to-end. Proven: client log
 # `Queue: connecting to queue socket <secondaryIP>:<port>`. See isle_evrima_egg/PER_IP_DDOS_ISOLATION.md.
+#
+# ⭐ THE THIRD LEG (solved 2026-08-12, #1281): the two legs above are still not
+# enough for The Isle 0.21.78x. Multihome has THREE legs and we shipped two:
+#   bind      -MULTIHOME=<ip>          🟢 binds the LISTEN sockets
+#   advertise EOS_OVERRIDE_HOST_IP     🟢 fixes what EOS tells the browser
+#   egress    -MULTIHOMEHTTP=<ip>      🔴 was MISSING -> outbound HTTP left as the primary
+# 0.21.78x posts runtime telemetry to warphosting, which in COMMUNITY mode (every
+# server we run - no RUNTIME_UPDATE_KEY) authenticates the reporter by matching the
+# SOURCE IP of that POST against the IP the EOS session advertises. With only two
+# legs the POST egressed from the box's primary, so warphosting answered
+# `Runtime update failed (HTTP 403): Community runtime reporter is not trusted for
+# this session` every 10s forever and the server was NEVER LISTED in the in-game
+# browser. -MULTIHOMEHTTP is UE's own knob for that leg (parses into FCurlHttpManager
+# CurlRequestOptions.LocalHostAddr = CURLOPT_INTERFACE), a SEPARATE parse from the
+# socket subsystem's MULTIHOME= - which is why every earlier session concluded
+# multihome "works": for joins, it does.
+# ⛔ It is ADDED to the other two, never instead of them.
+# 🟢 Safe on single-IP / primary-IP servers: binding HTTP to the address the OS would
+# have chosen anyway is a no-op. Proven by the primary-IP regression arm (0 x 403).
+# Evidence: A/B/A on one server + three non-default IPs across two /16s, all listed
+# by `POST api.warphosting.com.au/v1/servers/community` with the IP we set, durable
+# across the restart cycle. See docs/handoffs/2026-08-12_multihome-telemetry.md.
 $multihome = EnvOr $env:MULTIHOME_IP $env:SERVER_IP
 $mhArgs = @()
 if ($multihome -and $multihome -ne '0.0.0.0' -and $multihome -match '^\d{1,3}(\.\d{1,3}){3}$') {
-    $mhArgs = @("-MULTIHOME=$multihome")
+    $mhArgs = @("-MULTIHOME=$multihome", "-MULTIHOMEHTTP=$multihome")
     $env:EOS_OVERRIDE_HOST_IP = $multihome   # <-- makes EOS advertise the multihome IP (per-IP isolation)
     Write-Host "(start) EOS_OVERRIDE_HOST_IP=$multihome (advertise this IP to the server browser)"
+    Write-Host "(start) -MULTIHOMEHTTP=$multihome (outbound HTTP egress - warphosting runtime telemetry, #1281)"
 } else {
     $multihome = '(all interfaces)'
 }
@@ -954,8 +977,8 @@ $before  = @(Get-Process TheIsleServer-Win64-Shipping -ErrorAction SilentlyConti
 
 Dbg "launching (server will detach; we supervise the real process)"
 # Launch form matches Hex's proven dedicated command (map URL carries the port; no
-# -QueryPort / -stdout). -MULTIHOME (dash flag) via @mhArgs + EOS_OVERRIDE_HOST_IP (env,
-# set above) = the working per-IP combo.
+# -QueryPort / -stdout). -MULTIHOME + -MULTIHOMEHTTP (dash flags) via @mhArgs +
+# EOS_OVERRIDE_HOST_IP (env, set above) = the working per-IP combo (all THREE legs, #1281).
 & $exe @mhArgs @fdArgs @ptArgs "/Game/TheIsle/Maps/Game/Gateway/Gateway?Port=$env:SERVER_PORT" -log `
     '-ini:Engine:[EpicOnlineServices]:DedicatedServerClientId=xyza7891gk5PRo3J7G9puCJGFJjmEguW' `
     '-ini:Engine:[EpicOnlineServices]:DedicatedServerClientSecret=pKWl6t5i9NJK8gTpVlAxzENZ65P8hYzodV8Dqe5Rlc8'
