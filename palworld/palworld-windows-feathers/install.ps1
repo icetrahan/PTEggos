@@ -117,8 +117,45 @@ foreach ($d in @(
     (Join-Path $game 'Pal\Saved\Config\WindowsServer'),
     (Join-Path $game 'Pal\Saved\SaveGames\0'),
     (Join-Path $game 'Mods\Workshop'),
+    (Join-Path $game 'Pal\Content\Paks\~mods'),
+    (Join-Path $game 'Pal\Content\Paks\LogicMods'),
     $prim
 )) { New-Item -ItemType Directory -Force -Path $d | Out-Null }
+
+# --- optional UE4SS ---------------------------------------------------------
+# Lua and Blueprint mods need UE4SS; the official Workshop loader does not. This
+# is OPT-IN and unpinned by design: UE4SS ships a new build per game patch, so a
+# URL baked into the egg would rot into a silently-wrong version. Set
+# UE4SS_ZIP_URL to the release you actually want. Left empty, nothing is fetched
+# and UE4SS mods simply do not load - which the wrapper says out loud on boot.
+$ue4ssUrl = [Environment]::GetEnvironmentVariable('UE4SS_ZIP_URL')
+if (-not [string]::IsNullOrWhiteSpace($ue4ssUrl)) {
+    $win64 = Join-Path $game 'Pal\Binaries\Win64'
+    New-Item -ItemType Directory -Force -Path $win64 | Out-Null
+    Write-Output ('Fetching UE4SS from ' + $ue4ssUrl)
+    try {
+        $ue4ssZip = Join-Path $root 'ue4ss.zip'
+        Invoke-WebRequest -Uri $ue4ssUrl -OutFile $ue4ssZip
+        Expand-Archive -Path $ue4ssZip -DestinationPath $win64 -Force
+        Remove-Item $ue4ssZip -Force -ErrorAction SilentlyContinue
+        $dll = Join-Path $win64 'dwmapi.dll'
+        if (Test-Path $dll) {
+            Write-Output ('UE4SS installed - dwmapi.dll present (' + (Get-Item $dll).Length + ' B).')
+        } else {
+            # Not fatal: the SERVER still boots fine without UE4SS. But say so
+            # plainly rather than let an operator infer a working mod loader
+            # from the absence of an error.
+            Write-Output 'WARNING: the UE4SS archive extracted but dwmapi.dll is NOT present.'
+            Write-Output 'UE4SS will NOT be injected and every Lua/Blueprint mod will be inert.'
+            Write-Output 'Check that UE4SS_ZIP_URL points at a zip whose ROOT holds dwmapi.dll.'
+        }
+    } catch {
+        Write-Output ('WARNING: UE4SS fetch/extract failed: ' + $_.Exception.Message)
+        Write-Output 'The server will still install and boot; Lua/Blueprint mods will not load.'
+    }
+} else {
+    Write-Output 'UE4SS_ZIP_URL is empty - skipping UE4SS (pak and Workshop mods are unaffected).'
+}
 
 # --- verdict ----------------------------------------------------------------
 $launcherOk = Test-Path $launcherExe

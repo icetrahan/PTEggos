@@ -177,6 +177,32 @@ def main() -> None:
                 "rules": "nullable|string|max:64",
             },
             {
+                "name": "Multihome (bind IP)",
+                "description": (
+                    "Bind the listen socket to ONE address on the box instead of every "
+                    "interface. win1 carries eleven IPs; leave this empty and the server "
+                    "answers on all of them. Must match the IP of the attached allocation."
+                ),
+                "env_variable": "MULTIHOME",
+                "default_value": "",
+                "user_viewable": True, "user_editable": True,
+                "rules": "nullable|ip",
+            },
+            {
+                "name": "UE4SS Zip URL",
+                "description": (
+                    "Optional. Direct link to a UE4SS release zip whose ROOT holds "
+                    "dwmapi.dll; fetched into Pal/Binaries/Win64 at install. Needed only "
+                    "for Lua/Blueprint mods that must run server-side. Deliberately not "
+                    "pinned in the egg: UE4SS rebuilds per game patch and a baked URL "
+                    "rots into a silently-wrong version."
+                ),
+                "env_variable": "UE4SS_ZIP_URL",
+                "default_value": "",
+                "user_viewable": True, "user_editable": True,
+                "rules": "nullable|url|max:512",
+            },
+            {
                 "name": "Public Lobby",
                 "description": "1 = list in the community server browser, 0 = unlisted.",
                 "env_variable": "PUBLIC_LOBBY",

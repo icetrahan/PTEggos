@@ -51,6 +51,7 @@ $maxPlayers = [int](Env-Or 'MAX_PLAYERS' '32')
 $adminPass  = Env-Or 'ADMIN_PASSWORD' ''
 $serverPass = Env-Or 'SERVER_PASSWORD' ''
 $publicIp   = Env-Or 'PUBLIC_IP' ''
+$multihome  = Env-Or 'MULTIHOME' ''
 $saveFolder = Env-Or 'SAVE_FOLDER' ''
 $autoUpdate = Env-Bool 'AUTO_UPDATE' $true
 $publicLobby= Env-Bool 'PUBLIC_LOBBY' $true
@@ -148,7 +149,11 @@ $opts['ServerDescription'] = Q $serverDesc
 $opts['AdminPassword']     = Q $adminPass
 $opts['ServerPassword']    = Q $serverPass
 $opts['PublicPort']        = "$gamePort"
-$opts['PublicIP']          = Q $publicIp
+# With MULTIHOME set, the socket binds to that IP - so the address advertised to
+# the server browser must be that IP too, or players are handed one the server is
+# not listening on. An explicit PUBLIC_IP still wins.
+$advertiseIp = if (-not [string]::IsNullOrWhiteSpace($publicIp)) { $publicIp } else { $multihome }
+$opts['PublicIP']          = Q $advertiseIp
 $opts['ServerPlayerMaxNum']= "$maxPlayers"
 $opts['RCONEnabled']       = 'True'
 $opts['RCONPort']          = "$rconPort"
@@ -210,6 +215,43 @@ if ($enableMods) {
     Say 'Mods disabled (ENABLE_MODS=0).'
 }
 
+# ---------------------------------------------------------------------------
+# UE4SS
+#
+# Two mod systems exist and they are NOT the same thing:
+#   - official loader : Mods\Workshop\<name>\ + Mods\PalModSettings.ini  (above)
+#   - UE4SS           : Pal\Binaries\Win64\ue4ss\Mods\ + mods.txt        (here)
+# Lua and Blueprint mods use UE4SS. Most are client-side, but the ones that
+# perform server-authoritative actions (summoning, spawning) must be installed
+# HERE to do anything at all. This block only reports - UE4SS is dropped in over
+# SFTP, or pulled by install.ps1 when UE4SS_ZIP_URL is set.
+# ---------------------------------------------------------------------------
+$ue4ssDir  = Join-Path $game 'Pal\Binaries\Win64\ue4ss'
+$ue4ssDll  = Join-Path $game 'Pal\Binaries\Win64\dwmapi.dll'
+$modsTxt   = Join-Path $ue4ssDir 'Mods\mods.txt'
+if (Test-Path $ue4ssDir) {
+    $enabled = @()
+    if (Test-Path $modsTxt) {
+        foreach ($line in (Get-Content $modsTxt)) {
+            $t = $line.Trim()
+            if ($t -eq '' -or $t.StartsWith(';') -or $t.StartsWith('#')) { continue }
+            if ($t -match '^(?<n>[^:]+):\s*1\s*$') { $enabled += $Matches['n'].Trim() }
+        }
+    }
+    $present = @(Get-ChildItem -Path (Join-Path $ue4ssDir 'Mods') -Directory -ErrorAction SilentlyContinue)
+    Say ('UE4SS present - ' + $present.Count + ' mod folder(s), ' + $enabled.Count + ' enabled in mods.txt' +
+         $(if ($enabled.Count) { ': ' + ($enabled -join ', ') } else { '' }))
+    if (-not (Test-Path $ue4ssDll)) {
+        Say 'WARNING: ue4ss\ exists but dwmapi.dll is NOT in Pal\Binaries\Win64 - UE4SS will not be'
+        Say 'injected, so every UE4SS mod here is inert. Nothing will error; they simply will not run.'
+    }
+    if ($present.Count -gt 0 -and $enabled.Count -eq 0) {
+        Say 'WARNING: UE4SS mod folders are present but mods.txt enables none of them.'
+    }
+} else {
+    Say 'UE4SS not installed - Lua/Blueprint mods will not load (pak and official Workshop mods are unaffected).'
+}
+
 # --- launch -----------------------------------------------------------------
 $argList = @(
     'Pal',
@@ -224,7 +266,10 @@ $argList = @(
 )
 if ($publicLobby) { $argList += '-publiclobby' }
 if (-not [string]::IsNullOrWhiteSpace($serverPass)) { $argList += ('-serverpassword=' + (Q $serverPass)) }
-if (-not [string]::IsNullOrWhiteSpace($publicIp))   { $argList += ('-publicip=' + $publicIp) }
+if (-not [string]::IsNullOrWhiteSpace($advertiseIp)) { $argList += ('-publicip=' + $advertiseIp) }
+# -multihome binds the listen socket to ONE address instead of every interface on
+# the box. win1 carries eleven IPs; without this the server answers on all of them.
+if (-not [string]::IsNullOrWhiteSpace($multihome)) { $argList += ('-multihome=' + $multihome) }
 if (-not [string]::IsNullOrWhiteSpace($extraArgs))  { $argList += ($extraArgs -split '\s+') }
 
 Say ('Launching ' + (Split-Path -Leaf $exe) + ' on UDP ' + $gamePort + ' (rcon ' + $rconPort + ')')
@@ -305,9 +350,13 @@ function Rcon-Command {
 function Test-PortHeld {
     param([int]$Port, [int]$OwnerPid)
     try {
+        # netstat prints the local address as IP:PORT ("0.0.0.0:8211", or the
+        # multihome address). The character before the colon is a digit, never
+        # whitespace, so the port must be anchored on the colon itself. ":8211"
+        # cannot match inside ":18211", so no length guard is needed.
         $rows = & netstat -ano -p UDP 2>$null
         foreach ($r in $rows) {
-            if ($r -match ('\s' + [regex]::Escape(':' + $Port) + '\s') -and $r -match ('\s' + $OwnerPid + '\s*$')) { return $true }
+            if ($r -match ([regex]::Escape(':' + $Port) + '\s') -and $r -match ('\s' + $OwnerPid + '\s*$')) { return $true }
         }
     } catch {}
     return $false
