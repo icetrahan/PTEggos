@@ -285,6 +285,7 @@ Say ('Server PID ' + $proc.Id)
 $script:rconClient = $null
 $script:rconStream = $null
 $script:rconId = 0
+$script:rconHostUsed = $null
 
 function Rcon-Close {
     try { if ($script:rconStream) { $script:rconStream.Close() } } catch {}
@@ -325,16 +326,31 @@ function Rcon-Read {
 }
 function Rcon-Connect {
     if ($script:rconStream) { return $true }
-    try {
-        $script:rconClient = New-Object System.Net.Sockets.TcpClient
-        $iar = $script:rconClient.BeginConnect('127.0.0.1', $rconPort, $null, $null)
-        if (-not $iar.AsyncWaitHandle.WaitOne(3000, $false)) { Rcon-Close; return $false }
-        $script:rconClient.EndConnect($iar)
-        $script:rconStream = $script:rconClient.GetStream()
-        Rcon-Send 3 $adminPass          # SERVERDATA_AUTH
-        $null = Rcon-Read 4000
-        return $true
-    } catch { Rcon-Close; return $false }
+    # -multihome binds the listen sockets to ONE address, so loopback is not
+    # guaranteed to answer. Try the bind address first, then 127.0.0.1, rather
+    # than assuming either: if RCON is unreachable this wrapper cannot Save or
+    # Shutdown, and stop degrades to a kill - which costs the world its progress
+    # back to the last autosave.
+    $candidates = @()
+    if (-not [string]::IsNullOrWhiteSpace($multihome)) { $candidates += $multihome }
+    $candidates += '127.0.0.1'
+    foreach ($h in $candidates) {
+        try {
+            $script:rconClient = New-Object System.Net.Sockets.TcpClient
+            $iar = $script:rconClient.BeginConnect($h, $rconPort, $null, $null)
+            if (-not $iar.AsyncWaitHandle.WaitOne(3000, $false)) { Rcon-Close; continue }
+            $script:rconClient.EndConnect($iar)
+            $script:rconStream = $script:rconClient.GetStream()
+            Rcon-Send 3 $adminPass          # SERVERDATA_AUTH
+            $null = Rcon-Read 4000
+            if ($h -ne $script:rconHostUsed) {
+                $script:rconHostUsed = $h
+                Say ('rcon connected on ' + $h + ':' + $rconPort)
+            }
+            return $true
+        } catch { Rcon-Close }
+    }
+    return $false
 }
 function Rcon-Command {
     param([string]$Cmd)
