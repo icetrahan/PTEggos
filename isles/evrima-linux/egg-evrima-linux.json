@@ -16,7 +16,7 @@
     "startup": "bash _primal/start-evrima.sh",
     "config": {
         "files": "{}",
-        "startup": "{\"done\": [\"Session started succesfully!\"]}",
+        "startup": "{\"done\": [\"Session started succes\"]}",
         "logs": "{}",
         "stop": "^C"
     },

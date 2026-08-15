@@ -16,7 +16,7 @@
     "startup": "powershell -NoProfile -ExecutionPolicy Bypass -File _primal\\start-evrima.ps1",
     "config": {
         "files": "{}",
-        "startup": "{\"done\": [\"Session started succesfully!\"]}",
+        "startup": "{\"done\": [\"Session started succes\"]}",
         "logs": "{}",
         "stop": "^C"
     },
