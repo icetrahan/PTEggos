@@ -5,7 +5,8 @@
 # would only risk breaking a working install). Downside: a crash can wipe files,
 # so we RE-RENDER Game.ini + RE-SYNC mods every boot to self-heal.
 #
-# Each boot: render Game.ini (Legacy schema) + MOTD -> sync server mods -> launch.
+# Each boot: fetch admins from /v1/boot-config (egg var = fail-safe fallback)
+# -> render Game.ini (Legacy schema) + MOTD -> sync server mods -> launch.
 #
 # Launch (Ice's canonical Legacy command):
 #   TheIsleServer-Win64-Shipping.exe {Map}?Port={p}?QueryPort={q}?MaxPlayers={m}?game={mode}?listen -log
@@ -51,9 +52,64 @@ $MAPS = @{
 $mapIn = EnvOr $env:MAP 'Isle_V3'
 $map   = if ($MAPS.ContainsKey($mapIn)) { $MAPS[$mapIn] } elseif ($mapIn -like '/Game/*') { $mapIn } else { $MAPS['Isle_V3'] }
 
-$admins        = Split-Csv $env:ADMIN_STEAM_IDS
 $disabledDinos = Split-Csv $env:DISABLED_DINOS
 $motd          = EnvOr $env:MOTD ''
+
+# ── ADMINS: served from the data plane, egg var as fail-safe (#1453) ─────────
+# The plane's GET /v1/boot-config serves adminSteamIds as the UNION of the
+# owner's hand list and the Discord-staff-role resolution (recomputed at serve
+# time — same source the Evrima wrapper renders from). Rendering from it makes
+# grants AND revocations reach Game.ini at the next boot; the ADMIN_STEAM_IDS
+# egg var stays as the fallback so a plane outage can never render a server
+# with no admins (frozen beats empty).
+#
+# FAIL-SAFE POLARITY — each outcome prints its own sentence (hard rule 13):
+#   SERVED    fetch ok, non-empty  -> render the union
+#   FALLBACK  fetch ok, ZERO admins while the egg var has ids -> render the egg
+#             var and SHOUT. A mis-keyed server fetches someone else's empty
+#             config "successfully"; zero served admins is treated as suspect,
+#             not obeyed, until the egg var itself is emptied on purpose.
+#   FALLBACK  fetch failed -> render the egg var and SHOUT the reason
+#   FALLBACK  no PHSK_KEY  -> egg var only, said plainly
+$adminsFallback = Split-Csv $env:ADMIN_STEAM_IDS
+$admins      = $adminsFallback
+$adminSource = 'eggvar'
+$phskAdm = ('' + $env:PHSK_KEY).Trim()
+if ($phskAdm) {
+    $dataBaseAdm = (EnvOr $env:PRIMAL_DATA_BASE 'https://data.primalhosted.com').TrimEnd('/')
+    try {
+        $ProgressPreference = 'SilentlyContinue'
+        $canon = Invoke-RestMethod -Uri "$dataBaseAdm/v1/boot-config" -Headers @{ Authorization = "Bearer $phskAdm" } -TimeoutSec 20
+        $ssAdm = $null
+        if ($canon -and $canon.config) { $ssAdm = $canon.config.server_settings }
+        $servedRaw = @()
+        if ($ssAdm -and $null -ne $ssAdm.PSObject.Properties['adminSteamIds']) { $servedRaw = @($ssAdm.adminSteamIds) }
+        # Steam64s only — junk must not reach Game.ini.
+        $served = @($servedRaw | ForEach-Object { ('' + $_).Trim() } | Where-Object { $_ -match '^\d{17}$' })
+        $src = if ($canon.adminSources) { "hand=$($canon.adminSources.hand) resolved=$($canon.adminSources.resolved) applied=$($canon.adminSources.applied)" } else { 'adminSources absent' }
+        if ($served.Count -gt 0) {
+            $admins      = $served
+            $adminSource = 'served'
+            Write-Host "(admins) SERVED from $dataBaseAdm/v1/boot-config: $($served.Count) admins ($src, updatedAt=$($canon.updatedAt))"
+        } elseif ($adminsFallback.Count -gt 0) {
+            Write-Host ""
+            Write-Host "(admins) *** PLANE SERVED ZERO ADMINS ($src) - RENDERING EGG-VAR FALLBACK ($($adminsFallback.Count) ids) ***"
+            Write-Host "(admins)     Either every admin was really revoked, or this server's PHSK_KEY maps to the wrong plane row."
+            Write-Host "(admins)     If zero is intended, empty the ADMIN_STEAM_IDS egg var too and this rung goes away."
+            Write-Host ""
+        } else {
+            $adminSource = 'served'
+            Write-Host "(admins) plane served zero admins and the egg var is empty - rendering NO ServerAdmins"
+        }
+    } catch {
+        Write-Host ""
+        Write-Host "(admins) *** BOOT-CONFIG FETCH FAILED ($($_.Exception.Message)) - RENDERING EGG-VAR FALLBACK ($($adminsFallback.Count) ids) ***"
+        Write-Host "(admins)     Admin grants/revocations made since the last successful fetch are NOT applied on this boot."
+        Write-Host ""
+    }
+} else {
+    Write-Host "(admins) no PHSK_KEY - egg-var admin list only ($($adminsFallback.Count) ids)"
+}
 
 # ── RENDER Game.ini (Legacy schema: igamesession + Engine.GameSession + igamemode) ──
 New-Item -ItemType Directory -Force -Path $cfgDir | Out-Null
@@ -94,7 +150,7 @@ ServerDayLength=$(EnvOr $env:DAY_LENGTH '30')
 $dinoLines
 "@
 Set-Content -Path (Join-Path $cfgDir 'Game.ini') -Value $gi -Encoding ascii
-Write-Host "(config) rendered Legacy Game.ini (players=$maxPlayers, mode=$gameMode, admins=$($admins.Count), disabled=$($disabledDinos.Count))"
+Write-Host "(config) rendered Legacy Game.ini (players=$maxPlayers, mode=$gameMode, admins=$($admins.Count) [$adminSource], disabled=$($disabledDinos.Count))"
 
 # ── MOTD (empty file = no MOTD popup; text = shown to players on join) ────────
 New-Item -ItemType Directory -Force -Path $savedDir | Out-Null
