@@ -5,7 +5,9 @@ Evrima egg embeds start-evrima.ps1."""
 import base64, json, datetime, pathlib
 
 here = pathlib.Path(__file__).parent
-wrapper_b64 = base64.b64encode((here / "_primal" / "start-legacy.ps1").read_bytes()).decode()
+# The wrapper lives at the repo dir root (the old _primal/ staging copy is gone —
+# reading a path that doesn't exist would fail loudly, but don't resurrect it).
+wrapper_b64 = base64.b64encode((here / "start-legacy.ps1").read_bytes()).decode()
 
 install = r'''$ErrorActionPreference = 'Stop'
 $root = (Get-Location).Path

@@ -274,7 +274,12 @@ if ($env:ENABLE_PRIMAL_MOD -eq '1') {
             "license_key=$($env:PHSK_KEY)",
             "rt_base_url=$rtBase",
             "server_id=$sid",
-            'command_poll_interval_ms=2000'
+            'command_poll_interval_ms=2000',
+            "telemetry_push_url=$dataBase/v1/telemetry",
+            "chat_capture_url=$dataBase/v1/chat",
+            "chat_msg_offset=16",
+            "chat_capture_src=serversay",
+            "chat_capture_debug=0"
         ) -join "`n"
         Set-Content -Path (Join-Path $primalDir 'legacy_anticheat.cfg') -Value $cfg -Encoding ascii
         Write-Host "(primal-mod) wrote legacy_anticheat.cfg (per-server key, poll=$dataBase/v1/commands)"
@@ -349,6 +354,18 @@ public static class PInj {
         } catch { W "module verify inconclusive (enum failed: $($_.Exception.Message))" }
     } | Out-Null
     Write-Host "(primal-mod) injector armed (post-boot; result -> _primal/primal-inject.log; mod runtime -> _primal/legacy_mod.log)"
+
+    # Hot-swap watcher: stage/unstage WITHOUT a server restart. Injects a new DLL
+    # version on demand when _primal/restage.flag appears (paired with the mod's
+    # `unload` command). Self-contained in _primal/mod-manager.ps1.
+    $mgrScript = Join-Path $primalDir 'mod-manager.ps1'
+    if (Test-Path $mgrScript) {
+        Start-Job -Name primal-restage -ArgumentList $mgrScript, $primalDir -ScriptBlock {
+            param($s, $pd)
+            & $s -PrimalDir $pd
+        } | Out-Null
+        Write-Host "(primal-mod) hot-swap watcher armed -> _primal/mod-manager.log"
+    }
 }
 
 # Multihome (opt-in): Legacy historically launched WITHOUT -MULTIHOME. For per-server
