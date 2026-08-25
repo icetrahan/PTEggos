@@ -32,7 +32,7 @@ existing = [
  # Canonical egg-40 and evrima-linux both use "" - match them, never a live value.
  ("RCON Password","RCON_PASSWORD","","nullable|string|max:64"),
  ("Discord URL","DISCORD_URL","https://discord.gg/primalheaven","nullable|string|max:120"),
- ("Corpse Decay Multiplier","CORPSE_DECAY","0.02","required|numeric"),
+ ("Corpse Decay Multiplier","CORPSE_DECAY","1","required|numeric"),
  ("Admin Steam64 IDs","ADMIN_STEAM_IDS","","nullable|string"),
  ("VIP Steam64 IDs","VIP_STEAM_IDS","","nullable|string"),
  ("Allowed Dino Classes","ALLOWED_CLASSES","","nullable|string"),

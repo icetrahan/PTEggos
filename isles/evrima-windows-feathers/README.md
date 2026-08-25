@@ -135,8 +135,8 @@ python isles/evrima-windows-feathers/embed.py    # re-embed + refresh verify.py'
 python isles/evrima-windows-feathers/verify.py   # the gate
 ```
 
-sha256 of the committed wrapper: **`0abd31efd98c93d49fe7ea76e884bf82a72ef674a2a29c79b740c756722b68b1`**
-(61,203 B), recorded in `verify.py` as `WRAPPER_SHA` and refreshed by `embed.py`.
+sha256 of the committed wrapper: **`e1e5a5f90810547b34d284e84ddbb9e8e7c69ea2d3c2a73b4e4dc112efa4e26d`**
+(61,364 B), recorded in `verify.py` as `WRAPPER_SHA` and refreshed by `embed.py`.
 ⚠️ **This line was stale by two wrapper versions when it was corrected on 2026-08-12** (it still
 named 46,224 B while the committed wrapper was 59,366 B). `embed.py` refreshes `verify.py` but
 **not this README**, so the drift is silent and recurs — check the byte count against the file,

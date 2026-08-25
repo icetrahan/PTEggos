@@ -108,7 +108,8 @@ $cfg = @{
     RconEnabled           = 'False'
     RconPassword          = 'CHANGEME'
     Discord               = 'https://discord.gg/primalheaven'
-    CorpseDecay           = '0.02'
+    CorpseDecay           = '1'      # platform default RULED 1 (Ice 2026-08-25, BUGS #1574);
+                                     # must stay == plane CONFIG_DEFAULTS.server_settings.corpseDecay
     AdminSteamIds         = @()
     VipSteamIds           = @()
     AllowedClasses        = $defaultClasses
