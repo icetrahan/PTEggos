@@ -550,13 +550,74 @@ function ModCsv($v) {
     return ((@($v) | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ -ne '' }) -join ',')
 }
 
+# --- #1593 DEFENSIVE SKIP: the LAST line of defence, and deliberately the weakest.
+#
+# WHY THIS IS HERE. On 2026-08-26 a paying customer's server was down 1h40m
+# because `speciesCapList` held a single entry `5`. Entries are `Species:N`; with
+# no colon the pak's species half parses EMPTY, the cap tick builds
+# `/Game/TheIsle/Core/Characters/Dinosaurs//BP_`, and UE aborts - "Attempted to
+# create a package with name containing double slashes." Fatal at exactly one
+# `SpeciesCapEvery` tick (30.0 s) after map load. The value re-renders from the
+# data plane on EVERY boot, so every restart RE-ARMED it and Wings gave up -
+# bouncing the server made things worse, not better.
+#
+# THE REAL FIX IS AT THE PLANE (`primal_hosted_data` config.ts `ENTRY_SHAPES`),
+# which REFUSES a malformed entry by name so the owner is actually told. This is
+# NOT that, and must never be mistaken for it: by the time we are here there is
+# no caller left to refuse to - the customer is not present, the boot is. So the
+# only correct behaviour left is skip-and-SAY-SO. This exists to stop the class
+# taking a server down, not to make it invisible.
+#
+# The plane's gate only inspects the fields a save actually SENDS (a PUT is a
+# merge), so a value stored before that gate shipped can still arrive here. That
+# is exactly the case this covers.
+#
+# A fully-skipped list renders EMPTY, which OMITS the line entirely (see below),
+# so the pak's own default stands. That is the safe outcome and it is what saves
+# the boot - and it is NOT silence: every skipped entry is logged with the entry
+# text and the reason.
+#
+# ASCII ONLY in the Write-Host below, on purpose: this file has no BOM, so
+# Windows PowerShell reads it as ANSI and any non-ASCII in a PRINTED string
+# reaches the console as mojibake.
+function ModCsvShaped($v, $label, $wantCap) {
+    if ($null -eq $v) { return '' }
+    $kept = New-Object System.Collections.Generic.List[string]
+    $idx = 0
+    foreach ($raw in @($v)) {
+        $idx++
+        $e = ([string]$raw).Trim()
+        if ($e -eq '') { continue }
+        $bad = $null
+        # \A / \z, never ^ / $: in .NET `$` ALSO matches just before a trailing
+        # newline, so '^...$' would happily pass an entry ending in a line break
+        # - which is the Engine.ini line-injection shape. The class excludes ','
+        # too, because entries are joined into ONE csv line: a comma inside an
+        # entry silently becomes two entries.
+        if ($wantCap) {
+            $parts = $e.Split(':')
+            if ($parts.Count -ne 2)                                       { $bad = 'not <Species>:<N>' }
+            elseif ($parts[0].Trim() -notmatch '\A[A-Za-z0-9_]{1,64}\z') { $bad = 'the species half is empty or not a plain species name' }
+            elseif ($parts[1].Trim() -notmatch '\A[0-9]{1,9}\z')         { $bad = 'the cap is not a whole number' }
+        } else {
+            if ($e -notmatch '\A[A-Za-z0-9_]{1,64}\z')                   { $bad = 'not a plain species name' }
+        }
+        if ($bad) {
+            Write-Host "(config) SKIPPED malformed $label entry $idx ('$e') - $bad. BUGS #1593; the line is rendered WITHOUT it. Fix it in the panel."
+            continue
+        }
+        [void]$kept.Add($e)
+    }
+    return ($kept -join ',')
+}
+
 $pakExtra = [ordered]@{}
 foreach ($k in $modDefaults.Keys) { $pakExtra[$k] = $modDefaults[$k] }
 
 if ($ms) {
     if (Has $ms 'bodySweepOn')     { $pakExtra['BodySweepOn']     = ModBool $ms.bodySweepOn     $modDefaults.BodySweepOn }
     if (Has $ms 'treeKnockdownOn') { $pakExtra['TreeKnockdownOn'] = ModBool $ms.treeKnockdownOn $modDefaults.TreeKnockdownOn }
-    if (Has $ms 'bodySweepList')   { $pakExtra['BodySweepList']   = ModCsv  $ms.bodySweepList }
+    if (Has $ms 'bodySweepList')   { $pakExtra['BodySweepList']   = ModCsvShaped $ms.bodySweepList 'BodySweepList' $false }
     if (Has $ms 'bodyHoldSec')     { $pakExtra['BodyHoldSec']     = ModNum  $ms.bodyHoldSec     $modDefaults.BodyHoldSec 1 }
     if (Has $ms 'bodySweepLiftZ')  { $pakExtra['BodySweepLiftZ']  = ModNum  $ms.bodySweepLiftZ  $modDefaults.BodySweepLiftZ 0 }
     if (Has $ms 'aiMaxCount')      { $pakExtra['AIMaxCount']      = ModNum  $ms.aiMaxCount      $modDefaults.AIMaxCount 0 }
@@ -579,7 +640,7 @@ $pakExtra = $pakOrdered
 
 # --- EMPTY IS NOT ZERO: these two OMIT their line so the pak's own default holds.
 $speciesCapList = ''
-if ($ms -and (Has $ms 'speciesCapList')) { $speciesCapList = ModCsv $ms.speciesCapList }
+if ($ms -and (Has $ms 'speciesCapList')) { $speciesCapList = ModCsvShaped $ms.speciesCapList 'SpeciesCapList' $true }
 if ($speciesCapList) { $pakExtra['SpeciesCapList'] = $speciesCapList }
 
 # ForceDinoList: same omit-when-empty idiom. 🔴 The value lands on the game's
@@ -591,7 +652,7 @@ if ($speciesCapList) { $pakExtra['SpeciesCapList'] = $speciesCapList }
 # it silently force-RE-ADDED Baryonyx/Oviraptor after they were stripped from
 # the roster, because Config_Scan hits on AllowedClasses OR ForceAllowSet.
 $pakForceDino = ''
-if ($ms -and (Has $ms 'forceDinoList')) { $pakForceDino = ModCsv $ms.forceDinoList }
+if ($ms -and (Has $ms 'forceDinoList')) { $pakForceDino = ModCsvShaped $ms.forceDinoList 'ForceDinoList' $false }
 
 # ⛔ PRIMAL_MOD_INI IS GONE (#1094). It was documented as the ops escape hatch
 # ("overrides/extends the above with no script edit") and it was NEVER DECLARED
