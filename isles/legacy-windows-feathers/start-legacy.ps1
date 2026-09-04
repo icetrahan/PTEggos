@@ -383,17 +383,40 @@ public static class PInj {
 # Steam auto-detects the advertised public IP from the bound socket, so unlike EOS
 # a correct bind SHOULD also fix advertisement — but that's the exact thing to
 # verify (client connects to the dedicated IP; A2S on <dedIP>:QueryPort answers).
+#
+# #1832/#97 - AUTO fallback, OPT-IN and OFF BY DEFAULT. Evrima's wrapper does
+# `EnvOr $env:MULTIHOME_IP $env:SERVER_IP` unconditionally; Legacy deliberately does
+# NOT, because Ice ruled 2026-07-27: "peg them to the default as though it were
+# intentional until Legacy multihome is proven on a test server. Don't 'fix' it live."
+# MULTIHOME_AUTO=0 (the egg default) keeps every existing server binding all
+# interfaces exactly as ruled; setting it to 1 on ONE server opts that server into
+# its own allocation IP so the A/B can be run without touching a customer.
 $mhMode = (EnvOr $env:MULTIHOME_MODE 'cli').ToLower()
 $mhArgs = @()
-if ($env:MULTIHOME_IP -and $env:MULTIHOME_IP -ne '0.0.0.0' -and $env:MULTIHOME_IP -match '^\d{1,3}(\.\d{1,3}){3}$') {
-    $mhIp = $env:MULTIHOME_IP
+$mhIp   = ('' + $env:MULTIHOME_IP).Trim()
+$mhSrc  = 'MULTIHOME_IP'
+if (-not $mhIp -and ('' + $env:MULTIHOME_AUTO).Trim() -eq '1') {
+    $mhIp  = ('' + $env:SERVER_IP).Trim()
+    $mhSrc = 'MULTIHOME_AUTO->SERVER_IP'
+}
+if ($mhIp -and $mhIp -ne '0.0.0.0' -and $mhIp -match '^\d{1,3}(\.\d{1,3}){3}$') {
     if ($mhMode -eq 'cli' -or $mhMode -eq 'both') { $mhArgs = @("-MULTIHOME=$mhIp") }
     if ($mhMode -eq 'url' -or $mhMode -eq 'both') {
         # insert ?MultiHome right after the map, before Port (matches the reference:
         # Map?MultiHome=<ip>?Port=..?QueryPort=..). Rebuild the URL identically to above.
         $url = "$map`?MultiHome=$mhIp`?Port=$gamePort`?QueryPort=$queryPort`?MaxPlayers=$maxPlayers`?game=$gameMode`?listen"
     }
-    Write-Host "(start) multihome ip=$mhIp mode=$mhMode  args=[$($mhArgs -join ' ')]"
+    Write-Host "(start) multihome BOUND ip=$mhIp src=$mhSrc mode=$mhMode  args=[$($mhArgs -join ' ')]"
+} else {
+    # Hard rule 13: this branch used to be COMPLETELY SILENT, which is half of why
+    # #1832 hid - a server that binds 0.0.0.0 looked identical in the log to one that
+    # bound its own IP. Every outcome now names itself.
+    if (('' + $env:MULTIHOME_AUTO).Trim() -eq '1') {
+        Write-Host "(start) multihome AUTO=1 but no usable IP (MULTIHOME_IP='$($env:MULTIHOME_IP)' SERVER_IP='$($env:SERVER_IP)') - binding ALL INTERFACES"
+    } else {
+        Write-Host "(start) multihome OFF (MULTIHOME_IP empty, MULTIHOME_AUTO=0) - binding ALL INTERFACES on 0.0.0.0:$queryPort"
+    }
+    Write-Host "(start)   #1832: on 0.0.0.0 the query port is a BOX-WIDE namespace - the first Legacy server on this box owns $queryPort on every IP, and a later server given the same port on its OWN ip will fail Steam init and never list."
 }
 
 # Foreground launch: if Legacy runs in-process, this BLOCKS for the server's whole

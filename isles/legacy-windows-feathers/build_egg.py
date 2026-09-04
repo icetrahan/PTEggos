@@ -92,7 +92,7 @@ egg = {
         ("Server Password", "SERVER_PASSWORD", "", "nullable|string|max:64", None),
         ("Admin Steam64 IDs", "ADMIN_STEAM_IDS", "", "nullable|string", "Comma-separated Steam64 IDs -> ServerAdmins"),
         ("Disabled Dinos", "DISABLED_DINOS", "", "nullable|string", "Comma-separated Character Classes to remove, e.g. UtahAdultS"),
-        ("MOTD", "MOTD", "", "nullable|string|max:500", "Message of the day (empty = none)"),
+        ("MOTD", "MOTD", "", "nullable|string|max:2000", "Message of the day (empty = none). max:2000 is the LIVE PANEL value - it was widened in the panel and never came back to this file; DryReef 66 already stores a 655-char MOTD, so max:500 here would silently break a paying customer's next save."),
         ("Allow Chat", "ALLOW_CHAT", "1", "required|string|in:0,1", None),
         ("Global Chat", "GLOBAL_CHAT", "1", "required|string|in:0,1", None),
         ("Name Tags", "NAME_TAGS", "1", "required|string|in:0,1", None),
@@ -119,13 +119,15 @@ egg = {
         ("Primal Mod Manifest", "PRIMAL_MOD_MANIFEST", "", "nullable|string", "Override the DLL manifest URL (blank = default R2 latest.json)"),
         ("Server Key (phsk_)", "PHSK_KEY", "", "nullable|string", "Per-server data-plane key — set automatically at provision time. The mod authenticates + fetches ONLY this server's commands with it."),
         ("Multihome IP", "MULTIHOME_IP", "", "nullable|string", "Opt-in: bind/advertise a specific public IP (per-server DDoS isolation). Blank = bind all interfaces (default). Test on a spare server first."),
+        ("Multihome Mode", "MULTIHOME_MODE", "cli", "required|string|in:cli,url,both", "How a multihome IP is applied. cli = -MULTIHOME=<ip> engine arg (Evrima-style); url = ?MultiHome=<ip> in the travel URL; both. WHICH ONE LEGACY HONOURS IS UNTESTED (#97) - this var exists so the A/B can be run on a spare server without another egg import."),
+        ("Multihome Auto", "MULTIHOME_AUTO", "0", "required|string|in:0,1", "OPT-IN (#1832 / #97). 1 = when MULTIHOME_IP is blank, fall back to this server's OWN allocation IP (SERVER_IP), the way start-evrima.ps1 already does. Default 0 = bind all interfaces, i.e. unchanged for every existing server (Ice's 2026-07-27 ruling). On 0.0.0.0 the Steam query port is a BOX-WIDE namespace and the first Legacy server on the box owns it on every IP."),
     ]],
 }
 
 # Ops/infra variables the CUSTOMER must not see or edit (per-server key, mod controls,
 # multihome IP). Pterodactyl has no partial-mask, so admin-only = fully hidden + locked
 # in the customer UI; admin/AI still manage them from the panel admin area.
-ADMIN_ONLY = {"PHSK_KEY", "ENABLE_PRIMAL_MOD", "PRIMAL_MOD_MANIFEST", "MULTIHOME_IP"}
+ADMIN_ONLY = {"PHSK_KEY", "ENABLE_PRIMAL_MOD", "PRIMAL_MOD_MANIFEST", "MULTIHOME_IP", "MULTIHOME_MODE", "MULTIHOME_AUTO"}
 for v in egg["variables"]:
     if v["env_variable"] in ADMIN_ONLY:
         v["user_viewable"] = False
