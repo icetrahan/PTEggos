@@ -373,16 +373,19 @@ public static class PInj {
 # Left BLANK (default) = unchanged behaviour (bind all interfaces) so the live OVH box
 # is untouched. ⚠️ test on a SPARE server first - some Legacy builds are picky.
 #
-# Legacy = STEAM networking (app 412680, UE4.25), NOT EOS — so the Evrima
-# EOS_OVERRIDE_HOST_IP fix almost certainly does NOTHING here. The lever is UE4
-# MultiHome, and Legacy accepts it in two forms we must A/B test:
-#   MULTIHOME_MODE=cli  (default) -> `-MULTIHOME=<ip>` engine arg (Evrima-style)
-#   MULTIHOME_MODE=url            -> `?MultiHome=<ip>` in the travel URL (the form
-#                                    in the only online reference we could find)
-#   MULTIHOME_MODE=both           -> both at once (belt + suspenders)
-# Steam auto-detects the advertised public IP from the bound socket, so unlike EOS
-# a correct bind SHOULD also fix advertisement — but that's the exact thing to
-# verify (client connects to the dedicated IP; A2S on <dedIP>:QueryPort answers).
+# Legacy = STEAM networking (app 412680, UE4.25), NOT EOS - the Evrima
+# EOS_OVERRIDE_HOST_IP fix does nothing here. The lever is the UE4 MultiHome ARG.
+# MEASURED 2026-09-05 (multihome-97-0905, win3 = feathers node 6, TWO egg-41 servers
+# on distinct IPs with the SAME 7777/7778, A/B/A, read off the box + A2S + Steam master):
+#   cli  (`-MULTIHOME=<ip>`)           -> binds <ip>:7778 + :7779, A2S answers on <ip>
+#                                        only, Steam master lists <ip>:7778.   WORKS.
+#   url  (`?MultiHome=<ip>` in URL)    -> binds 0.0.0.0:7778, A2S answers on the box
+#                                        PRIMARY only, Steam lists the PRIMARY. DEAD.
+#   both (url + cli)                   -> SAME AS url: the URL option NEGATES the arg.
+#                                        Not belt-and-suspenders - it removes the belt.
+# => MULTIHOME_MODE is pinned to cli below; url/both are honoured as cli and SAID so.
+# SERVER_IP is REAL on feathers: the wrapper printed the default-allocation IP from it
+# on both servers (src=MULTIHOME_AUTO->SERVER_IP), and the box bound exactly that IP.
 #
 # #1832/#97 - AUTO fallback, OPT-IN and OFF BY DEFAULT. Evrima's wrapper does
 # `EnvOr $env:MULTIHOME_IP $env:SERVER_IP` unconditionally; Legacy deliberately does
@@ -392,6 +395,12 @@ public static class PInj {
 # interfaces exactly as ruled; setting it to 1 on ONE server opts that server into
 # its own allocation IP so the A/B can be run without touching a customer.
 $mhMode = (EnvOr $env:MULTIHOME_MODE 'cli').ToLower()
+if ($mhMode -ne 'cli') {
+    # Hard rule 13: url/both used to print "multihome BOUND ... mode=url" while the box
+    # showed 0.0.0.0:7778 - a false success line. Measured dead 2026-09-05; pinned to cli.
+    Write-Host "(start) multihome MODE '$mhMode' is DEAD (measured 2026-09-05: it binds 0.0.0.0) - using cli (-MULTIHOME=) instead"
+    $mhMode = 'cli'
+}
 $mhArgs = @()
 $mhIp   = ('' + $env:MULTIHOME_IP).Trim()
 $mhSrc  = 'MULTIHOME_IP'
@@ -400,12 +409,9 @@ if (-not $mhIp -and ('' + $env:MULTIHOME_AUTO).Trim() -eq '1') {
     $mhSrc = 'MULTIHOME_AUTO->SERVER_IP'
 }
 if ($mhIp -and $mhIp -ne '0.0.0.0' -and $mhIp -match '^\d{1,3}(\.\d{1,3}){3}$') {
-    if ($mhMode -eq 'cli' -or $mhMode -eq 'both') { $mhArgs = @("-MULTIHOME=$mhIp") }
-    if ($mhMode -eq 'url' -or $mhMode -eq 'both') {
-        # insert ?MultiHome right after the map, before Port (matches the reference:
-        # Map?MultiHome=<ip>?Port=..?QueryPort=..). Rebuild the URL identically to above.
-        $url = "$map`?MultiHome=$mhIp`?Port=$gamePort`?QueryPort=$queryPort`?MaxPlayers=$maxPlayers`?game=$gameMode`?listen"
-    }
+    # cli is the ONLY form that binds (see the measured table above). Never put
+    # ?MultiHome= in the travel URL - it un-multihomes the server even beside the arg.
+    $mhArgs = @("-MULTIHOME=$mhIp")
     Write-Host "(start) multihome BOUND ip=$mhIp src=$mhSrc mode=$mhMode  args=[$($mhArgs -join ' ')]"
 } else {
     # Hard rule 13: this branch used to be COMPLETELY SILENT, which is half of why
