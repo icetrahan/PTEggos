@@ -101,9 +101,43 @@ def main() -> int:
         ]
         check(f"no secret values in {f}", not hits, ", ".join(h[:12] for h in hits))
     wrapper = (HERE / "start-evrima.sh").read_text(encoding="utf-8")
+    # The first-boot fallback (the plane's rconPassword overrides it). The shape
+    # changed with the 2026-09-05 boot-config port; the rule did not.
     check(
         "RCON fallback stays CHANGEME",
-        '"${RCON_PASSWORD:-}" "CHANGEME"' in wrapper,
+        'CFG_RconPassword="CHANGEME"' in wrapper,
+    )
+
+    # 7. THE BOOT-CONFIG LANE EXISTS. Egg 42 rendered Game.ini from egg
+    # variables until 2026-09-05 while the panel wrote the data plane, so all 42
+    # canonical fields saved green and changed nothing. This gate is the thing
+    # that notices if the lane is ever removed or refactored away.
+    check("wrapper fetches /v1/boot-config", "/v1/boot-config" in wrapper)
+    check("wrapper caches the canonical config", "boot-config.cache.json" in wrapper)
+    for rung in ("fetched", "cache", "defaults"):
+        check(f"fail-safe rung '{rung}' is distinguishable", f'CFG_SOURCE="{rung}"' in wrapper)
+    check(
+        "the two controls Ice ruled in are rendered",
+        "PAK_EXTRA[AIMaxCount]" in wrapper and "speciesCapEvery" in wrapper
+        and "speciesCapList" in wrapper,
+    )
+    # #1071: a numeric pak key without its paired sentinel silently does nothing.
+    check(
+        "#1071 sentinels are derived beside their numeric",
+        'PAK_EXTRA[BodyHoldSet]="True"' in wrapper and 'PAK_EXTRA[BSLiftSet]="True"' in wrapper,
+    )
+    # #1094: a generic pak key setter is the panel's authority with no allowlist.
+    check(
+        "no generic PRIMAL_MOD_INI key setter",
+        "PAK_EXTRA[$K]=" not in wrapper,
+    )
+    # jq must be pinned by sha256 and mirrored on OUR R2, never fetched from a
+    # third party at boot.
+    check("jq is pinned by sha256", 'JQ_SHA256="' in wrapper)
+    check(
+        "jq comes from our R2, not GitHub",
+        '$R2_BASE/primal-wrapper-evrima-linux/jq/' in wrapper
+        and "github.com" not in wrapper.lower(),
     )
 
     # 6. query port == game port is BAKED

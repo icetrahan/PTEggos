@@ -2,10 +2,11 @@
 # Primal - The Isle: Evrima startup wrapper (LINUX / node 1, standard Wings).
 #
 # The Linux sibling of egg 40's start-evrima.ps1 (isles/evrima-windows-feathers).
-# Each boot: self-update -> update gate -> SteamCMD -> MODDED BINARY from the
-# Primal API -> RENDER Game.ini/Engine.ini from egg variables -> pak from R2 ->
-# launch. Game.ini is a DERIVED artifact regenerated every boot; the customer
-# edits egg VARIABLES, never the file (#356 T1(a)).
+# Each boot: self-update -> jq -> CANONICAL CONFIG from the data plane ->
+# update gate -> SteamCMD -> MODDED BINARY from the Primal API -> RENDER
+# Game.ini/Engine.ini FROM THE PLANE -> pak from R2 -> launch. Game.ini and the
+# pak's Engine.ini section are DERIVED artifacts regenerated every boot; the
+# customer edits the PANEL, never the file and no longer the egg variables.
 #
 # HARD DIFFERENCES FROM THE WINDOWS EGG, each deliberate:
 #
@@ -30,10 +31,24 @@
 #     standard Linux Wings only injects SERVER_PORT. QUEUE_PORT/RCON_PORT
 #     default to game+1 / game+2.
 #
-# Settings are layered, later overrides earlier:
-#   1. DEFAULTS (below)              baseline (byte-matched to egg 40's)
-#   2. EGG VARIABLES ($ENV)          >> THE SOURCE OF TRUTH for customer settings
-#   3. server-config.json overlay    NOT SUPPORTED here - see the render section.
+# Settings, since 2026-09-05 (`egg42-parity-0905`) - and this is the whole point
+# of that change:
+#   1. DEFAULTS (below)              FIRST-BOOT FALLBACK ONLY, byte-matched to
+#                                    egg 40's and to the plane's CONFIG_DEFAULTS
+#   2. THE DATA PLANE                >> THE SINGLE SOURCE OF TRUTH.
+#                                    `GET /v1/boot-config`, keyed by PHSK_KEY,
+#                                    cached to _primal/boot-config.cache.json so
+#                                    a plane outage cannot stop a boot
+#   3. EGG VARIABLES ($ENV)          BOOTSTRAP ONLY (PHSK_KEY, ports,
+#                                    AUTO_UPDATE, ENABLE_PRIMAL_MOD, ...). The
+#                                    customer settings among them are NO LONGER
+#                                    READ and the wrapper says so if one is set.
+#   4. server-config.json overlay    NOT SUPPORTED here - see the render section.
+#
+#   THIRD HARD DIFFERENCE FROM EGG 40 (below) USED TO BE "config comes from egg
+#   variables". It does not any more: this egg was the ONLY Evrima or Legacy egg
+#   that never called /v1/boot-config, so all 42 of the panel's canonical fields
+#   saved green and changed nothing here (#1101/#1799 shape, platform dimension).
 
 # PRIMAL_ROOT exists for OFF-BOX TESTS ONLY (render-only smoke); production
 # is always /home/container.
@@ -175,6 +190,157 @@ else
             fi
         fi
     fi
+fi
+
+# ===========================================================================
+# THE JSON PARSER. `_primal/jq`, pinned by sha256, fetched from OUR R2.
+#
+# WHY A BINARY AND NOT A grep IDIOM. `m_field` above is fine for a flat
+# manifest of quoted strings. `/v1/boot-config` is not that: it is a NESTED
+# document whose values are numbers, booleans and ARRAYS OF STRINGS, and one of
+# those arrays is `adminSteamIds`. A half-parser that silently misreads it is
+# the #1101 shape with the safety off - and this wrapper already refuses to
+# hand-parse `server-config.json` for exactly that reason, a refusal that would
+# be a lie if the canonical config were hand-parsed two hundred lines later.
+#
+# NOT GitHub at boot. The release is verified ONCE, by hand, against jqlang's
+# own sha256sum.txt, and the artifact is then mirrored into the SAME R2 bucket
+# the wrapper, the pak and the mod binary already come from. A boot must not
+# gain a new third-party dependency.
+#
+# x86_64 only - the static build is arch-specific and every node is amd64. On
+# anything else we do not guess: HAVE_JQ stays 0 and the ladder below says so.
+# ===========================================================================
+JQ="$PRIM/jq"
+JQ_VERSION="1.7.1"
+JQ_SHA256="5942c9b0934e510ee61eb3e30273f1b3fe2590df93933a93d7c58b81d19c8ff5"
+JQ_URL="$R2_BASE/primal-wrapper-evrima-linux/jq/$JQ_VERSION/jq-linux-amd64"
+HAVE_JQ=0
+if [ "$(uname -m)" != "x86_64" ]; then
+    warn "jq: architecture $(uname -m) is not x86_64 - the pinned static build does not apply here."
+elif [ -f "$JQ" ] && [ "$(sha256_of "$JQ")" = "$JQ_SHA256" ]; then
+    chmod +x "$JQ" 2>/dev/null
+else
+    log "jq: fetching v$JQ_VERSION (pinned sha256 ${JQ_SHA256:0:16}...) ..."
+    JQ_TMP="$PRIM/.jq.download"
+    rm -f "$JQ_TMP"
+    curl -fsS --max-time 120 -o "$JQ_TMP" "$JQ_URL" 2>/dev/null
+    JQ_GOT=$(sha256_of "$JQ_TMP")
+    if [ "$JQ_GOT" = "$JQ_SHA256" ]; then
+        chmod +x "$JQ_TMP"; mv -f "$JQ_TMP" "$JQ"
+        log "jq: installed v$JQ_VERSION"
+    else
+        rm -f "$JQ_TMP"
+        warn "jq: sha256 MISMATCH or download failed (got '${JQ_GOT:0:16}') - NOT installed."
+    fi
+fi
+# Rule 13: the download's own success is not evidence the parser WORKS. Ask the
+# binary itself, and only then claim we have one.
+if [ -x "$JQ" ] && "$JQ" --version >/dev/null 2>&1; then
+    HAVE_JQ=1
+    log "jq: ready ($("$JQ" --version 2>/dev/null))"
+else
+    warn "jq: NOT AVAILABLE - canonical config cannot be parsed on this boot."
+fi
+
+# ===========================================================================
+# CANONICAL CONFIG - fetched from the data plane (Ice's ruling, 2026-08-10).
+#
+# THIS IS THE SINGLE SOURCE OF TRUTH. It supersedes DECISIONS #24/#356, under
+# which egg VARIABLES were canonical - which is what this wrapper did until
+# 2026-09-05.
+#
+# WHAT WAS ACTUALLY BROKEN (measured 2026-09-05, `egg42-parity-0905`). The panel
+# stopped writing Ptero egg variables on 2026-08-10: it renders `CANON_FIELDS`
+# and writes the DATA PLANE (`primal_billing` `lib/canonical-config.ts`,
+# `app/api/panel/servers/[id]/config/route.ts`). `CanonEdition` is
+# "evrima"|"legacy" with NO platform dimension, so a LINUX Evrima server is
+# served all 42 fields. This wrapper read none of them: every one of those 42
+# controls returned a green 200 and changed nothing on the server - the
+# #1101/#1799 shape, one dimension over. Egg 40 (Windows) and egg 41 (Legacy)
+# both call this endpoint; egg 42 was the only one that never did.
+#
+# THE FAIL-SAFE LADDER, AND ALL THREE RUNGS MUST STAY DISTINGUISHABLE.
+# A server MUST boot when the plane is unreachable, but it must NEVER quietly
+# render something other than what the owner saved. Hard rule 13: a skip is not
+# a success, and an unconfigured boot with a clean log is a server with NO
+# ADMINS. Each rung prints its own sentence and none of them says "ok".
+#   1. FETCHED  -> render it, and cache it as last-known-good
+#   2. CACHED   -> plane unreachable; render the cache and SAY how old it is
+#   3. DEFAULTS -> no plane, no cache (first boot only); render defaults and SHOUT
+# ===========================================================================
+BOOT_CACHE="$PRIM/boot-config.cache.json"
+CFG_SOURCE="defaults"
+CANON=""
+DATA_BASE=$(env_or "${PRIMAL_DATA_BASE:-}" "https://data.primalhosted.com")
+DATA_BASE="${DATA_BASE%/}"
+
+if [ "$HAVE_JQ" != "1" ]; then
+    warn "config: no JSON parser - cannot fetch canonical config."
+elif [ -z "$PHSK" ]; then
+    log "config: no PHSK_KEY - cannot fetch canonical config"
+else
+    CANON_RAW=$(curl -fsS --max-time 20 -H "Authorization: Bearer $PHSK" \
+        "$DATA_BASE/v1/boot-config" 2>/dev/null)
+    # A 200 whose body is not the document we asked for is not a success
+    # (rule 13). Require it to PARSE and to carry `config` before believing it.
+    if [ -n "$CANON_RAW" ] && printf '%s' "$CANON_RAW" | "$JQ" -e 'has("config")' >/dev/null 2>&1; then
+        CANON="$CANON_RAW"
+        CFG_SOURCE="fetched"
+        # Cache only a FETCH. Writing the cache on any other path would let a
+        # degraded boot overwrite the last known-good with something worse.
+        if ! printf '%s' "$CANON" > "$BOOT_CACHE" 2>/dev/null; then
+            warn "config: could not write the boot-config cache"
+        fi
+    elif [ -f "$BOOT_CACHE" ] && "$JQ" -e 'has("config")' < "$BOOT_CACHE" >/dev/null 2>&1; then
+        CANON=$(cat "$BOOT_CACHE")
+        CFG_SOURCE="cache"
+        CACHE_AGE_MIN=$(( ( $(date -u +%s) - $(stat -c %Y "$BOOT_CACHE" 2>/dev/null || echo 0) ) / 60 ))
+        echo ""
+        log "*** DATA PLANE UNREACHABLE - RENDERING FROM CACHE ***"
+        log "    cache written ${CACHE_AGE_MIN} min ago (updatedAt=$(printf '%s' "$CANON" | "$JQ" -r '.updatedAt // "null"'))"
+        log "    ANY PANEL CHANGE SINCE THEN IS NOT APPLIED ON THIS BOOT."
+        echo ""
+    elif [ -f "$BOOT_CACHE" ]; then
+        warn "config: *** CACHE PRESENT BUT UNREADABLE - falling through to defaults ***"
+    else
+        log "config: plane unreachable and no cache"
+    fi
+fi
+
+if [ -z "$CANON" ]; then
+    echo ""
+    log "*** NO CANONICAL CONFIG AND NO CACHE - THIS SERVER IS UNCONFIGURED ***"
+    log "    Booting on built-in defaults: NO ADMINS, NO VIPs, default dino roster."
+    log "    Expected only on a server's FIRST boot. Otherwise the plane or the key is wrong."
+    echo ""
+fi
+log "config: canonical config source=$CFG_SOURCE"
+
+# Read the canonical document. Every reader prints NOTHING when the field is
+# absent, so each call site can use the same "apply only when the block carries
+# it" test - a plane that ships a NEW field before this wrapper knows about it
+# can never blank an old one.
+cj()     { printf '%s' "$CANON" | "$JQ" -r "$1" 2>/dev/null; }
+c_has()  { [ -n "$CANON" ] && printf '%s' "$CANON" | "$JQ" -e --arg f "$2" ".config.$1 | type == \"object\" and has(\$f)" >/dev/null 2>&1; }
+c_str()  { cj ".config.$1.$2 // empty"; }
+c_bool() { cj "if .config.$1.$2 then \"True\" else \"False\" end"; }
+c_list() { cj ".config.$1.$2 // [] | .[]? | tostring"; }
+c_count(){ cj ".config.$1.$2 // [] | length"; }
+
+# #1097 - the seat cap. The plane REFUSES an over-cap write, but it can only
+# CLAMP on read (a server must boot), so it reports what it clamped. Never let
+# that pass silently: a player count the owner did not choose is exactly the
+# "saved, but not what you asked for" class this whole lane exists to kill.
+if [ -n "$CANON" ]; then
+    while IFS= read -r CL; do
+        [ -z "$CL" ] && continue
+        log "config: *** CLAMPED BY ENTITLEMENT: $CL (your plan's limit)"
+    done < <(cj '.clamped // [] | .[] | "\(.key).\(.field) stored=\(.stored) -> applied=\(.applied)"')
+    # The roster filter is something the plane CHANGED on the way out. Rule 13 -
+    # report it here too, not only in the plane's own log.
+    RF=$(cj '.rosterFiltered.dropped // [] | join(",")')
+    [ -n "$RF" ] && log "config: *** BROKEN SPECIES REMOVED BY THE PLANE: $RF (they cannot be enabled)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -323,41 +489,118 @@ MODDED_HASH=$(md5_of "$GAME_BINARY")
 log "launch binary hash: ${MODDED_HASH:0:16}..."
 
 # ---------------------------------------------------------------------------
-# RENDER Game.ini (defaults byte-matched to egg 40's; egg vars override)
+# RENDER Game.ini  (defaults byte-matched to egg 40's; THE DATA PLANE overrides)
 # ---------------------------------------------------------------------------
 DEFAULT_CLASSES="Dryosaurus,Hypsilophodon,Maiasaura,Pachycephalosaurus,Stegosaurus,Tenontosaurus,Carnotaurus,Ceratosaurus,Deinosuchus,Dilophosaurus,Herrerasaurus,Omniraptor,Pteranodon,Troodon,Beipiaosaurus,Gallimimus,Diabloceratops,Triceratops,Allosaurus,Tyrannosaurus,Kentrosaurus,Austroraptor"
 
-CFG_ServerName=$(env_or "${SERVER_NAME:-}" "Primal Heaven Evrima")
-CFG_MaxPlayers=$(env_or "${MAX_PLAYERS:-}" "150")
-CFG_ServerPassword="${SERVER_PASSWORD:-}"
-CFG_ServerPasswordEnabled=$(to_bool "${SERVER_PASSWORD_ENABLED:-}" "False")
-CFG_RconEnabled=$(to_bool "${RCON_ENABLED:-}" "False")
-CFG_RconPassword=$(env_or "${RCON_PASSWORD:-}" "CHANGEME")
-CFG_Discord=$(env_or "${DISCORD_URL:-}" "https://discord.gg/primalheaven")
-# ⭐ platform default RULED 1 (Ice 2026-08-25, #1574) — was the vendor's hostile 0.02.
-CFG_CorpseDecay=$(env_or "${CORPSE_DECAY:-}" "1")
-CFG_EnableHumans=$(to_bool "${ENABLE_HUMANS:-}" "True")
-CFG_DayLength=$(env_or "${SERVER_DAY_LENGTH:-}" "45")
-CFG_NightLength=$(env_or "${SERVER_NIGHT_LENGTH:-}" "20")
-CFG_GrowthMultiplier=$(env_or "${GROWTH_MULTIPLIER:-}" "1")
-CFG_EnableGlobalChat=$(to_bool "${ENABLE_GLOBAL_CHAT:-}" "True")
-CFG_EnableAI=$(to_bool "${ENABLE_AI:-}" "False")
-CFG_AIDensity=$(env_or "${AI_DENSITY:-}" "0")
-CFG_SpawnFish=$(to_bool "${SPAWN_FISH:-}" "False")
-CFG_EnableMutations=$(to_bool "${ENABLE_MUTATIONS:-}" "True")
-CFG_EnableDiets=$(to_bool "${ENABLE_DIETS:-}" "True")
-CFG_FallDamage=$(to_bool "${FALL_DAMAGE:-}" "True")
-CFG_AllowReplay=$(to_bool "${ALLOW_REPLAY:-}" "True")
-CFG_DynamicWeather=$(to_bool "${DYNAMIC_WEATHER:-}" "False")
-CFG_WhitelistEnabled=$(to_bool "${WHITELIST_ENABLED:-}" "False")
-CFG_SpawnPlants=$(to_bool "${SPAWN_PLANTS:-}" "False")
-CFG_PlantMultiplier=$(env_or "${PLANT_MULTIPLIER:-}" "0")
-CFG_EnableMigration=$(to_bool "${ENABLE_MIGRATION:-}" "False")
-CFG_EnableMassMigration=$(to_bool "${ENABLE_MASS_MIGRATION:-}" "False")
-CFG_EnablePatrolZones=$(to_bool "${ENABLE_PATROL_ZONES:-}" "False")
-CFG_MapName=$(env_or "${MAP_NAME:-}" "Gateway")
-CFG_QueueEnabled=$(to_bool "${QUEUE_ENABLED:-}" "True")
-CFG_AISpawnInterval="${AI_SPAWN_INTERVAL:-}"
+# THESE ARE FIRST-BOOT FALLBACKS, NOT THE SOURCE OF TRUTH. They are byte-matched
+# to egg 40's `$cfg` table AND to the plane's own
+# `CONFIG_DEFAULTS.server_settings` - move all three or none. A server renders
+# them only when the canonical fetch AND the cache both failed, which the ladder
+# above has already shouted about.
+CFG_ServerName="Primal Heaven Evrima"
+CFG_MaxPlayers="150"
+CFG_ServerPassword=""
+CFG_ServerPasswordEnabled="False"
+CFG_RconEnabled="False"
+CFG_RconPassword="CHANGEME"
+CFG_Discord="https://discord.gg/primalheaven"
+# platform default RULED 1 (Ice 2026-08-25, #1574) - was the vendor's hostile 0.02.
+CFG_CorpseDecay="1"
+CFG_EnableHumans="True"
+CFG_DayLength="45"
+CFG_NightLength="20"
+CFG_GrowthMultiplier="1"
+CFG_EnableGlobalChat="True"
+CFG_EnableAI="False"
+CFG_AIDensity="0"
+CFG_SpawnFish="False"
+CFG_EnableMutations="True"
+CFG_EnableDiets="True"
+CFG_FallDamage="True"
+CFG_AllowReplay="True"
+CFG_DynamicWeather="False"
+CFG_WhitelistEnabled="False"
+CFG_SpawnPlants="False"
+CFG_PlantMultiplier="0"
+CFG_EnableMigration="False"
+CFG_EnableMassMigration="False"
+CFG_EnablePatrolZones="False"
+CFG_MapName="Gateway"
+CFG_QueueEnabled="True"
+CFG_AISpawnInterval=""
+CFG_AdminIds=""
+CFG_VipIds=""
+CFG_Classes=""
+
+# --- THE CANONICAL BLOCK OVERRIDES, FIELD BY FIELD --------------------------
+# Every field is applied ONLY when the block actually carries it (`c_has`), so a
+# plane that ships a NEW field before this wrapper knows about it cannot blank an
+# old one, and a wrapper newer than the plane keeps its own default.
+if [ -n "$CANON" ]; then
+    c_has server_settings serverName            && CFG_ServerName=$(c_str  server_settings serverName)
+    c_has server_settings maxPlayers            && CFG_MaxPlayers=$(c_str  server_settings maxPlayers)
+    c_has server_settings serverPassword        && CFG_ServerPassword=$(c_str server_settings serverPassword)
+    c_has server_settings serverPasswordEnabled && CFG_ServerPasswordEnabled=$(c_bool server_settings serverPasswordEnabled)
+    c_has server_settings rconEnabled           && CFG_RconEnabled=$(c_bool server_settings rconEnabled)
+    c_has server_settings rconPassword          && CFG_RconPassword=$(c_str  server_settings rconPassword)
+    c_has server_settings discordUrl            && CFG_Discord=$(c_str      server_settings discordUrl)
+    c_has server_settings corpseDecay           && CFG_CorpseDecay=$(c_str  server_settings corpseDecay)
+    c_has server_settings enableHumans          && CFG_EnableHumans=$(c_bool server_settings enableHumans)
+    c_has server_settings dayLengthMin          && CFG_DayLength=$(c_str    server_settings dayLengthMin)
+    c_has server_settings nightLengthMin        && CFG_NightLength=$(c_str  server_settings nightLengthMin)
+    c_has server_settings growthMultiplier      && CFG_GrowthMultiplier=$(c_str server_settings growthMultiplier)
+    c_has server_settings enableGlobalChat      && CFG_EnableGlobalChat=$(c_bool server_settings enableGlobalChat)
+    c_has server_settings enableAi              && CFG_EnableAI=$(c_bool    server_settings enableAi)
+    c_has server_settings aiDensity             && CFG_AIDensity=$(c_str    server_settings aiDensity)
+    c_has server_settings spawnFish             && CFG_SpawnFish=$(c_bool   server_settings spawnFish)
+    c_has server_settings enableMutations       && CFG_EnableMutations=$(c_bool server_settings enableMutations)
+    c_has server_settings enableDiets           && CFG_EnableDiets=$(c_bool server_settings enableDiets)
+    c_has server_settings fallDamage            && CFG_FallDamage=$(c_bool  server_settings fallDamage)
+    c_has server_settings allowReplay           && CFG_AllowReplay=$(c_bool server_settings allowReplay)
+    c_has server_settings dynamicWeather        && CFG_DynamicWeather=$(c_bool server_settings dynamicWeather)
+    c_has server_settings whitelistEnabled      && CFG_WhitelistEnabled=$(c_bool server_settings whitelistEnabled)
+    c_has server_settings spawnPlants           && CFG_SpawnPlants=$(c_bool server_settings spawnPlants)
+    c_has server_settings plantMultiplier       && CFG_PlantMultiplier=$(c_str server_settings plantMultiplier)
+    c_has server_settings enableMigration       && CFG_EnableMigration=$(c_bool server_settings enableMigration)
+    c_has server_settings enableMassMigration   && CFG_EnableMassMigration=$(c_bool server_settings enableMassMigration)
+    c_has server_settings enablePatrolZones     && CFG_EnablePatrolZones=$(c_bool server_settings enablePatrolZones)
+    c_has server_settings mapName               && CFG_MapName=$(c_str      server_settings mapName)
+    c_has server_settings queueEnabled          && CFG_QueueEnabled=$(c_bool server_settings queueEnabled)
+    # Empty is NOT zero: it omits the Game.ini line so the game's own default stands.
+    c_has server_settings aiSpawnInterval       && CFG_AISpawnInterval=$(c_str server_settings aiSpawnInterval)
+    # Lists. An EMPTY array is a legitimate value meaning "none" (admins/vips);
+    # for allowedClasses it means "use the built-in roster", which is why only a
+    # NON-empty list replaces DEFAULT_CLASSES below.
+    c_has server_settings adminSteamIds  && CFG_AdminIds=$(c_list  server_settings adminSteamIds)
+    c_has server_settings vipSteamIds    && CFG_VipIds=$(c_list    server_settings vipSteamIds)
+    c_has server_settings allowedClasses && CFG_Classes=$(c_list   server_settings allowedClasses)
+    log "config: canonical $(echo "$CFG_SOURCE" | tr '[:lower:]' '[:upper:]') (admins=$(c_count server_settings adminSteamIds) vips=$(c_count server_settings vipSteamIds) classes=$(c_count server_settings allowedClasses) players=$CFG_MaxPlayers scope=$(cj '.scope.server_settings // "?"') updatedAt=$(cj '.updatedAt // "null"'))"
+fi
+
+# --- LEGACY EGG VARIABLES: no longer read, and deliberately not silently -----
+# Until 2026-09-05 this wrapper rendered Game.ini from these. It does not any
+# more (the panel stopped writing them on 2026-08-10). If one is still set,
+# say so ONCE and loudly rather than letting someone edit a dead field for a
+# week - hard rule 13. Only when we actually have canon: on the defaults rung
+# the ladder has already shouted, and adding a second scary block there would
+# bury it.
+if [ -n "$CANON" ]; then
+    DEAD_SET=""
+    for DV in SERVER_NAME MAX_PLAYERS ADMIN_STEAM_IDS VIP_STEAM_IDS ALLOWED_CLASSES \
+              SERVER_PASSWORD SERVER_PASSWORD_ENABLED RCON_ENABLED RCON_PASSWORD DISCORD_URL \
+              CORPSE_DECAY ENABLE_HUMANS SERVER_DAY_LENGTH SERVER_NIGHT_LENGTH GROWTH_MULTIPLIER \
+              ENABLE_GLOBAL_CHAT ENABLE_AI AI_DENSITY SPAWN_FISH ENABLE_MUTATIONS ENABLE_DIETS \
+              FALL_DAMAGE ALLOW_REPLAY DYNAMIC_WEATHER WHITELIST_ENABLED SPAWN_PLANTS \
+              PLANT_MULTIPLIER ENABLE_MIGRATION ENABLE_MASS_MIGRATION ENABLE_PATROL_ZONES \
+              MAP_NAME QUEUE_ENABLED AI_SPAWN_INTERVAL PRIMAL_MOD_INI PRIMAL_FORCE_DINO; do
+        [ -n "$(echo -n "${!DV:-}" | tr -d '[:space:]')" ] && DEAD_SET="$DEAD_SET $DV"
+    done
+    if [ -n "$DEAD_SET" ]; then
+        log "config: NOTE these legacy egg variable(s) are still set and are NO LONGER READ (config comes from the panel):"
+        log "config:     $(echo "$DEAD_SET" | sed 's/^ //')"
+    fi
+fi
 
 # Ports: game/query = SERVER_PORT (query==game BAKED, no variable). Queue and
 # rcon are egg variables because standard Wings injects no extra allocations.
@@ -365,11 +608,10 @@ GAME_PORT="${SERVER_PORT:?SERVER_PORT not set}"
 CFG_QueuePort=$(env_or "${QUEUE_PORT:-}" "$((GAME_PORT + 1))")
 CFG_RconPort=$(env_or "${RCON_PORT:-}" "$((GAME_PORT + 2))")
 
-# The server-config.json OVERLAY IS NOT SUPPORTED ON THIS EGG.
-# Egg variables are the single source of truth (#356 T1(a), FIELD_SPEC.md:49-51)
-# and nothing on the platform writes the overlay. This image carries no JSON
-# parser, and a homegrown half-parser that could misread a field silently is
-# worse than an honest refusal (rule 13): if the file exists, say so LOUDLY and
+# The server-config.json OVERLAY IS NOT SUPPORTED ON THIS EGG, and never will be.
+# It is the file from #1101: nothing on the platform can write it, and on Dino
+# Vibes it silently OUTRANKED the customer's panel. The data plane is the single
+# source of truth now (fetched above). If the file exists, say so LOUDLY and
 # apply NOTHING from it.
 if [ -f "$PRIM/server-config.json" ]; then
     warn "=============================================================="
@@ -393,9 +635,12 @@ render_id_lines() { # $1 = ini key, $2 = raw csv/newline list, $3 = emptyline
 # Joined with explicit newlines: $(...) strips the trailing newline, so a
 # plain += would weld the next block onto the previous line (caught by the
 # render smoke - "VIPs=0" landed inside an AdminsSteamIDs line).
-GSB_A=$(render_id_lines "AdminsSteamIDs" "${ADMIN_STEAM_IDS:-}" "0")
-GSB_V=$(render_id_lines "VIPs" "${VIP_STEAM_IDS:-}" "0")
-CLASSES_RAW=$(env_or "${ALLOWED_CLASSES:-}" "$DEFAULT_CLASSES")
+GSB_A=$(render_id_lines "AdminsSteamIDs" "$CFG_AdminIds" "0")
+GSB_V=$(render_id_lines "VIPs" "$CFG_VipIds" "0")
+# An EMPTY roster is not "no dinos" - it means use the built-in one. Matches
+# egg 40, and matters because the plane's broken-species filter CAN empty a
+# roster that listed only broken species.
+CLASSES_RAW=$(env_or "$CFG_Classes" "$DEFAULT_CLASSES")
 GSB_C=$(render_id_lines "AllowedClasses" "$CLASSES_RAW" "")
 GSB="$GSB_A"$'\n'"$GSB_V"$'\n'"$GSB_C"
 N_CLASSES=$(grep -c '^AllowedClasses=' <<<"$GSB" || true)
@@ -458,34 +703,132 @@ log "rendered Game.ini (players=$CFG_MaxPlayers, classes=$N_CLASSES, port=$GAME_
 # ---------------------------------------------------------------------------
 ENG=$(cat "$PRIM/Engine.ini.tmpl") || die "Engine.ini.tmpl missing from _primal/ (reinstall the egg)"
 
-PAK_FORCE_DINO=$(echo -n "${PRIMAL_FORCE_DINO:-}" | tr -d '[:space:]')
-# Trike corpse cleanup - ON by Ice's call 2026-08-01 (same defaults as egg 40).
-# Key names + value forms are the PAK'S: True/False (not 1/0), csv (not array).
+# ---------------------------------------------------------------------------
+# THE PAK'S CONFIG SECTION - per-server, from the plane's `mod_settings` block.
+#
+# Until 2026-09-05 the three keys below were FLEET-WIDE LITERALS here and the
+# escape hatch was `PRIMAL_MOD_INI`, a generic "Key=Value;..." setter. Both are
+# gone, for the reasons egg 40 already recorded:
+#   * the literals mean changing one key for one customer costs a public-repo
+#     commit, a CI rebuild of 4 ghcr images and an egg import;
+#   * a GENERIC key setter can write ANY key under a name no allowlist checks -
+#     including keys the panel gates - so it is the panel's authority with the
+#     safety off. #1094 removed it on Windows. (It was DECLARED in this egg, so
+#     unlike egg 40's it could actually fire.) The replacement for "a pak key
+#     with no field" is to add it to the plane's `mod_settings` block.
+#
+# Key names + value forms are the PAK'S: True/False (not 1/0), csv (not array)
+# - config ARRAYS silently do not load on a BP class (#572).
+# ---------------------------------------------------------------------------
+
+# Format a number the way egg 40's ModNum does, so the two eggs render the same
+# bytes: BodyHoldSec 10 -> "10.0", AIMaxCount 40 -> "40". LC_ALL=C because a
+# comma decimal separator in Engine.ini is a key the pak cannot read.
+mod_num() { # $1 = raw, $2 = decimals, $3 = fallback
+    local out
+    out=$(LC_ALL=C printf "%.$2f" "$1" 2>/dev/null)
+    if [ -n "$out" ]; then printf '%s' "$out"; else printf '%s' "$3"; fi
+}
+
+# #1593 DEFENSIVE SKIP - the LAST line of defence, and deliberately the weakest.
+#
+# On 2026-08-26 a paying customer's server was down 1h40m because
+# `speciesCapList` held a single entry `5`. Entries are `Species:N`; with no
+# colon the pak's species half parses EMPTY, the cap tick builds a package name
+# with a double slash, and UE aborts - fatal one `SpeciesCapEvery` tick after
+# map load, and RE-ARMED by every restart.
+#
+# THE REAL FIX IS AT THE PLANE (`config.ts` ENTRY_SHAPES), which refuses a
+# malformed entry BY NAME so the owner is told. This is NOT that and must never
+# be mistaken for it: by the time we are here the customer is not present, the
+# boot is - so the only correct behaviour left is skip-and-SAY-SO. A fully
+# skipped list renders EMPTY, which OMITS the line, so the pak's own default
+# stands: the safe outcome, and not a silent one.
+mod_csv_shaped() { # $1 = newline list, $2 = label, $3 = 1 when <Species>:<N> is required
+    local kept="" idx=0 e bad
+    while IFS= read -r e; do
+        e=$(printf '%s' "$e" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+        [ -z "$e" ] && continue
+        idx=$((idx + 1))
+        bad=""
+        if [ "$3" = "1" ]; then
+            [[ "$e" =~ ^[A-Za-z0-9_]{1,64}:[0-9]{1,9}$ ]] || bad="not <Species>:<N>"
+        else
+            [[ "$e" =~ ^[A-Za-z0-9_]{1,64}$ ]] || bad="not a plain species name"
+        fi
+        if [ -n "$bad" ]; then
+            # >&2 IS LOAD-BEARING. This function's stdout IS its return
+            # value (it is called inside a command substitution), so a
+            # message printed on stdout is APPENDED TO THE INI VALUE:
+            # SpeciesCapList= gets the log line, then a newline, then the
+            # list. That is the Engine.ini line injection this guard exists
+            # to prevent, caused by the guard itself. The render test caught
+            # it on 2026-09-05; it is why that test exists.
+            log "config: SKIPPED malformed $2 entry $idx ('$e') - $bad. BUGS #1593; the line is rendered WITHOUT it. Fix it in the panel." >&2
+            continue
+        fi
+        [ -n "$kept" ] && kept="$kept,"
+        kept="$kept$e"
+    done <<< "$1"
+    printf '%s' "$kept"
+}
+
 declare -A PAK_EXTRA=()
-PAK_EXTRA_ORDER=("BodySweepOn" "BodySweepList" "BodyHoldSec")
+# Order is egg 40's `$modDefaults` order - the cutover proof is a byte-diff and
+# a reordering diff is noise that hides a real one.
+PAK_EXTRA_ORDER=("BodySweepOn" "BodySweepList" "BodyHoldSec" "BodySweepLiftZ" "TreeKnockdownOn" "AIMaxCount" "SpeciesCapEvery")
 PAK_EXTRA[BodySweepOn]="True"
 PAK_EXTRA[BodySweepList]="Triceratops"
 PAK_EXTRA[BodyHoldSec]="10.0"
-# PRIMAL_MOD_INI="Key=Value;Other=1" overrides/extends with no script edit.
-if [ -n "${PRIMAL_MOD_INI:-}" ]; then
-    while IFS= read -r PAIR; do
-        PAIR=$(echo -n "$PAIR" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
-        [ -z "$PAIR" ] && continue
-        case "$PAIR" in
-            ?*=*)
-                K="${PAIR%%=*}"; V="${PAIR#*=}"
-                K=$(echo -n "$K" | sed 's/[[:space:]]*$//')
-                V=$(echo -n "$V" | sed 's/^[[:space:]]*//')
-                [ -n "${PAK_EXTRA[$K]+x}" ] || PAK_EXTRA_ORDER+=("$K")
-                PAK_EXTRA[$K]="$V" ;;
-            *) log "WARNING ignoring malformed PRIMAL_MOD_INI entry '$PAIR'" ;;
-        esac
-    done < <(echo "${PRIMAL_MOD_INI}" | tr ';' '\n')
+PAK_EXTRA[BodySweepLiftZ]="150000"
+PAK_EXTRA[TreeKnockdownOn]="False"
+PAK_EXTRA[AIMaxCount]="40"
+PAK_EXTRA[SpeciesCapEvery]="30"
+
+if [ -n "$CANON" ]; then
+    c_has mod_settings bodySweepOn     && PAK_EXTRA[BodySweepOn]=$(c_bool mod_settings bodySweepOn)
+    c_has mod_settings treeKnockdownOn && PAK_EXTRA[TreeKnockdownOn]=$(c_bool mod_settings treeKnockdownOn)
+    c_has mod_settings bodySweepList   && PAK_EXTRA[BodySweepList]=$(mod_csv_shaped "$(c_list mod_settings bodySweepList)" "BodySweepList" 0)
+    c_has mod_settings bodyHoldSec     && PAK_EXTRA[BodyHoldSec]=$(mod_num "$(c_str mod_settings bodyHoldSec)" 1 "10.0")
+    c_has mod_settings bodySweepLiftZ  && PAK_EXTRA[BodySweepLiftZ]=$(mod_num "$(c_str mod_settings bodySweepLiftZ)" 0 "150000")
+    c_has mod_settings aiMaxCount      && PAK_EXTRA[AIMaxCount]=$(mod_num "$(c_str mod_settings aiMaxCount)" 0 "40")
+    c_has mod_settings speciesCapEvery && PAK_EXTRA[SpeciesCapEvery]=$(mod_num "$(c_str mod_settings speciesCapEvery)" 0 "30")
+fi
+
+# #1071 WIRE SENTINELS, DERIVED - never a panel field, never authored.
+# The pak reads a numeric key as UNSET (keeping its baked default) unless the
+# paired `*Set=True` is present too. Emitting the number without its sentinel
+# ships a setting that SILENTLY does nothing - which is what this egg did until
+# 2026-09-05 for BodyHoldSec. Inserted immediately AFTER their numeric so the
+# rendered byte order matches egg 40's.
+PAK_ORDER_NEW=()
+for K in "${PAK_EXTRA_ORDER[@]}"; do
+    PAK_ORDER_NEW+=("$K")
+    if [ "$K" = "BodyHoldSec" ];    then PAK_ORDER_NEW+=("BodyHoldSet"); PAK_EXTRA[BodyHoldSet]="True"; fi
+    if [ "$K" = "BodySweepLiftZ" ]; then PAK_ORDER_NEW+=("BSLiftSet");   PAK_EXTRA[BSLiftSet]="True";   fi
+done
+PAK_EXTRA_ORDER=("${PAK_ORDER_NEW[@]}")
+
+# EMPTY IS NOT ZERO: these two OMIT their line so the pak's own default holds.
+PAK_SPECIES_CAP=""
+if [ -n "$CANON" ] && c_has mod_settings speciesCapList; then
+    PAK_SPECIES_CAP=$(mod_csv_shaped "$(c_list mod_settings speciesCapList)" "SpeciesCapList" 1)
+fi
+[ -n "$PAK_SPECIES_CAP" ] && { PAK_EXTRA_ORDER+=("SpeciesCapList"); PAK_EXTRA[SpeciesCapList]="$PAK_SPECIES_CAP"; }
+
+# ForceDinoList: same omit-when-empty idiom. The value lands on the game's
+# LAUNCH LINE, where Compsognathus/Pterodactylus are an instant client crash and
+# a bricked character (#378), so the panel validates it against an allow-list
+# before it ever reaches the plane. This script renders what that gated writer
+# stored - it does NOT re-derive the list, and there is deliberately NO
+# hardcoded fallback (one silently force-RE-ADDED Baryonyx/Oviraptor after they
+# were stripped from the roster).
+PAK_FORCE_DINO=""
+if [ -n "$CANON" ] && c_has mod_settings forceDinoList; then
+    PAK_FORCE_DINO=$(mod_csv_shaped "$(c_list mod_settings forceDinoList)" "ForceDinoList" 0)
 fi
 
 if [ "${ENABLE_PRIMAL_MOD:-0}" = "1" ] && [ -n "$PHSK" ]; then
-    DATA_BASE=$(env_or "${PRIMAL_DATA_BASE:-}" "https://data.primalhosted.com")
-    DATA_BASE="${DATA_BASE%/}"
     SESS_BLOCK="[/Game/TheIsle/Core/Session/BP_TIGameSession.BP_TIGameSession_C]"$'\n'
     SESS_BLOCK+="ApiToken=$PHSK"$'\n'
     SESS_BLOCK+="PollURL=$DATA_BASE/v1/commands/text"$'\n'
@@ -493,6 +836,48 @@ if [ "${ENABLE_PRIMAL_MOD:-0}" = "1" ] && [ -n "$PHSK" ]; then
     for K in "${PAK_EXTRA_ORDER[@]}"; do
         SESS_BLOCK+="$K=${PAK_EXTRA[$K]}"$'\n'
     done
+
+    # --- CARRY FORWARD every hand-set pak key this script does not own (#1137) -
+    # The emit REPLACES the whole section, so any key not re-emitted is destroyed
+    # on every boot. Until now this egg destroyed all of them, which makes a new
+    # pak knob unsettable from this box (BUILD 120's IrisCensus* scalars are the
+    # pattern: hand-added, worked for one boot, then reverted).
+    #
+    # The set below is "keys this script OWNS", NOT "keys it emitted this boot",
+    # and that distinction is the whole correctness of this block: ForceDinoList
+    # and SpeciesCapList are deliberately OMITTED when empty, so judging by what
+    # was emitted would carry their OLD value forward for ever and make them
+    # silently un-clearable.
+    #
+    # A carried key is operator-writable through the file manager, so the pak
+    # must never read a key whose VALUE is a console command - config selects
+    # from a CLOSED SET the pak owns. That rule lives with the pak; it is stated
+    # here because this is where the persistence it depends on is introduced.
+    PAK_MANAGED=" apitoken polluri pollurl forcedinolist speciescaplist "
+    for K in "${PAK_EXTRA_ORDER[@]}"; do
+        PAK_MANAGED="$PAK_MANAGED$(echo "$K" | tr '[:upper:]' '[:lower:]') "
+    done
+    CARRIED=""
+    CARRIED_N=0
+    if [ -f "$CONFIG_DIR/Engine.ini" ]; then
+        # Scoped to the pak's OWN section: a bare whole-file scan would match a
+        # same-named key in [Core.Log] and silently promote it in here.
+        while IFS= read -r LN; do
+            case "$LN" in ''|\;*|\#*|\[*) continue ;; esac
+            case "$LN" in *=*) : ;; *) continue ;; esac
+            CK="${LN%%=*}"
+            CK=$(printf '%s' "$CK" | sed 's/[[:space:]]*$//')
+            [ -z "$CK" ] && continue
+            case "$PAK_MANAGED" in *" $(echo "$CK" | tr '[:upper:]' '[:lower:]') "*) continue ;; esac
+            CARRIED+="$LN"$'\n'
+            CARRIED_N=$((CARRIED_N + 1))
+        done < <(awk 'BEGIN{inb=0}
+            /^[[:space:]]*\[\/Game\/TheIsle\/Core\/Session\/BP_TIGameSession\.BP_TIGameSession_C\]/{inb=1; next}
+            /^[[:space:]]*\[/{inb=0}
+            inb' "$CONFIG_DIR/Engine.ini")
+    fi
+    [ -n "$CARRIED" ] && SESS_BLOCK+="$CARRIED"
+
     # Idempotent: strip any existing copy of the section from the template
     # first (UE takes the first copy, so a duplicate would silently win with
     # the wrong value), then append ours.
@@ -504,7 +889,8 @@ if [ "${ENABLE_PRIMAL_MOD:-0}" = "1" ] && [ -n "$PHSK" ]; then
     log "Engine.ini: Primal session block set (tokenlen=${#PHSK}, poll=$DATA_BASE/v1/commands/text)"
     PAK_KV=""
     for K in "${PAK_EXTRA_ORDER[@]}"; do PAK_KV+="$K=${PAK_EXTRA[$K]} "; done
-    log "Engine.ini: pak keys ForceDinoList=$PAK_FORCE_DINO $PAK_KV"
+    log "Engine.ini: pak keys (source=$CFG_SOURCE) ForceDinoList=$PAK_FORCE_DINO $PAK_KV"
+    [ "$CARRIED_N" -gt 0 ] && log "Engine.ini: carried forward $CARRIED_N hand-set pak key(s) this script does not own (#1137)"
 else
     log "Engine.ini: no Primal session block (mod disabled or no PHSK_KEY)"
 fi

@@ -1,0 +1,57 @@
+{
+  "serverId": 9999,
+  "config": {
+    "server_settings": {
+      "serverName": "CANON-NAME-FROM-PLANE",
+      "maxPlayers": 42,
+      "serverPasswordEnabled": true,
+      "serverPassword": "canon-pass",
+      "rconEnabled": true,
+      "rconPassword": "canon-rcon",
+      "discordUrl": "https://discord.gg/canon",
+      "mapName": "Gateway",
+      "queueEnabled": false,
+      "adminSteamIds": ["76561190000000001", "76561190000000002"],
+      "vipSteamIds": ["76561190000000003"],
+      "allowedClasses": ["Tyrannosaurus", "Triceratops"],
+      "whitelistEnabled": true,
+      "corpseDecay": 7,
+      "enableHumans": false,
+      "dayLengthMin": 11,
+      "nightLengthMin": 12,
+      "growthMultiplier": 3,
+      "enableGlobalChat": false,
+      "enableMutations": false,
+      "enableDiets": false,
+      "fallDamage": false,
+      "dynamicWeather": true,
+      "enableAi": true,
+      "aiDensity": 5,
+      "aiSpawnInterval": "600",
+      "spawnFish": true,
+      "spawnPlants": true,
+      "plantMultiplier": 2,
+      "allowReplay": false,
+      "enableMigration": true,
+      "enableMassMigration": true,
+      "enablePatrolZones": true
+    },
+    "mod_settings": {
+      "treeKnockdownOn": true,
+      "bodySweepOn": false,
+      "bodySweepList": ["Stegosaurus"],
+      "bodyHoldSec": 25,
+      "bodySweepLiftZ": 99000,
+      "aiMaxCount": 77,
+      "speciesCapEvery": 45,
+      "speciesCapList": ["Tyrannosaurus:2", "BROKEN_NO_COLON", "Triceratops:5"],
+      "forceDinoList": []
+    }
+  },
+  "scope": { "server_settings": "server", "mod_settings": "server" },
+  "updatedAt": "2026-09-05T12:00:00.000Z",
+  "clamped": [
+    { "key": "server_settings", "field": "maxPlayers", "stored": 300, "applied": 42 }
+  ],
+  "rosterFiltered": { "dropped": ["Baryonyx"], "allowedClassesEmptied": false }
+}
