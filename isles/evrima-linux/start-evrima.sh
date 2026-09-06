@@ -578,6 +578,27 @@ if [ -n "$CANON" ]; then
     log "config: canonical $(echo "$CFG_SOURCE" | tr '[:lower:]' '[:upper:]') (admins=$(c_count server_settings adminSteamIds) vips=$(c_count server_settings vipSteamIds) classes=$(c_count server_settings allowedClasses) players=$CFG_MaxPlayers scope=$(cj '.scope.server_settings // "?"') updatedAt=$(cj '.updatedAt // "null"'))"
 fi
 
+# --- #2024: on the DEFAULTS rung ONLY, identity comes from the egg env --------
+# The built-in defaults above are Primal HEAVEN's (they are byte-matched to egg 40
+# and to the plane's CONFIG_DEFAULTS - move all three or none). On a Primal HOSTED
+# node a first/keyless boot that renders them announces itself as "Primal Heaven
+# Evrima" / 150 slots / RconPassword=CHANGEME in the EOS browser (#2024, measured on
+# eu1 2026-09-05). The egg env is exactly what the provisioner pinned for THIS
+# server, so on this rung the three identity fields come from it. Every other field
+# stays on the built-in default so #2023's property (the panel owns config) holds -
+# and on the fetched/cache rungs the env is NOT consulted at all (see DEAD_SET below).
+if [ -z "$CANON" ]; then
+    ID_SEEDED=""
+    if [ -n "${SERVER_NAME:-}" ];   then CFG_ServerName="$SERVER_NAME";     ID_SEEDED="$ID_SEEDED ServerName"; fi
+    if [ -n "${MAX_PLAYERS:-}" ];   then CFG_MaxPlayers="$MAX_PLAYERS";     ID_SEEDED="$ID_SEEDED MaxPlayerCount"; fi
+    if [ -n "${RCON_PASSWORD:-}" ]; then CFG_RconPassword="$RCON_PASSWORD"; ID_SEEDED="$ID_SEEDED RconPassword"; fi
+    if [ -n "$ID_SEEDED" ]; then
+        log "config: defaults rung - identity seeded from the egg env (#2024):$ID_SEEDED"
+    else
+        log "config: defaults rung - egg env carries no identity; rendering the built-in name/slots (#2024)"
+    fi
+fi
+
 # --- LEGACY EGG VARIABLES: no longer read, and deliberately not silently -----
 # Until 2026-09-05 this wrapper rendered Game.ini from these. It does not any
 # more (the panel stopped writing them on 2026-08-10). If one is still set,

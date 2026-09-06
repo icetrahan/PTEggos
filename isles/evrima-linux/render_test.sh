@@ -128,8 +128,19 @@ G2="$T2/TheIsle/Saved/Config/LinuxServer/Game.ini"
 L2="$T2/boot.log"
 want "unconfigured boot is shouted"        'THIS SERVER IS UNCONFIGURED'      "$L2"
 want "source says defaults"                'source=defaults'                  "$L2"
-want "defaults render, not egg variables"  'ServerName=Primal Heaven Evrima'  "$G2"
-nowant "egg SERVER_NAME is not a fallback" 'ServerName=EGGVAR-NAME'           "$G2"
+# #2024: on THIS rung the three identity fields come from the egg env (what the
+# provisioner pinned for this server), never the Heaven literals. The pre-fix
+# control for this block: `git show b34f90c:isles/evrima-linux/start-evrima.sh`
+# renders ServerName=Primal Heaven Evrima here and FAILS these four.
+want "identity from the egg env (#2024)"   'ServerName=EGGVAR-NAME'           "$G2"
+nowant "the Heaven literal did NOT render" 'ServerName=Primal Heaven Evrima'  "$G2"
+want "slots from the egg env (#2024)"      'MaxPlayerCount=99'                "$G2"
+want "#2024 seed is reported"              'identity seeded from the egg env' "$L2"
+# ...and ONLY those three: a non-identity egg variable must still lose to the
+# built-in default on this rung (#2023 - the panel owns config).
+want "non-identity keeps the built-in"     'AIDensity=0'                      "$G2"
+nowant "egg AI_DENSITY did NOT win"        'AIDensity=1'                      "$G2"
+nowant "egg CORPSE_DECAY did NOT win"      'CorpseDecayMultiplier=3'          "$G2"
 want "no admins, and it says so"           'AdminsSteamIDs=0'                 "$G2"
 
 echo
