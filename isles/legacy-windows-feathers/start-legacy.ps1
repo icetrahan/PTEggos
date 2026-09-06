@@ -387,13 +387,18 @@ public static class PInj {
 # SERVER_IP is REAL on feathers: the wrapper printed the default-allocation IP from it
 # on both servers (src=MULTIHOME_AUTO->SERVER_IP), and the box bound exactly that IP.
 #
-# #1832/#97 - AUTO fallback, OPT-IN and OFF BY DEFAULT. Evrima's wrapper does
-# `EnvOr $env:MULTIHOME_IP $env:SERVER_IP` unconditionally; Legacy deliberately does
-# NOT, because Ice ruled 2026-07-27: "peg them to the default as though it were
-# intentional until Legacy multihome is proven on a test server. Don't 'fix' it live."
-# MULTIHOME_AUTO=0 (the egg default) keeps every existing server binding all
-# interfaces exactly as ruled; setting it to 1 on ONE server opts that server into
-# its own allocation IP so the A/B can be run without touching a customer.
+# #1832/#97 - AUTO fallback. Evrima's wrapper does `EnvOr $env:MULTIHOME_IP
+# $env:SERVER_IP` unconditionally; Legacy gates the same fallback on MULTIHOME_AUTO.
+# History: Ice ruled 2026-07-27 "peg them to the default as though it were intentional
+# until Legacy multihome is proven on a test server" - so the egg default was 0 (bind
+# all interfaces). PROVEN 2026-09-05/06 (G12: two servers on win3, own-ip binds, A2S
+# and Steam per ip, restart isolation, and a human joined EACH by ip) => the egg
+# default is 1 as of 2026-09-06 (build_egg.py). An egg default reaches NEW provisions
+# only: an existing volume keeps the wrapper it installed with, and a per-server
+# MULTIHOME_AUTO value set in the panel always wins over the default.
+# #2038: a multihomed Legacy server binds THREE udp ports on its ip - Port, QueryPort
+# and QueryPort+1 (Steam's master-server port, which the game takes on its own) - so
+# the panel must hand it 3 allocations; on 2 the third reads as `bound_unassigned`.
 $mhMode = (EnvOr $env:MULTIHOME_MODE 'cli').ToLower()
 if ($mhMode -ne 'cli') {
     # Hard rule 13: url/both used to print "multihome BOUND ... mode=url" while the box
