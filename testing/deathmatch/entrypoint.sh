@@ -33,11 +33,19 @@ export TZ
 INTERNAL_IP=$(ip route get 1 | awk '{print $(NF-2);exit}')
 export INTERNAL_IP
 
+# #2039: Wings hands the panel's "Startup Command" to this container as $STARTUP.
+# Until 2026-09-06 this script overwrote it with its own hard-coded launch line
+# (below) and said nothing, so anything typed into that field was dropped in
+# silence (hard rule 13). Capture it HERE, before anything else can touch it.
+PANEL_STARTUP_CMD="${STARTUP:-}"
+
 # =============================================================================
 # Update Manager Configuration
 # =============================================================================
 API_BASE_URL=${API_BASE_URL:-"https://api.primalheaven.com"}
-API_KEY=${API_KEY:-"Itachi6969!"}
+# No default: this is a PUBLIC repo (#1064) - the key comes from the egg env or
+# not at all. The block below that needs it is guarded by SERVER_ID and says so.
+API_KEY=${API_KEY:-""}
 SERVER_ID=${SERVER_ID:-""}  # Set this in Pterodactyl egg variables
 SERVER_NAME=${SERVER_NAME:-""}  # Human-readable name
 PANEL_NAME=${PANEL_NAME:-""}  # Which panel: "gsh" or "primal"
@@ -61,6 +69,9 @@ if [ ! -z "$SERVER_ID" ] && [ ! -z "$API_BASE_URL" ]; then
     echo "=========================================="
     echo "Checking update status with backend..."
     echo "=========================================="
+    if [ -z "$API_KEY" ]; then
+        echo "⚠️ API_KEY is EMPTY - the backend will answer 401 and this check will fail closed (exit 1) after $MAX_RETRIES tries. Set API_KEY in the egg/server env."
+    fi
     
     RETRY_COUNT=0
     MAX_RETRIES=3
@@ -359,8 +370,39 @@ if [ ! -z "$SERVER_ID" ] && [ ! -z "$API_BASE_URL" ]; then
     fi
 fi
 
-# Set the startup command
-export STARTUP="/home/container/TheIsle/Binaries/Linux/TheIsleServer-Linux-Shipping -QueryPort=$SERVER_PORT -Port=$SERVER_PORT  -ini:Engine:[EpicOnlineServices]:DedicatedServerClientId=xyza7891gk5PRo3J7G9puCJGFJjmEguW -ini:Engine:[EpicOnlineServices]:DedicatedServerClientSecret=pKWl6t5i9NJK8gTpVlAxzENZ65P8hYzodV8Dqe5Rlc8"
+# =============================================================================
+# The launch line (#2039)
+# =============================================================================
+# This image has ALWAYS launched with its own built-in line (QueryPort == Port ==
+# SERVER_PORT, the public EOS dedicated-server client id/secret every Isle host
+# uses). Servers already on this image (NA2, Skin Creator, Builder) carry panel
+# Startup Commands that differ from it - one of them would change ports if the
+# field were honoured outright - so the BUILT-IN LINE STAYS THE DEFAULT and the
+# panel field is honoured only when a server opts in:
+#     env  PANEL_STARTUP=1                       (needs an egg variable), or
+#     file /home/container/.panel-startup        (creatable from the panel's File
+#                                                 Manager on any server today)
+# Either way the log below says which line ran and, when the panel field is
+# ignored, prints it so nobody spends a boot cycle on a field that does nothing.
+# For an Engine.ini key on this egg the read path is the volume file
+# /home/container/TheIsle/Saved/Config/LinuxServer/Engine.ini (nothing rewrites it).
+BUILTIN_STARTUP="/home/container/TheIsle/Binaries/Linux/TheIsleServer-Linux-Shipping -QueryPort=$SERVER_PORT -Port=$SERVER_PORT  -ini:Engine:[EpicOnlineServices]:DedicatedServerClientId=xyza7891gk5PRo3J7G9puCJGFJjmEguW -ini:Engine:[EpicOnlineServices]:DedicatedServerClientSecret=pKWl6t5i9NJK8gTpVlAxzENZ65P8hYzodV8Dqe5Rlc8"
+HONOUR_PANEL=false
+[ "${PANEL_STARTUP:-0}" = "1" ] && HONOUR_PANEL=true
+[ -f /home/container/.panel-startup ] && HONOUR_PANEL=true
+if [ "$HONOUR_PANEL" = "true" ] && [ -n "$PANEL_STARTUP_CMD" ]; then
+    echo "(launch) #2039: using the PANEL Startup Command (opt-in via PANEL_STARTUP=1 / .panel-startup)"
+    export STARTUP="$PANEL_STARTUP_CMD"
+else
+    if [ "$HONOUR_PANEL" = "true" ]; then
+        echo "(launch) #2039: panel opt-in set but the panel Startup Command is EMPTY - using the image's built-in launch line"
+    else
+        echo "(launch) #2039: the panel Startup Command is IGNORED by this image - using the built-in launch line."
+        echo "(launch)        panel field was: ${PANEL_STARTUP_CMD:-<empty>}"
+        echo "(launch)        to honour it on this server: create /home/container/.panel-startup (or set PANEL_STARTUP=1) and restart"
+    fi
+    export STARTUP="$BUILTIN_STARTUP"
+fi
 
 # Replace Startup Variables
 MODIFIED_STARTUP=$(echo ${STARTUP} | sed -e 's/{{/${/g' -e 's/}}/}/g')
