@@ -121,8 +121,12 @@ $cfg = @{
     NightLength           = '20'
     GrowthMultiplier      = '1'
     EnableGlobalChat      = 'True'
-    EnableAI              = 'False'
-    AIDensity             = '0'
+    # ⭐ These five are the VENDOR defaults, ruled by Ice 2026-09-10 (#2174) — they used to
+    #    ship 'False'/'0' and Game.ini.tmpl writes them ACTIVELY, so we decided for the owner
+    #    on every boot. ⛔ Must stay byte-identical to the plane's CONFIG_DEFAULTS.server_settings
+    #    — `boot_config_contract_test.mjs` §1 is the gate that fails when they drift.
+    EnableAI              = 'True'
+    AIDensity             = '0.25'
     SpawnFish             = 'False'
     EnableMutations       = 'True'
     EnableDiets           = 'True'
@@ -132,9 +136,9 @@ $cfg = @{
     WhitelistEnabled      = 'False'
     SpawnPlants           = 'False'
     PlantMultiplier       = '0'
-    EnableMigration       = 'False'
-    EnableMassMigration   = 'False'
-    EnablePatrolZones     = 'False'
+    EnableMigration       = 'True'
+    EnableMassMigration   = 'True'
+    EnablePatrolZones     = 'True'
     MapName               = 'Gateway'
     QueueEnabled          = 'True'
     # Empty = the AISpawnInterval line is OMITTED from Game.ini entirely (the game
