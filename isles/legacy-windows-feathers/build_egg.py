@@ -54,8 +54,16 @@ if (Test-Path $serverExe) { Write-Output 'OK: Legacy server binary present.' } e
 Write-Output 'Install complete.'
 '''.replace("__WRAPPER_B64__", wrapper_b64)
 
+# ⭐ 2026-09-13 (BACKLOG C1/I1, #1799): the PANEL is the source of every customer setting below —
+# the wrapper fetches `server_settings` from the data plane each boot (see the PLANE_KEYS line at the
+# top of start-legacy.ps1). These egg variables are the FALLBACK rung only: rendered when the plane
+# is unreachable and no boot-config cache exists, and for any key the served block does not carry.
+# They are kept editable so a first boot / broken key still renders a sane server. ⛔ Do not add a
+# NEW customer setting as an egg variable — add it to PLANE_KEYS + the panel canon + the plane.
+FALLBACK_NOTE = " FALLBACK ONLY since 2026-09-13: the Primal Hosted panel (My Servers > this server > Settings) is the source of truth and overrides this on every boot the data plane can be reached; edit it there."
+
 def _v(name, env, default, rules, desc):
-    return {"name": name, "description": desc or f"{name} (rendered into the Legacy Game.ini / launch each boot).",
+    return {"name": name, "description": (desc or f"{name} (rendered into the Legacy Game.ini / launch each boot).") + FALLBACK_NOTE,
             "env_variable": env, "default_value": default, "user_viewable": True,
             "user_editable": True, "rules": rules, "field_type": "text"}
 
@@ -65,7 +73,7 @@ egg = {
     "exported_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00"),
     "name": "The Isle: Legacy (Windows / feathers)",
     "author": "admin@primalhosted.com",
-    "description": "The Isle LEGACY dedicated server (SteamCMD app 412680, branch public, UE4.25). Installs ONCE (frozen build, no updates). Every boot: renders the Legacy Game.ini (igamesession/GameSession/igamemode) + MOTD, syncs server mods (grouping-aware, install/uninstall), then launches Shipping directly with ?game={mode}?listen. Map: Isle_V3 / Thenyaw / TestLevel.",
+    "description": "The Isle LEGACY dedicated server (SteamCMD app 412680, branch public, UE4.25). Installs ONCE (frozen build, no updates). Every boot: fetches this server's settings from the Primal Hosted data plane (the panel is the source; egg variables are the fallback), renders the Legacy Game.ini (igamesession/GameSession/igamemode) + MOTD, syncs server mods (grouping-aware, install/uninstall), then launches Shipping directly with ?game={mode}?listen. Map: Isle_V3 / Thenyaw / TestLevel.",
     "features": None,
     "docker_images": {"Windows SteamCMD": "windows/steamcmd"},
     "file_denylist": [],
@@ -132,6 +140,19 @@ for v in egg["variables"]:
     if v["env_variable"] in ADMIN_ONLY:
         v["user_viewable"] = False
         v["user_editable"] = False
+        # bootstrap/ops variables are READ by the wrapper as-is; the fallback note is for customer settings
+        v["description"] = v["description"].replace(FALLBACK_NOTE, "")
+
+# The egg's variable set and the wrapper's PLANE_KEYS line must describe the same world: every
+# customer setting the wrapper takes from the plane has an egg fallback here, and vice versa.
+_wrapper_src = (here / "start-legacy.ps1").read_text(encoding="utf-8")
+_plane_keys = next(l for l in _wrapper_src.splitlines() if l.startswith("# PLANE_KEYS:")).split(":", 1)[1].strip().split(",")
+assert len(_plane_keys) == 31, f"PLANE_KEYS has {len(_plane_keys)} entries, expected 31 — update this builder deliberately"
+_customer_envs = {v["env_variable"] for v in egg["variables"] if v["env_variable"] not in ADMIN_ONLY}
+# 30 customer egg vars <-> 31 plane keys: serverPasswordEnabled has no egg var (an egg password is
+# simply set or empty). adminSteamIds <-> ADMIN_STEAM_IDS (the plane serves its union of three lists).
+assert len(_customer_envs) == 30, sorted(_customer_envs)
+assert len(_plane_keys) - 1 == len(_customer_envs)
 
 out = here / "egg-isle-legacy.json"
 out.write_text(json.dumps(egg, indent=4), encoding="utf-8")

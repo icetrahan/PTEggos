@@ -18,7 +18,8 @@ filenames existed nowhere in PTEggos.
 
 | file | what |
 |---|---|
-| `start-legacy.ps1` | the boot wrapper — renders `Game.ini` from egg variables |
+| `start-legacy.ps1` | the boot wrapper — renders `Game.ini` + MOTD + the mod list from the data plane's `server_settings` (`GET /v1/boot-config`; egg variables are the fallback rung). The `# PLANE_KEYS:` line in its header is THE list of plane keys it reads — the panel's Legacy canon and the plane's contract test are asserted equal to it |
+| `render_test.py` + `render_fixture_envs.json` | render-only harness: old-vs-new wrapper on the three live servers' egg envs, a served-row scenario, a plane-unreachable control, an edited-row scenario. `python render_test.py start-legacy.ps1 <old.ps1>` — a wrapper that drops a key goes RED |
 | `build_egg.py` | builds `egg-isle-legacy.json` |
 | `egg-isle-legacy.json` | the panel egg |
 | `PRIMAL_MOD_PIPELINE.md` | the mod/pak pipeline notes |
@@ -30,7 +31,8 @@ filenames existed nowhere in PTEggos.
    CI checks out on every build. They live in the source folder and need an R2/blob home,
    **not git** — tracked as **#1065**.
 2. **Rendered runtime state** — `server/TheIsle/Saved/**` (`Game.ini`, `MOTD.txt`). That is
-   *output*, not source; it is re-rendered from egg variables every boot.
+   *output*, not source; it is re-rendered every boot from the plane (or, when the plane is
+   unreachable, from `_primal/boot-config.cache.json`, then the egg variables — the log says which).
 
 ⭐ **This repo is PUBLIC.** Every file here passed an explicit secret gate before import
 (no `phsk_`/`phdk_`/`ptlc_`/live passwords). Keep it that way: defaults for any credential

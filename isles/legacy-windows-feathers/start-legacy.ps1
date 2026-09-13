@@ -5,8 +5,34 @@
 # would only risk breaking a working install). Downside: a crash can wipe files,
 # so we RE-RENDER Game.ini + RE-SYNC mods every boot to self-heal.
 #
-# Each boot: fetch admins from /v1/boot-config (egg var = fail-safe fallback)
-# -> render Game.ini (Legacy schema) + MOTD -> sync server mods -> launch.
+# Each boot: fetch this server's canonical config from the data plane
+# (GET /v1/boot-config, this server's own phsk key) -> render Game.ini (Legacy
+# schema) + MOTD -> sync server mods -> launch.
+#
+# *** WHERE SETTINGS COME FROM (2026-09-13, BACKLOG C1/I1, BUGS #1799):
+#   1. THE DATA PLANE  >> the source of truth. The customer's Primal Hosted panel
+#      writes `server_settings`; this script fetches and renders. Last-known-good
+#      is cached to _primal/boot-config.cache.json so a plane outage cannot stop
+#      a boot (rung 2). Same ladder as start-evrima.ps1.
+#   2. EGG VARIABLES   >> the FALLBACK rung only: rendered when the plane is
+#      unreachable AND there is no cache (first boot / broken key), and for any
+#      key the served block does not carry. Every rung prints its own sentence.
+#      Before 2026-09-13 this wrapper read exactly ONE plane key (adminSteamIds)
+#      and took everything else from egg vars, which is why the panel's Legacy
+#      page honestly showed 3 fields (#1799). Now it reads the whole set below.
+#
+# *** PLANE_KEYS - THE ONE LIST. The panel's Legacy canon (primal_billing
+#     lib/canonical-config.ts, `canonFieldsFor("legacy")`) and the plane's
+#     server_settings contract test are asserted EQUAL to this line, so the three
+#     cannot drift apart silently. Edit the list here, then the code below, then
+#     the panel + plane in the same change. Keep it on ONE line; tests parse it.
+# PLANE_KEYS: serverName,maxPlayers,serverPasswordEnabled,serverPassword,adminSteamIds,enableGlobalChat,fallDamage,allowReplay,enableAi,legacyGameMode,legacyMap,legacyMotd,legacyDisabledDinos,legacyAllowChat,legacyNameTags,legacyGrowth,legacyTurnInPlace,legacyNesting,legacyScent,legacyAiMax,legacyAiRate,legacyAiPlayerSpawns,legacyDayLength,legacyDynamicTime,legacyStartingTime,legacyDeadBodyTime,legacyRespawnTime,legacyLogoutTime,legacyFootprintLifetime,legacyGroupingMod,legacyEnabledMods
+#   - the 9 unprefixed keys are SHARED with the Evrima canon (same Game.ini
+#     meaning, same default); the 22 `legacy*` keys are Legacy-only and their
+#     plane defaults are byte-equal to the egg defaults below, so a server nobody
+#     has edited renders an IDENTICAL Game.ini from either rung.
+#   - adminSteamIds is served as the plane's union (hand + Discord-role + allow)
+#     minus deny; the allow/deny lists are inputs to it, never keys of their own.
 #
 # Launch (Ice's canonical Legacy command):
 #   TheIsleServer-Win64-Shipping.exe {Map}?Port={p}?QueryPort={q}?MaxPlayers={m}?game={mode}?listen -log
@@ -34,13 +60,185 @@ function Split-Csv([string]$v) {
 }
 function EnvOr([string]$v, [string]$fb) { if ([string]::IsNullOrWhiteSpace($v)) { return $fb } else { return $v } }
 
-# ── settings (defaults <- egg vars) ──────────────────────────────────────────
-$serverName = EnvOr $env:SERVER_NAME 'Primal Hosted - Legacy'
-$maxPlayers = EnvOr $env:MAX_PLAYERS '100'
-$gameMode   = EnvOr $env:GAME_MODE 'Survival'                 # Survival | Sandbox
-$password   = EnvOr $env:SERVER_PASSWORD ''
-$gamePort   = EnvOr $env:SERVER_PORT '7777'
-$queryPort  = EnvOr $env:SERVER_PORT_1 ([string]([int]$gamePort + 1))
+# ── 1) DEFAULTS <- egg vars (the FALLBACK rung; the plane overrides per key) ──
+# Booleans are kept as the Game.ini literals 'true'/'false'; numbers as strings
+# (rendered verbatim, so 1.5 stays 1.5). Lists are string arrays.
+$cfg = [ordered]@{
+    ServerName        = EnvOr $env:SERVER_NAME 'Primal Hosted - Legacy'
+    MaxPlayers        = EnvOr $env:MAX_PLAYERS '100'
+    ServerPassword    = EnvOr $env:SERVER_PASSWORD ''
+    GameMode          = EnvOr $env:GAME_MODE 'Survival'                 # Survival | Sandbox
+    Map               = EnvOr $env:MAP 'Isle_V3'                        # short key or /Game/ path
+    Motd              = EnvOr $env:MOTD ''
+    DisabledDinos     = @(Split-Csv $env:DISABLED_DINOS)
+    AdminSteamIds     = @(Split-Csv $env:ADMIN_STEAM_IDS)
+    AllowChat         = To-Bool $env:ALLOW_CHAT 'true'
+    GlobalChat        = To-Bool $env:GLOBAL_CHAT 'true'
+    NameTags          = To-Bool $env:NAME_TAGS 'true'
+    Growth            = To-Bool $env:GROWTH 'true'
+    FallDamage        = To-Bool $env:FALL_DAMAGE 'true'
+    TurnInPlace       = To-Bool $env:TURN_IN_PLACE 'true'
+    AllowReplay       = To-Bool $env:ALLOW_REPLAY 'true'
+    DeadBodyTime      = EnvOr $env:DEAD_BODY_TIME '200'
+    RespawnTime       = EnvOr $env:RESPAWN_TIME '30'
+    LogoutTime        = EnvOr $env:LOGOUT_TIME '60'
+    FootprintLifetime = EnvOr $env:FOOTPRINT_LIFETIME '60'
+    Nesting           = To-Bool $env:NESTING 'true'
+    Scent             = To-Bool $env:SCENT 'false'
+    EnableAI          = To-Bool $env:ENABLE_AI 'true'
+    AIMax             = EnvOr $env:AI_MAX '100'
+    AIRate            = EnvOr $env:AI_RATE '1.5'
+    AIPlayerSpawns    = To-Bool $env:AI_PLAYER_SPAWNS 'true'
+    StartingTime      = EnvOr $env:STARTING_TIME '341'
+    DynamicTime       = To-Bool $env:DYNAMIC_TIME '0'
+    DayLength         = EnvOr $env:DAY_LENGTH '30'
+    GroupingMod       = (EnvOr $env:GROUPING_MOD 'none').ToLower()      # none | universal | diet | herbie
+    EnabledMods       = @(Split-Csv $env:ENABLED_MODS)
+}
+$gamePort  = EnvOr $env:SERVER_PORT '7777'
+$queryPort = EnvOr $env:SERVER_PORT_1 ([string]([int]$gamePort + 1))
+
+# ── 2) THE DATA PLANE: fetch -> cache -> (egg vars) ──────────────────────────
+# *** THE FAIL-SAFE LADDER, AND ALL THREE RUNGS MUST STAY DISTINGUISHABLE (rule 13).
+#   FETCHED  -> render it, and cache it as last-known-good
+#   CACHE    -> plane unreachable; render the cache and SAY how old it is
+#   EGGVARS  -> no plane, no cache; render the egg vars and SHOUT
+$primalDir = Join-Path $root '_primal'
+New-Item -ItemType Directory -Force -Path $primalDir | Out-Null
+$bootCache = Join-Path $primalDir 'boot-config.cache.json'
+$cfgSource = 'eggvars'
+$canon     = $null
+$phsk      = ('' + $env:PHSK_KEY).Trim()
+$dataBase  = (EnvOr $env:PRIMAL_DATA_BASE 'https://data.primalhosted.com').TrimEnd('/')
+if ($env:PRIMAL_BOOT_CONFIG_FILE) {
+    # TEST HATCH (render-only acceptance): read a served boot-config JSON from a
+    # file instead of the network. Not an egg variable, so Wings never sets it;
+    # if you see this line on a live box, someone set it by hand.
+    Write-Host "(config) *** TEST HATCH: boot-config read from file $($env:PRIMAL_BOOT_CONFIG_FILE) - NOT from the plane ***"
+    $canon = Get-Content $env:PRIMAL_BOOT_CONFIG_FILE -Raw | ConvertFrom-Json
+    $cfgSource = 'file'
+} elseif ($phsk) {
+    try {
+        $ProgressPreference = 'SilentlyContinue'
+        $canon = Invoke-RestMethod -Uri "$dataBase/v1/boot-config" -Headers @{ Authorization = "Bearer $phsk" } -TimeoutSec 20
+        $cfgSource = 'fetched'
+        # Cache only a FETCH - a degraded boot must never overwrite last-known-good.
+        try { ($canon | ConvertTo-Json -Depth 12) | Out-File -FilePath $bootCache -Encoding utf8 -Force } catch {
+            Write-Host "(config) WARNING could not write boot-config cache: $($_.Exception.Message)"
+        }
+    } catch {
+        $why = $_.Exception.Message
+        if (Test-Path $bootCache) {
+            try {
+                $canon = Get-Content $bootCache -Raw | ConvertFrom-Json
+                $cfgSource = 'cache'
+                $age = (New-TimeSpan -Start (Get-Item $bootCache).LastWriteTimeUtc -End (Get-Date).ToUniversalTime())
+                Write-Host ""
+                Write-Host "(config) *** DATA PLANE UNREACHABLE - RENDERING FROM CACHE ***"
+                Write-Host "(config)     reason: $why"
+                Write-Host ("(config)     cache written {0:N0} min ago (updatedAt={1})" -f $age.TotalMinutes, $canon.updatedAt)
+                Write-Host "(config)     ANY PANEL CHANGE SINCE THEN IS NOT APPLIED ON THIS BOOT."
+                Write-Host ""
+            } catch {
+                Write-Host "(config) *** CACHE PRESENT BUT UNREADABLE ($($_.Exception.Message)) - falling through to egg vars ***"
+                $canon = $null
+            }
+        } else {
+            Write-Host ""
+            Write-Host "(config) *** DATA PLANE UNREACHABLE AND NO CACHE - RENDERING EGG VARIABLES ***"
+            Write-Host "(config)     reason: $why"
+            Write-Host "(config)     Expected only on a server's FIRST boot. Otherwise the plane or PHSK_KEY is wrong."
+            Write-Host "(config)     Anything saved in the panel is NOT applied on this boot."
+            Write-Host ""
+        }
+    }
+} else {
+    Write-Host "(config) no PHSK_KEY - rendering EGG VARIABLES only (the panel cannot reach this server)"
+}
+
+# ── 3) APPLY the served block onto $cfg, key by key ──────────────────────────
+# Every field applies ONLY when the block carries it, so a plane that drops a
+# key (or predates one) leaves the egg var standing for that key alone.
+function Has($o, [string]$n) { return ($null -ne $o) -and ($null -ne $o.PSObject.Properties[$n]) }
+function PsBool($v) { if ($v) { return 'true' } else { return 'false' } }
+$ss = $null
+if ($canon -and $canon.config) { $ss = $canon.config.server_settings }
+$overrode = New-Object System.Collections.Generic.List[string]   # "KEY egg=… plane=…" where the plane changed a value
+function Take([string]$field, [string]$key, $value) {
+    $old = $cfg[$field]
+    $oldS = if ($old -is [array]) { ($old -join ',') } else { [string]$old }
+    $newS = if ($value -is [array]) { ($value -join ',') } else { [string]$value }
+    $cfg[$field] = $value
+    if ($oldS -ne $newS -and $key -ne 'serverPassword' -and $key -ne 'adminSteamIds') { $script:overrode.Add("$key egg=[$oldS] plane=[$newS]") }
+}
+if ($ss) {
+    # shared keys (Evrima canon names)
+    if (Has $ss 'serverName') {
+        if (('' + $ss.serverName).Trim()) { Take 'ServerName' 'serverName' ([string]$ss.serverName) }
+        else { Write-Host "(config) serverName served EMPTY - keeping the egg var '$($cfg.ServerName)' (a blank name is never rendered)" }
+    }
+    if (Has $ss 'maxPlayers') {
+        if ([int]$ss.maxPlayers -ge 1) { Take 'MaxPlayers' 'maxPlayers' ([string][int]$ss.maxPlayers) }
+        else { Write-Host "(config) maxPlayers served as $($ss.maxPlayers) - keeping the egg var $($cfg.MaxPlayers)" }
+    }
+    if (Has $ss 'serverPassword') {
+        $pwOn = if (Has $ss 'serverPasswordEnabled') { [bool]$ss.serverPasswordEnabled } else { $true }
+        $pw = if ($pwOn) { [string]$ss.serverPassword } else { '' }
+        if ($pw -ne $cfg.ServerPassword) { $script:overrode.Add("serverPassword egg=[len $($cfg.ServerPassword.Length)] plane=[len $($pw.Length), enabled=$pwOn]") }
+        $cfg.ServerPassword = $pw
+    }
+    if (Has $ss 'enableGlobalChat') { Take 'GlobalChat'  'enableGlobalChat' (PsBool $ss.enableGlobalChat) }
+    if (Has $ss 'fallDamage')       { Take 'FallDamage'  'fallDamage'       (PsBool $ss.fallDamage) }
+    if (Has $ss 'allowReplay')      { Take 'AllowReplay' 'allowReplay'      (PsBool $ss.allowReplay) }
+    if (Has $ss 'enableAi')         { Take 'EnableAI'    'enableAi'         (PsBool $ss.enableAi) }
+    # Legacy-only keys
+    if (Has $ss 'legacyGameMode') {
+        $gm = [string]$ss.legacyGameMode
+        if ($gm -match '^(Survival|Sandbox)$') { Take 'GameMode' 'legacyGameMode' $gm }
+        else { Write-Host "(config) legacyGameMode '$gm' is not Survival|Sandbox - keeping '$($cfg.GameMode)'" }
+    }
+    if (Has $ss 'legacyMap')               { Take 'Map'               'legacyMap'               ([string]$ss.legacyMap) }
+    if (Has $ss 'legacyMotd')              { Take 'Motd'              'legacyMotd'              ([string]$ss.legacyMotd) }
+    # Lists: an EMPTY array is a legitimate value ("no disabled dinos", "no addons") - @(), never a skip.
+    if (Has $ss 'legacyDisabledDinos')     { Take 'DisabledDinos'     'legacyDisabledDinos'     @(@($ss.legacyDisabledDinos) | ForEach-Object { ('' + $_).Trim() } | Where-Object { $_ }) }
+    if (Has $ss 'legacyAllowChat')         { Take 'AllowChat'         'legacyAllowChat'         (PsBool $ss.legacyAllowChat) }
+    if (Has $ss 'legacyNameTags')          { Take 'NameTags'          'legacyNameTags'          (PsBool $ss.legacyNameTags) }
+    if (Has $ss 'legacyGrowth')            { Take 'Growth'            'legacyGrowth'            (PsBool $ss.legacyGrowth) }
+    if (Has $ss 'legacyTurnInPlace')       { Take 'TurnInPlace'       'legacyTurnInPlace'       (PsBool $ss.legacyTurnInPlace) }
+    if (Has $ss 'legacyNesting')           { Take 'Nesting'           'legacyNesting'           (PsBool $ss.legacyNesting) }
+    if (Has $ss 'legacyScent')             { Take 'Scent'             'legacyScent'             (PsBool $ss.legacyScent) }
+    if (Has $ss 'legacyAiMax')             { Take 'AIMax'             'legacyAiMax'             ([string]$ss.legacyAiMax) }
+    if (Has $ss 'legacyAiRate')            { Take 'AIRate'            'legacyAiRate'            ([string]$ss.legacyAiRate) }
+    if (Has $ss 'legacyAiPlayerSpawns')    { Take 'AIPlayerSpawns'    'legacyAiPlayerSpawns'    (PsBool $ss.legacyAiPlayerSpawns) }
+    if (Has $ss 'legacyDayLength')         { Take 'DayLength'         'legacyDayLength'         ([string]$ss.legacyDayLength) }
+    if (Has $ss 'legacyDynamicTime')       { Take 'DynamicTime'       'legacyDynamicTime'       (PsBool $ss.legacyDynamicTime) }
+    if (Has $ss 'legacyStartingTime')      { Take 'StartingTime'      'legacyStartingTime'      ([string]$ss.legacyStartingTime) }
+    if (Has $ss 'legacyDeadBodyTime')      { Take 'DeadBodyTime'      'legacyDeadBodyTime'      ([string]$ss.legacyDeadBodyTime) }
+    if (Has $ss 'legacyRespawnTime')       { Take 'RespawnTime'       'legacyRespawnTime'       ([string]$ss.legacyRespawnTime) }
+    if (Has $ss 'legacyLogoutTime')        { Take 'LogoutTime'        'legacyLogoutTime'        ([string]$ss.legacyLogoutTime) }
+    if (Has $ss 'legacyFootprintLifetime') { Take 'FootprintLifetime' 'legacyFootprintLifetime' ([string]$ss.legacyFootprintLifetime) }
+    if (Has $ss 'legacyGroupingMod')       { Take 'GroupingMod'       'legacyGroupingMod'       (('' + $ss.legacyGroupingMod).ToLower()) }
+    if (Has $ss 'legacyEnabledMods')       { Take 'EnabledMods'       'legacyEnabledMods'       @(@($ss.legacyEnabledMods) | ForEach-Object { ('' + $_).Trim() } | Where-Object { $_ }) }
+
+    Write-Host ("(config) canonical config {0} (players={1} mode={2} map={3} scope={4} updatedAt={5})" -f `
+        $cfgSource.ToUpper(), $cfg.MaxPlayers, $cfg.GameMode, $cfg.Map, $canon.scope.server_settings, $canon.updatedAt)
+    if ($overrode.Count) {
+        # The migration's own evidence line: every key where the panel's value
+        # differs from the egg var still set on this server. Expected while the
+        # egg vars are stale; if a value here surprises you, the PLANE row is
+        # what the server will obey.
+        Write-Host "(config) NOTE $($overrode.Count) egg variable(s) are superseded by the panel on this boot:"
+        foreach ($o in $overrode) { Write-Host "(config)      $o" }
+    }
+}
+# *** #1097 - the seat cap. The plane REFUSES an over-cap write but can only CLAMP
+# on read (a server must boot), so it reports what it clamped. Never let that
+# pass silently.
+if ($canon -and $canon.clamped) {
+    foreach ($cl in @($canon.clamped)) {
+        Write-Host "(config) *** CLAMPED BY ENTITLEMENT: $($cl.key).$($cl.field) stored=$($cl.stored) -> applied=$($cl.applied) (your plan's limit)"
+    }
+}
 
 # map: accept a short key or a full path (default Isle_V3)
 $MAPS = @{
@@ -49,113 +247,95 @@ $MAPS = @{
     'Thenyaw'   = '/Game/TheIsle/Maps/Thenyaw_Island/Thenyaw_Island'
     'TestLevel' = '/Game/TheIsle/Maps/Developer/DV_TestLevel'
 }
-$mapIn = EnvOr $env:MAP 'Isle_V3'
-$map   = if ($MAPS.ContainsKey($mapIn)) { $MAPS[$mapIn] } elseif ($mapIn -like '/Game/*') { $mapIn } else { $MAPS['Isle_V3'] }
+$mapIn = [string]$cfg.Map
+$map   = if ($MAPS.ContainsKey($mapIn)) { $MAPS[$mapIn] } elseif ($mapIn -like '/Game/*') { $mapIn } else { Write-Host "(config) map '$mapIn' unknown - using Isle_V3"; $MAPS['Isle_V3'] }
 
-$disabledDinos = Split-Csv $env:DISABLED_DINOS
-$motd          = EnvOr $env:MOTD ''
-
-# ── ADMINS: served from the data plane, egg var as fail-safe (#1453) ─────────
-# The plane's GET /v1/boot-config serves adminSteamIds as the UNION of the
-# owner's hand list and the Discord-staff-role resolution (recomputed at serve
-# time — same source the Evrima wrapper renders from). Rendering from it makes
-# grants AND revocations reach Game.ini at the next boot; the ADMIN_STEAM_IDS
-# egg var stays as the fallback so a plane outage can never render a server
-# with no admins (frozen beats empty).
+# ── ADMINS: the plane's union, egg var as fail-safe (#1453) ──────────────────
+# The plane serves adminSteamIds as the UNION of the owner's hand list and the
+# Discord-staff-role resolution (recomputed at serve time, allow/deny applied).
+# Rendering from it makes grants AND revocations reach Game.ini at the next
+# boot; the ADMIN_STEAM_IDS egg var stays as the fallback so a plane outage can
+# never render a server with no admins (frozen beats empty).
 #
-# FAIL-SAFE POLARITY — each outcome prints its own sentence (hard rule 13):
+# FAIL-SAFE POLARITY - each outcome prints its own sentence (hard rule 13):
 #   SERVED    fetch ok, non-empty  -> render the union
 #   FALLBACK  fetch ok, ZERO admins while the egg var has ids -> render the egg
 #             var and SHOUT. A mis-keyed server fetches someone else's empty
 #             config "successfully"; zero served admins is treated as suspect,
 #             not obeyed, until the egg var itself is emptied on purpose.
-#   FALLBACK  fetch failed -> render the egg var and SHOUT the reason
-#   FALLBACK  no PHSK_KEY  -> egg var only, said plainly
-$adminsFallback = Split-Csv $env:ADMIN_STEAM_IDS
+#   FALLBACK  no served block (plane down, no cache / no key) -> egg var, said above
+$adminsFallback = @($cfg.AdminSteamIds)
 $admins      = $adminsFallback
 $adminSource = 'eggvar'
-$phskAdm = ('' + $env:PHSK_KEY).Trim()
-if ($phskAdm) {
-    $dataBaseAdm = (EnvOr $env:PRIMAL_DATA_BASE 'https://data.primalhosted.com').TrimEnd('/')
-    try {
-        $ProgressPreference = 'SilentlyContinue'
-        $canon = Invoke-RestMethod -Uri "$dataBaseAdm/v1/boot-config" -Headers @{ Authorization = "Bearer $phskAdm" } -TimeoutSec 20
-        $ssAdm = $null
-        if ($canon -and $canon.config) { $ssAdm = $canon.config.server_settings }
-        $servedRaw = @()
-        if ($ssAdm -and $null -ne $ssAdm.PSObject.Properties['adminSteamIds']) { $servedRaw = @($ssAdm.adminSteamIds) }
-        # Steam64s only — junk must not reach Game.ini.
-        $served = @($servedRaw | ForEach-Object { ('' + $_).Trim() } | Where-Object { $_ -match '^\d{17}$' })
-        $src = if ($canon.adminSources) { "hand=$($canon.adminSources.hand) resolved=$($canon.adminSources.resolved) applied=$($canon.adminSources.applied)" } else { 'adminSources absent' }
-        if ($served.Count -gt 0) {
-            $admins      = $served
-            $adminSource = 'served'
-            Write-Host "(admins) SERVED from $dataBaseAdm/v1/boot-config: $($served.Count) admins ($src, updatedAt=$($canon.updatedAt))"
-        } elseif ($adminsFallback.Count -gt 0) {
-            Write-Host ""
-            Write-Host "(admins) *** PLANE SERVED ZERO ADMINS ($src) - RENDERING EGG-VAR FALLBACK ($($adminsFallback.Count) ids) ***"
-            Write-Host "(admins)     Either every admin was really revoked, or this server's PHSK_KEY maps to the wrong plane row."
-            Write-Host "(admins)     If zero is intended, empty the ADMIN_STEAM_IDS egg var too and this rung goes away."
-            Write-Host ""
-        } else {
-            $adminSource = 'served'
-            Write-Host "(admins) plane served zero admins and the egg var is empty - rendering NO ServerAdmins"
-        }
-    } catch {
+if ($ss) {
+    $servedRaw = @()
+    if (Has $ss 'adminSteamIds') { $servedRaw = @($ss.adminSteamIds) }
+    # Steam64s only - junk must not reach Game.ini.
+    $served = @($servedRaw | ForEach-Object { ('' + $_).Trim() } | Where-Object { $_ -match '^\d{17}$' })
+    $src = if ($canon.adminSources) { "hand=$($canon.adminSources.hand) resolved=$($canon.adminSources.resolved) applied=$($canon.adminSources.applied)" } else { 'adminSources absent' }
+    if ($served.Count -gt 0) {
+        $admins      = $served
+        $adminSource = 'served'
+        Write-Host "(admins) SERVED ($cfgSource) from $dataBase/v1/boot-config: $($served.Count) admins ($src, updatedAt=$($canon.updatedAt))"
+    } elseif ($adminsFallback.Count -gt 0) {
         Write-Host ""
-        Write-Host "(admins) *** BOOT-CONFIG FETCH FAILED ($($_.Exception.Message)) - RENDERING EGG-VAR FALLBACK ($($adminsFallback.Count) ids) ***"
-        Write-Host "(admins)     Admin grants/revocations made since the last successful fetch are NOT applied on this boot."
+        Write-Host "(admins) *** PLANE SERVED ZERO ADMINS ($src) - RENDERING EGG-VAR FALLBACK ($($adminsFallback.Count) ids) ***"
+        Write-Host "(admins)     Either every admin was really revoked, or this server's PHSK_KEY maps to the wrong plane row."
+        Write-Host "(admins)     If zero is intended, empty the ADMIN_STEAM_IDS egg var too and this rung goes away."
         Write-Host ""
+    } else {
+        $adminSource = 'served'
+        Write-Host "(admins) plane served zero admins and the egg var is empty - rendering NO ServerAdmins"
     }
 } else {
-    Write-Host "(admins) no PHSK_KEY - egg-var admin list only ($($adminsFallback.Count) ids)"
+    Write-Host "(admins) no served config - egg-var admin list only ($($adminsFallback.Count) ids)"
 }
 
 # ── RENDER Game.ini (Legacy schema: igamesession + Engine.GameSession + igamemode) ──
 New-Item -ItemType Directory -Force -Path $cfgDir | Out-Null
 $adminLines = if ($admins.Count) { ($admins | ForEach-Object { "ServerAdmins=$_" }) -join "`r`n" } else { 'ServerAdmins=' }
-$dinoLines  = if ($disabledDinos.Count) { ($disabledDinos | ForEach-Object { "DisabledDinosaurs=$_" }) -join "`r`n" } else { 'DisabledDinosaurs=' }
+$dinoLines  = if ($cfg.DisabledDinos.Count) { ($cfg.DisabledDinos | ForEach-Object { "DisabledDinosaurs=$_" }) -join "`r`n" } else { 'DisabledDinosaurs=' }
 
 $gi = @"
 [/script/theisle.igamesession]
-ServerName=$serverName
-ServerPassword=$password
+ServerName=$($cfg.ServerName)
+ServerPassword=$($cfg.ServerPassword)
 bServerDatabase=true
-bServerAllowChat=$(To-Bool $env:ALLOW_CHAT 'true')
-bServerGlobalChat=$(To-Bool $env:GLOBAL_CHAT 'true')
-bServerNameTags=$(To-Bool $env:NAME_TAGS 'true')
-bServerGrowth=$(To-Bool $env:GROWTH 'true')
-bServerFallDamage=$(To-Bool $env:FALL_DAMAGE 'true')
-bServerAllowTurnInPlace=$(To-Bool $env:TURN_IN_PLACE 'true')
-bServerAllowReplayRecording=$(To-Bool $env:ALLOW_REPLAY 'true')
-ServerDeadBodyTime=$(EnvOr $env:DEAD_BODY_TIME '200')
-ServerRespawnTime=$(EnvOr $env:RESPAWN_TIME '30')
-ServerLogoutTime=$(EnvOr $env:LOGOUT_TIME '60')
-ServerFootprintLifetime=$(EnvOr $env:FOOTPRINT_LIFETIME '60')
-bServerNesting=$(To-Bool $env:NESTING 'true')
-bServerScent=$(To-Bool $env:SCENT 'false')
-bServerAI=$(To-Bool $env:ENABLE_AI 'true')
-ServerAIMax=$(EnvOr $env:AI_MAX '100')
-ServerAIRate=$(EnvOr $env:AI_RATE '1.5')
-bServerAIPlayerSpawns=$(To-Bool $env:AI_PLAYER_SPAWNS 'true')
+bServerAllowChat=$($cfg.AllowChat)
+bServerGlobalChat=$($cfg.GlobalChat)
+bServerNameTags=$($cfg.NameTags)
+bServerGrowth=$($cfg.Growth)
+bServerFallDamage=$($cfg.FallDamage)
+bServerAllowTurnInPlace=$($cfg.TurnInPlace)
+bServerAllowReplayRecording=$($cfg.AllowReplay)
+ServerDeadBodyTime=$($cfg.DeadBodyTime)
+ServerRespawnTime=$($cfg.RespawnTime)
+ServerLogoutTime=$($cfg.LogoutTime)
+ServerFootprintLifetime=$($cfg.FootprintLifetime)
+bServerNesting=$($cfg.Nesting)
+bServerScent=$($cfg.Scent)
+bServerAI=$($cfg.EnableAI)
+ServerAIMax=$($cfg.AIMax)
+ServerAIRate=$($cfg.AIRate)
+bServerAIPlayerSpawns=$($cfg.AIPlayerSpawns)
 $adminLines
 
 [/Script/Engine.GameSession]
-MaxPlayers=$maxPlayers
+MaxPlayers=$($cfg.MaxPlayers)
 
 [/script/theisle.igamemode]
-ServerStartingTime=$(EnvOr $env:STARTING_TIME '341')
-bServerDynamicTimeOfDay=$(To-Bool $env:DYNAMIC_TIME '0')
-ServerDayLength=$(EnvOr $env:DAY_LENGTH '30')
+ServerStartingTime=$($cfg.StartingTime)
+bServerDynamicTimeOfDay=$($cfg.DynamicTime)
+ServerDayLength=$($cfg.DayLength)
 $dinoLines
 "@
 Set-Content -Path (Join-Path $cfgDir 'Game.ini') -Value $gi -Encoding ascii
-Write-Host "(config) rendered Legacy Game.ini (players=$maxPlayers, mode=$gameMode, admins=$($admins.Count) [$adminSource], disabled=$($disabledDinos.Count))"
+Write-Host "(config) rendered Legacy Game.ini from $cfgSource (players=$($cfg.MaxPlayers), mode=$($cfg.GameMode), admins=$($admins.Count) [$adminSource], disabled=$($cfg.DisabledDinos.Count))"
 
 # ── MOTD (empty file = no MOTD popup; text = shown to players on join) ────────
 New-Item -ItemType Directory -Force -Path $savedDir | Out-Null
-Set-Content -Path (Join-Path $savedDir 'MOTD.txt') -Value $motd -Encoding utf8 -NoNewline
-Write-Host "(config) wrote MOTD ($($motd.Length) chars)"
+Set-Content -Path (Join-Path $savedDir 'MOTD.txt') -Value $cfg.Motd -Encoding utf8 -NoNewline
+Write-Host "(config) wrote MOTD ($($cfg.Motd.Length) chars)"
 
 # ── MOD SYNC (server-side .pak+.sig into Content/Paks; server must be offline,
 #    which it is here pre-launch). Re-synced every boot so a crash-wipe self-heals.
@@ -178,11 +358,12 @@ function Mod-Files($m, $grouping) {
     return $base
 }
 # resolve the DESIRED mod set (grouping mod + enabled addons, minus incompatibilities)
-$grouping = (EnvOr $env:GROUPING_MOD 'none').ToLower()
+$grouping = [string]$cfg.GroupingMod
+if ($grouping -notmatch '^(none|universal|diet|herbie)$') { Write-Host "(mods) grouping '$grouping' unknown - using none"; $grouping = 'none' }
 $groupModName = @{ 'universal'='UniversalGrouping'; 'diet'='DietGrouping'; 'herbie'='HerbieGrouping' }[$grouping]
 $wantMods = New-Object System.Collections.Generic.List[string]
 if ($groupModName) { $wantMods.Add($groupModName) }
-foreach ($mod in (Split-Csv $env:ENABLED_MODS)) { if ($MOD_CATALOG.ContainsKey($mod)) { $wantMods.Add($mod) } }
+foreach ($mod in @($cfg.EnabledMods)) { if ($MOD_CATALOG.ContainsKey($mod)) { $wantMods.Add($mod) } else { Write-Host "(mods) '$mod' is not in the catalog - ignored" } }
 if ($wantMods -contains 'ExtremeUtah' -and $wantMods -contains 'UtahGore') {
     Write-Host "(mods) WARNING: ExtremeUtah and UtahGore are incompatible - keeping ExtremeUtah, dropping UtahGore"
     $wantMods.Remove('UtahGore') | Out-Null
@@ -227,7 +408,7 @@ foreach ($mod in ($wantMods | Select-Object -Unique)) {
 Write-Host "(mods) grouping=$grouping installed=[$($installed -join ', ')]"
 
 # render-only hook (local config/mod-sync tests): PRIMAL_RENDER_ONLY=1 -> stop here
-if ($env:PRIMAL_RENDER_ONLY -eq '1') { Write-Host '(render-only) done'; exit 0 }
+if ($env:PRIMAL_RENDER_ONLY -eq '1') { Write-Host "(render-only) done source=$cfgSource map=$map mode=$($cfg.GameMode) players=$($cfg.MaxPlayers) admins=$($admins.Count)[$adminSource] mods=[$($installed -join ', ')]"; exit 0 }
 
 if (-not (Test-Path $exe)) { throw "server binary missing: $exe (install did not finish)" }
 
@@ -235,7 +416,6 @@ if (-not (Test-Path $exe)) { throw "server binary missing: $exe (install did not
 #    {version, dll_url, sha256}; only re-downloads when the version changes. The
 #    injection itself is armed just before launch (below). Publish new versions
 #    with isle_mod_legacy/publish_dll.py — see PRIMAL_MOD_PIPELINE.md.
-$primalDir = Join-Path $root '_primal'
 $primalDll = Join-Path $primalDir 'LegacyMod.dll'
 $primalVerFile = Join-Path $primalDir 'primal-mod.version'
 if ($env:ENABLE_PRIMAL_MOD -eq '1') {
@@ -294,7 +474,7 @@ if ($env:ENABLE_PRIMAL_MOD -eq '1') {
 # UE writes to stderr in normal operation; 'Stop' would turn that into a
 # NativeCommandError that kills the wrapper. 'Continue' lets it flow to feathers.
 $ErrorActionPreference = 'Continue'
-$url = "$map`?Port=$gamePort`?QueryPort=$queryPort`?MaxPlayers=$maxPlayers`?game=$gameMode`?listen"
+$url = "$map`?Port=$gamePort`?QueryPort=$queryPort`?MaxPlayers=$($cfg.MaxPlayers)`?game=$($cfg.GameMode)`?listen"
 Write-Host "(start) $(Get-Date -Format HH:mm:ss) launching: $url"
 $before = @(Get-Process TheIsleServer-Win64-Shipping -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
 
