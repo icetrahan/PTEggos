@@ -144,5 +144,148 @@ nowant "egg CORPSE_DECAY did NOT win"      'CorpseDecayMultiplier=3'          "$
 want "no admins, and it says so"           'AdminsSteamIDs=0'                 "$G2"
 
 echo
+echo "== 3. THE BINARY PAIRING LADDER (#2337) - PAIRED / CACHED / DIE =="
+# ---------------------------------------------------------------------------
+# WHY A curl SHIM AND NOT A NETWORK. The rungs below turn on the DIFFERENCE
+# between "the lane did not answer" and "the lane answered something we cannot
+# satisfy" - and that difference is invisible to a test that can only unplug the
+# network. So the lane is stubbed by shadowing `curl` on PATH: the shim answers
+# the binary-lane URLs from a canned file and `exec`s the real curl for
+# everything else (the wrapper's own config fetch still rides file://).
+#
+# ⛔ The pre-fix control for this whole block is the wrapper as it shipped:
+#     git show bdd15d6:isles/evrima-linux/start-evrima.sh > /tmp/old.sh
+#     ./render_test.sh /tmp/old.sh        # section 3 must FAIL
+# It cannot pass: it has no cache, no pairing record and no degraded rung, and
+# it talks to api.primalheaven.com.
+# ---------------------------------------------------------------------------
+BIN_PASS=0
+
+bin_render() { # $1 tag, $2 lane-mode, $3 cache-mode
+    local T="/tmp/bt-$1"
+    rm -rf "$T"; mkdir -p "$T/_primal/binary-cache" "$T/canon/v1" "$T/TheIsle/Binaries/Linux" "$T/shim"
+    cp "$WRAPPER" "$T/_primal/start-evrima.sh"
+    cp "$HERE/Game.ini.tmpl" "$HERE/Engine.ini.tmpl" "$T/_primal/"
+    cp "$JQ_BIN" "$T/_primal/jq"; chmod +x "$T/_primal/jq"
+    cp "$HERE/boot-config.fixture.json" "$T/canon/v1/boot-config"
+
+    # The "vanilla" the wrapper will hash after SteamCMD, and a DIFFERENT
+    # "modded" blob for the cache - same size, one byte apart, because size can
+    # never distinguish them on the real thing either (#2341).
+    local GB="$T/TheIsle/Binaries/Linux/TheIsleServer-Linux-Shipping"
+    truncate -s 160M "$GB"
+    local VH; VH=$(md5sum "$GB" | awk '{print $1}')
+    local BLOB="$T/_primal/binary-cache/modded.bin"
+    cp "$GB" "$BLOB"; printf 'PRIMALMOD' | dd of="$BLOB" bs=1 seek=0 conv=notrunc status=none
+    local MH; MH=$(md5sum "$BLOB" | awk '{print $1}')
+    local SH; SH=$(sha256sum "$BLOB" | awk '{print $1}')
+    local SZ; SZ=$(stat -c%s "$BLOB")
+    mv "$BLOB" "$T/_primal/binary-cache/linux-${MH}"
+    echo "$VH $MH" > "$T/hashes"
+
+    case "$3" in
+        none)  rm -rf "$T/_primal/binary-cache"; mkdir -p "$T/_primal/binary-cache" ;;
+        match) printf '{"platform":"linux","vanilla_hash":"%s","modded_hash":"%s","sha256":"%s","size":%s,"cached_at":"2026-09-15T00:00:00Z"}\n' \
+                   "$VH" "$MH" "$SH" "$SZ" > "$T/_primal/binary-pairing.json" ;;
+        stale) printf '{"platform":"linux","vanilla_hash":"%s","modded_hash":"%s","sha256":"%s","size":%s,"cached_at":"2026-09-15T00:00:00Z"}\n' \
+                   "deadbeefdeadbeefdeadbeefdeadbeef" "$MH" "$SH" "$SZ" > "$T/_primal/binary-pairing.json" ;;
+    esac
+
+    # The stub lane. `unreachable` writes no answer file, so the shim fails like
+    # a dead host; every other mode answers that verdict.
+    case "$2" in
+        unreachable) : ;;
+        up_to_date)  printf '{"status":"up_to_date","modded_hash":"%s","expected_modded_hash":"%s","download_url":null}' "$MH" "$MH" > "$T/lane_check" ;;
+        update_available) printf '{"status":"update_available","modded_hash":"%s","expected_modded_hash":"%s","download_url":"/commands/binary/download/linux/%s"}' "$MH" "$MH" "$MH" > "$T/lane_check" ;;
+        vanilla_unknown) printf '{"status":"vanilla_unknown","modded_hash":null,"expected_modded_hash":null,"download_url":null}' > "$T/lane_check"
+                         printf '{"platform":"linux","available":true,"vanilla_hash":"%s","modded_hash":"%s"}' "$VH" "$MH" > "$T/lane_latest" ;;
+    esac
+
+    cat > "$T/shim/curl" <<SHIM
+#!/bin/bash
+# Stub for the binary lane only; everything else is the real curl.
+for a in "\$@"; do
+    case "\$a" in
+        *"/commands/binary/check")        [ -f "$T/lane_check" ]  || exit 7; cat "$T/lane_check";  exit 0 ;;
+        *"/api/binary/latest/linux")      [ -f "$T/lane_latest" ] || exit 7; cat "$T/lane_latest"; exit 0 ;;
+        *"/commands/binary/download/"*)   exit 7 ;;
+    esac
+done
+exec /usr/bin/curl "\$@"
+SHIM
+    chmod +x "$T/shim/curl"
+
+    env -i PATH="$T/shim:/usr/local/bin:/usr/bin:/bin" HOME=/tmp \
+        PRIMAL_ROOT="$T" PRIMAL_RENDER_ONLY=1 PRIMAL_WRAPPER_AUTOUPDATE=0 \
+        AUTO_UPDATE=0 PRIMAL_ALLOW_VANILLA=0 \
+        ENABLE_PRIMAL_MOD=0 SERVER_PORT=7777 PRIMAL_DATA_BASE="file://$T/canon" \
+        SERVER_NAME="EGGVAR-NAME" MAX_PLAYERS=99 \
+        bash "$T/_primal/start-evrima.sh" > "$T/boot.log" 2>&1
+    echo $? > "$T/exit"
+    echo "$T"
+}
+
+bexit() { cat "$1/exit"; }
+bmd5()  { md5sum "$1/TheIsle/Binaries/Linux/TheIsleServer-Linux-Shipping" | awk '{print $1}'; }
+bmh()   { awk '{print $2}' "$1/hashes"; }
+
+echo "-- 3a. lane UNREACHABLE, no cache -> must DIE naming the unreachable case --"
+T=$(bin_render a unreachable none); L="$T/boot.log"
+want "dies MOD-BINARY-UNAVAILABLE"        'MOD-BINARY-UNAVAILABLE'                 "$L"
+want "names the UNREACHABLE cause"        'did not answer in 5 attempts'           "$L"
+nowant "does NOT claim a mod-build outage" 'the lane ANSWERED'                     "$L"
+[ "$(bexit "$T")" = "1" ] && ok "exit 1" || bad "exit $(bexit "$T"), want 1"
+
+echo "-- 3b. lane UNREACHABLE, cache MATCHES -> the NAMED degraded line, and it boots --"
+T=$(bin_render b unreachable match); L="$T/boot.log"
+want "the named degraded line"            'primal-binary: R2 unreachable, booting last-known-good' "$L"
+want "says it is NOT vanilla"             'THE SERVER IS NOT RUNNING VANILLA'      "$L"
+nowant "did NOT die"                      'MOD-BINARY-UNAVAILABLE'                 "$L"
+[ "$(bexit "$T")" = "0" ] && ok "exit 0 (boot proceeded)" || bad "exit $(bexit "$T"), want 0"
+# ⭐ THE CONSUMER CHECK: the bytes on the launch path are the cached MODDED ones,
+# not the vanilla the wrapper started this boot with (#2341 - a record-only
+# cache would have left vanilla here and still printed the line above).
+[ "$(bmd5 "$T")" = "$(bmh "$T")" ] && ok "the INSTALLED binary is the cached modded one" \
+    || bad "installed binary is $(bmd5 "$T"), want the cached modded $(bmh "$T")"
+
+echo "-- 3c. lane UNREACHABLE, cache is for a DIFFERENT vanilla -> must DIE --"
+T=$(bin_render c unreachable stale); L="$T/boot.log"
+want "dies rather than run a stale mod"   'MOD-BINARY-UNAVAILABLE'                 "$L"
+nowant "no degraded line on a stale cache" 'booting last-known-good'               "$L"
+[ "$(bexit "$T")" = "1" ] && ok "exit 1" || bad "exit $(bexit "$T"), want 1"
+
+echo "-- 3d. lane ANSWERS vanilla_unknown with a WARM cache -> a VERDICT is obeyed --"
+# ⭐ The assertion that keeps Ice's no-vanilla rule honest: a reachable lane
+# that cannot pair us must still fail the boot, cache or no cache.
+T=$(bin_render d vanilla_unknown match); L="$T/boot.log"
+want "dies on the verdict"                'MOD-BINARY-UNAVAILABLE'                 "$L"
+want "names it as a REAL mod-build outage" 'the lane ANSWERED'                     "$L"
+nowant "did NOT fall back to the cache"   'booting last-known-good'                "$L"
+[ "$(bexit "$T")" = "1" ] && ok "exit 1" || bad "exit $(bexit "$T"), want 1"
+
+echo "-- 3e. lane ANSWERS update_available, cache holds it -> install locally, 0 bytes --"
+T=$(bin_render e update_available match); L="$T/boot.log"
+want "installed from the on-volume cache" 'FROM THE ON-VOLUME CACHE (0 bytes fetched)' "$L"
+nowant "did not attempt the download"     'downloading modded binary'              "$L"
+[ "$(bmd5 "$T")" = "$(bmh "$T")" ] && ok "the INSTALLED binary is the cached modded one" \
+    || bad "installed binary is $(bmd5 "$T"), want $(bmh "$T")"
+[ "$(bexit "$T")" = "0" ] && ok "exit 0" || bad "exit $(bexit "$T"), want 0"
+
+echo "-- 3f. the lane host is NAMED every boot, and Heaven is nowhere --"
+T=$(bin_render f up_to_date match); L="$T/boot.log"
+want "the host is logged with its source" 'binary: pairing lane = https://binaries.primalhosted.com (built-in default)' "$L"
+nowant "no Heaven host anywhere in a boot" 'api.primalheaven.com'                  "$L"
+nowant "no Heaven update gate"            'update gate'                            "$L"
+nowant "no Heaven confirm-startup"        'startup confirmed with backend'         "$L"
+# ⭐ The boot-log checks above PASS on the pre-fix wrapper too - it simply never
+# printed the host - so they cannot detect the defect on their own. This one can:
+# it reads the WRAPPER UNDER TEST and fails if Heaven survives in live code.
+if grep -vE '^\s*#' "$WRAPPER" | grep -qE 'api\.primalheaven\.com|API_BASE_URL|/api/updates/'; then
+    bad "the wrapper still references Heaven OUTSIDE comments"
+else
+    ok "the wrapper has no Heaven reference outside comments"
+fi
+
+echo
 echo "render_test: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

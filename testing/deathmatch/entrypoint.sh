@@ -43,6 +43,22 @@ PANEL_STARTUP_CMD="${STARTUP:-}"
 # Update Manager Configuration
 # =============================================================================
 API_BASE_URL=${API_BASE_URL:-"https://api.primalheaven.com"}
+# ── THE BINARY LANE IS THE PRODUCT'S, NOT THE GAME COMMUNITY'S (#2337) ───────
+# Split from API_BASE_URL on purpose. The modded-binary check/download move to
+# Primal Hosted's own lane (repo primal_binaries, R2-backed on the Cloudflare
+# edge), which speaks the identical wire shapes. api.primalheaven.com went down
+# on 2026-09-14 and boot-looped a paying customer's only server for nine hours;
+# no server's boot should depend on that box again.
+#
+# API_BASE_URL below stays ONLY for Heaven's update-manager calls
+# (/api/updates/server-status, /api/updates/confirm-startup). The product lane
+# deliberately does NOT serve those - they are Primal HEAVEN fleet management,
+# they are guarded by SERVER_ID, and no live server on this image sets it, so
+# they never fire. ⛔ Do not "fix" that by setting SERVER_ID: for a server not
+# in Heaven's registry the route returns Heaven's own global modPending flag as
+# `blocked`, which would hand Heaven a kill switch over this server (#2342).
+PRIMAL_BINARY_BASE=${PRIMAL_BINARY_BASE:-"https://binaries.primalhosted.com"}
+PRIMAL_BINARY_BASE="${PRIMAL_BINARY_BASE%/}"
 # No default: this is a PUBLIC repo (#1064) - the key comes from the egg env or
 # not at all. The block below that needs it is guarded by SERVER_ID and says so.
 API_KEY=${API_KEY:-""}
@@ -207,7 +223,7 @@ BACKEND_MAX_RETRIES=3
 
 while [ $BACKEND_RETRY -lt $BACKEND_MAX_RETRIES ] && [ "$MOD_DOWNLOADED" != "true" ]; do
     # Check if backend has a mod for our vanilla version
-    CHECK_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${API_BASE_URL}/commands/binary/check" \
+    CHECK_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${PRIMAL_BINARY_BASE}/commands/binary/check" \
         -H "Content-Type: application/json" \
         -d "{\"vanilla_hash\": \"${VANILLA_HASH}\", \"current_modded_hash\": \"${CURRENT_HASH}\"}" 2>/dev/null)
     
@@ -230,7 +246,7 @@ while [ $BACKEND_RETRY -lt $BACKEND_MAX_RETRIES ] && [ "$MOD_DOWNLOADED" != "tru
             
             # Download from backend
             DOWNLOAD_CODE=$(curl -s -w "%{http_code}" -o /home/container/mod_download.bin \
-                "${API_BASE_URL}${DOWNLOAD_URL}" 2>/dev/null)
+                "${PRIMAL_BINARY_BASE}${DOWNLOAD_URL}" 2>/dev/null)
             
             if [ "$DOWNLOAD_CODE" == "200" ]; then
                 # Verify download size (should be ~196MB)
