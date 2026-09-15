@@ -629,7 +629,7 @@ if [ "$MOD_READY" != "1" ]; then
         # the plane's only ops-event route is /internal/ops/events, guarded by
         # the plane's INTERNAL key - putting that on a customer volume would be
         # a worse credential leak than the Heaven key this change removes
-        # (#1064). A phsk_-authed route is owed; see BUGS #2348.
+        # (#1064). A phsk_-authed route is owed; see BUGS #2353.
         die "MOD-BINARY-UNAVAILABLE: the lane ANSWERED and has no verified modded binary for vanilla ${VANILLA_HASH:0:16}. This is a REAL outage of the mod build (it lags a game update), not a network problem - the on-volume cache is deliberately NOT used, because it was built for a different game build. Vanilla is forbidden on this egg. The panel will retry; check ${PRIMAL_BINARY_BASE}/api/binary/status."
     else
         die "MOD-BINARY-UNAVAILABLE: ${PRIMAL_BINARY_BASE} did not answer in 5 attempts AND this volume holds no verified modded binary for vanilla ${VANILLA_HASH:0:16} to fall back on (first boot, or the game updated while the lane was down). Vanilla is forbidden on this egg. The panel will retry."
