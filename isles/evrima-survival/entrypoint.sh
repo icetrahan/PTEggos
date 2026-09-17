@@ -57,6 +57,22 @@ emit_value_lines() {  # $1 = ini key, $2 = raw list (non-steamid values, e.g. cl
 
 # Update manager / binary distribution (Primal infrastructure)
 API_BASE_URL=${API_BASE_URL:-"https://api.primalheaven.com"}
+# ── THE BINARY LANE IS THE PRODUCT'S, NOT THE GAME COMMUNITY'S (#2337) ───────
+# Split from API_BASE_URL on purpose. The modded-binary check/download move to
+# Primal Hosted's own lane (repo primal_binaries, R2-backed on the Cloudflare
+# edge), which speaks the identical wire shapes. api.primalheaven.com went down
+# on 2026-09-14 and boot-looped a paying customer's only server for nine hours;
+# no server's boot should depend on that box again.
+#
+# API_BASE_URL below stays ONLY for Heaven's update-manager calls
+# (/api/updates/server-status, /api/updates/confirm-startup). The product lane
+# deliberately does NOT serve those - they are Primal HEAVEN fleet management,
+# they are guarded by SERVER_ID, and no live server on this image sets it, so
+# they never fire. ⛔ Do not "fix" that by setting SERVER_ID: for a server not
+# in Heaven's registry the route returns Heaven's own global modPending flag as
+# `blocked`, which would hand Heaven a kill switch over this server (#2342).
+PRIMAL_BINARY_BASE=${PRIMAL_BINARY_BASE:-"https://binaries.primalhosted.com"}
+PRIMAL_BINARY_BASE="${PRIMAL_BINARY_BASE%/}"
 API_KEY=${API_KEY:-""}
 SERVER_ID=${SERVER_ID:-""}
 PANEL_NAME=${PANEL_NAME:-"primal"}
@@ -149,7 +165,7 @@ if [ "$MODDED_BINARY" == "1" ]; then
             -H "Content-Type: application/json" \
             -H "X-API-Key: ${API_KEY}" \
             -d "{\"platform\":\"linux\",\"vanilla_hash\":\"${VANILLA_HASH}\",\"current_modded_hash\":\"${CURRENT_HASH}\"}" \
-            "${API_BASE_URL}/commands/binary/check" 2>/dev/null)
+            "${PRIMAL_BINARY_BASE}/commands/binary/check" 2>/dev/null)
         HTTP_CODE=$(echo "$CHECK" | tail -n1)
         BODY=$(echo "$CHECK" | sed '$d')
 
@@ -174,7 +190,7 @@ if [ "$MODDED_BINARY" == "1" ]; then
                 TMP_BIN="/home/container/.primal_mod_download"
                 DL_CODE=$(curl -s -w "%{http_code}" --max-time 900 -o "$TMP_BIN" \
                     -H "X-API-Key: ${API_KEY}" \
-                    "${API_BASE_URL}${DOWNLOAD_URL}" 2>/dev/null)
+                    "${PRIMAL_BINARY_BASE}${DOWNLOAD_URL}" 2>/dev/null)
                 DL_SIZE=$(stat -c%s "$TMP_BIN" 2>/dev/null || echo 0)
                 DL_HASH=$(get_file_hash "$TMP_BIN")
 

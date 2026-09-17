@@ -3,7 +3,7 @@
 #
 # The Linux sibling of egg 40's start-evrima.ps1 (isles/evrima-windows-feathers).
 # Each boot: self-update -> jq -> CANONICAL CONFIG from the data plane ->
-# update gate -> SteamCMD -> MODDED BINARY from the Primal API -> RENDER
+# SteamCMD -> MODDED BINARY from the PRODUCT's binary lane -> RENDER
 # Game.ini/Engine.ini FROM THE PLANE -> pak from R2 -> launch. Game.ini and the
 # pak's Engine.ini section are DERIVED artifacts regenerated every boot; the
 # customer edits the PANEL, never the file and no longer the egg variables.
@@ -11,9 +11,12 @@
 # HARD DIFFERENCES FROM THE WINDOWS EGG, each deliberate:
 #
 #   * BINARY: the server binary is the MODDED Linux binary served by the Primal
-#     backend (api.primalheaven.com /commands/binary/check). The vanilla
+#     lane at binaries.primalhosted.com (repo primal_binaries, R2-backed on
+#     the Cloudflare edge) - THE PRODUCT'S OWN, never the game community's
+#     backend (#2337: that box went down 2026-09-14 and boot-looped a paying
+#     customer's only server for nine hours). The vanilla
 #     steamcmd binary is NEVER launched - Ice's rule. SteamCMD still runs first
-#     because the backend keys the modded build off the vanilla md5 hash, and
+#     because the LANE keys the modded build off the vanilla md5 hash, and
 #     because the game CONTENT comes from Steam; only the 200 MB Shipping
 #     binary is replaced.
 #   * NO SIGBYPASS LANE. On Windows the mod pak needs dsound.dll +
@@ -344,29 +347,43 @@ if [ -n "$CANON" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# UPDATE GATE (may this server start?). Fail-open on network problems - the
-# modded-binary check below is the real enforcement.
+# THE BINARY LANE'S BASE URL.
+#
+# #2337: this is the PRODUCT's lane - repo `primal_binaries`, R2-backed, on the
+# Cloudflare edge - and NOT the game community's backend. api.primalheaven.com
+# is not a fallback here and must never become one again: a customer's server
+# has no business depending on Primal Heaven being up. The wire shapes are the
+# same ones this wrapper always spoke (proven byte-identical on 2026-09-15), so
+# this is a repoint, not a new protocol.
+#
+# The host is LOGGED every boot, and says whether it came from an egg variable
+# or from this default - because the way #2337 happened is that nobody could
+# see which host a given server was trusting until it was already down.
 # ---------------------------------------------------------------------------
-API_BASE_URL=$(env_or "${API_BASE_URL:-}" "https://api.primalheaven.com")
-if [ "${UPDATE_GATE:-1}" = "1" ] && [ -n "${SERVER_ID:-}" ] && [ -n "${API_KEY:-}" ]; then
-    log "update gate: checking with backend..."
-    GATE=$(curl -fsS --max-time 30 -H "X-API-Key: ${API_KEY}" \
-        "${API_BASE_URL}/api/updates/server-status/${SERVER_ID}?platform=linux" 2>/dev/null)
-    if [ -n "$GATE" ]; then
-        BLOCKED=$(grep -o '"blocked": *[a-z]*' <<<"$GATE" | head -1 | grep -o '[a-z]*$')
-        if [ "$BLOCKED" = "true" ]; then
-            REASON=$(m_field "$GATE" block_reason)
-            log "update gate: server is BLOCKED (${REASON:-no reason given})."
-            log "update gate: exiting; the panel restarts this server when it is cleared."
-            exit 0
-        fi
-        log "update gate: clear to start."
-    else
-        warn "update gate unreachable - continuing (fail-open; the binary check enforces)."
-    fi
-else
-    log "update gate: skipped (disabled, or SERVER_ID/API_KEY unset)."
-fi
+if [ -n "${PRIMAL_BINARY_BASE:-}" ]; then BINARY_BASE_SOURCE="egg variable"; else BINARY_BASE_SOURCE="built-in default"; fi
+PRIMAL_BINARY_BASE=$(env_or "${PRIMAL_BINARY_BASE:-}" "https://binaries.primalhosted.com")
+PRIMAL_BINARY_BASE="${PRIMAL_BINARY_BASE%/}"
+
+# ---------------------------------------------------------------------------
+# THE HEAVEN UPDATE GATE IS GONE - DELETED, NOT DISABLED (#2337, #2342).
+#
+# It used to sit here: GET {api.primalheaven.com}/api/updates/server-status/
+# {SERVER_ID}, `exit 0` when the answer said "blocked". Both reasons measured
+# against the route's own source on 2026-09-15:
+#
+#   * It is PRIMAL HEAVEN's fleet-management control. A server that is not in
+#     Heaven's registry - which every customer server is - takes a branch that
+#     returns `blocked: <Heaven's own global modPending flag>` verbatim. So
+#     "fixing" the empty SERVER_ID would have handed Heaven a kill switch over
+#     a paying customer's server, for as long as OUR mod build lagged.
+#   * It required a live Heaven service key in _primal/ on a customer volume,
+#     which the customer can read over SFTP (#1064 class).
+#
+# The matching `confirm-startup` POST at the end of this script is gone for the
+# same reasons. ⛔ Do not reintroduce either against Heaven. If the PRODUCT
+# ever needs a "may this server start" gate, it belongs on the product's own
+# registry, keyed by the server's own phsk_ key.
+# ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
 # STEAMCMD UPDATE (game content + the vanilla binary the mod build is keyed on)
@@ -410,63 +427,177 @@ VANILLA_HASH=$(md5_of "$GAME_BINARY")
 log "binary hash after SteamCMD: ${VANILLA_HASH:0:16}... ($VSIZE bytes)"
 
 # ---------------------------------------------------------------------------
-# MODDED BINARY from the Primal binary-distribution API. MANDATORY.
+# MODDED BINARY from the PRODUCT's binary lane. MANDATORY.
 #
 # There is NO vanilla fallback on this egg - Ice's rule, twice over: the sig
 # bypass our pak needs on Linux lives inside this binary, and running vanilla
-# would silently ship a server without the mod's whole surface. If the backend
-# has no build for today's vanilla hash, this boot FAILS LOUDLY rather than
-# degrading (rule 13). PRIMAL_ALLOW_VANILLA=1 exists for diagnostics only and
-# shouts when used.
+# would silently ship a server without the mod's whole surface.
+#
+# THREE RUNGS, and the line between 2 and 3 is the whole design:
+#
+#   1. PAIRED  -> the lane ANSWERED. Obey it, and keep the verified modded
+#                 binary on the volume as last-known-good.
+#   2. CACHED  -> the lane was UNREACHABLE and we hold a binary this lane
+#                 already verified FOR THIS VANILLA. Install it, and say so by
+#                 name in the console.
+#   3. DIE     -> the lane gave a VERDICT we cannot satisfy, or there is no
+#                 usable cache. MOD-BINARY-UNAVAILABLE, exactly as before.
+#
+# ⛔ A NETWORK failure is fail-open; an ANSWER is obeyed. If the game updated
+# and no pairing exists yet, the lane SAYS so and this boot still fails - the
+# cache is never a licence to run a mod built for a different game build. That
+# distinction is the entire reason rung 2 is safe.
+#
+# ⛔ THE CACHE HOLDS BYTES, NOT A RECORD (#2341). SteamCMD `validate` restages
+# the whole ~207 MB executable on EVERY boot - measured from a live volume's own
+# appmanifest_412680.acf, where "BytesStaged" equals the binary's exact size -
+# so by the time control reaches here the on-disk binary is VANILLA again. A
+# cache that only remembered the pairing would compare the on-disk hash against
+# a modded hash that can never match, so the rung could never fire; and "boot
+# what you already have" would boot VANILLA, the one thing this egg forbids.
+# Hence a real copy of the file, ~207 MB of the volume, pruned to exactly one.
+#
+# ⛔ SIZE CANNOT TELL VANILLA FROM MODDED - the patch is applied in place, so
+# both are the same byte count. Every check below is a HASH.
+#
+# Two hashes, on purpose: `modded_hash` is md5 because that is the lane's own
+# contract, and `sha256` is OURS, computed when we cached the file, so a
+# corrupted or swapped cache entry is caught by something the network never
+# supplied.
 # ---------------------------------------------------------------------------
+BIN_CACHE="$PRIM/binary-cache"
+BIN_PAIRING="$PRIM/binary-pairing.json"
+mkdir -p "$BIN_CACHE"
+
+CACHED_VANILLA=""; CACHED_MODDED=""; CACHED_SHA=""; CACHED_SIZE=""; CACHED_AT=""
+if [ -f "$BIN_PAIRING" ]; then
+    PAIR_RAW=$(cat "$BIN_PAIRING" 2>/dev/null)
+    CACHED_VANILLA=$(m_field "$PAIR_RAW" vanilla_hash)
+    CACHED_MODDED=$(m_field "$PAIR_RAW" modded_hash)
+    CACHED_SHA=$(m_field "$PAIR_RAW" sha256)
+    CACHED_AT=$(m_field "$PAIR_RAW" cached_at)
+    CACHED_SIZE=$(grep -o '"size" *: *[0-9]*' <<<"$PAIR_RAW" | head -1 | grep -o '[0-9]*$')
+fi
+CACHED_BLOB="$BIN_CACHE/linux-${CACHED_MODDED}"
+
+# Do we hold a verified modded binary for THIS vanilla? Every clause is a
+# separate reason to say no, and none of them trusts the network.
+cache_ok() {
+    [ -n "$CACHED_VANILLA" ] && [ "$CACHED_VANILLA" = "$VANILLA_HASH" ] || return 1
+    [ -n "$CACHED_MODDED" ] && [ -f "$CACHED_BLOB" ] || return 1
+    [ -n "$CACHED_SHA" ] && [ -n "$CACHED_SIZE" ] || return 1
+    [ "$(stat -c%s "$CACHED_BLOB" 2>/dev/null || echo 0)" = "$CACHED_SIZE" ] || return 1
+    [ "$(sha256_of "$CACHED_BLOB")" = "$CACHED_SHA" ] || return 1
+    return 0
+}
+
+# Install the cached blob and re-read the INSTALLED file - never infer success
+# from cp's exit code (rule 13: verify from the consumer's own path).
+install_from_cache() {
+    cp -f "$CACHED_BLOB" "$GAME_BINARY" 2>/dev/null || return 1
+    chmod +x "$GAME_BINARY" 2>/dev/null || return 1
+    [ "$(md5_of "$GAME_BINARY")" = "$CACHED_MODDED" ] || return 1
+    return 0
+}
+
+# Cache the binary we just installed, then write the record LAST - so a reader
+# can never see a record pointing at a file that is not there yet (the ordering
+# publish_pak.py and publish_wrapper.py already use).
+remember_pairing() {
+    local mh=$1
+    local dst="$BIN_CACHE/linux-${mh}"
+    if [ ! -f "$dst" ] || [ "$(md5_of "$dst")" != "$mh" ]; then
+        if ! { cp -f "$GAME_BINARY" "$dst.tmp" 2>/dev/null && mv -f "$dst.tmp" "$dst" 2>/dev/null; }; then
+            rm -f "$dst.tmp" 2>/dev/null
+            warn "binary: could NOT cache the modded binary - a degraded boot will not be possible on this server"
+            return 1
+        fi
+    fi
+    local dsha dsize
+    dsha=$(sha256_of "$dst"); dsize=$(stat -c%s "$dst" 2>/dev/null || echo 0)
+    if ! printf '{"platform":"linux","vanilla_hash":"%s","modded_hash":"%s","sha256":"%s","size":%s,"cached_at":"%s"}\n' \
+        "$VANILLA_HASH" "$mh" "$dsha" "$dsize" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$BIN_PAIRING" 2>/dev/null; then
+        warn "binary: could NOT write the pairing record - a degraded boot will not be possible on this server"
+        return 1
+    fi
+    # Exactly one cached binary. The volume is the customer's, not ours.
+    find "$BIN_CACHE" -maxdepth 1 -type f -name 'linux-*' ! -name "linux-${mh}" -delete 2>/dev/null
+    log "binary: last-known-good cached (${mh:0:16}, ${dsize} bytes) - this server can now boot through a lane outage"
+}
+
+log "binary: pairing lane = ${PRIMAL_BINARY_BASE} (${BINARY_BASE_SOURCE})"
+if cache_ok; then
+    log "binary: on-volume cache HOLDS ${CACHED_MODDED:0:16} for this vanilla (recorded ${CACHED_AT:-unknown})"
+else
+    log "binary: on-volume cache holds nothing usable for vanilla ${VANILLA_HASH:0:16} (first boot, a new game build, or never cached)"
+fi
+
 MOD_READY=0
+LANE_ANSWERED=0
 for ATTEMPT in 1 2 3 4 5; do
     CURRENT_HASH=$(md5_of "$GAME_BINARY")
     CHECK=$(curl -fsS --max-time 60 -X POST -H "Content-Type: application/json" \
         -d "{\"platform\":\"linux\",\"vanilla_hash\":\"${VANILLA_HASH}\",\"current_modded_hash\":\"${CURRENT_HASH}\"}" \
-        "${API_BASE_URL}/commands/binary/check" 2>/dev/null)
+        "${PRIMAL_BINARY_BASE}/commands/binary/check" 2>/dev/null)
     if [ -z "$CHECK" ]; then
         warn "binary check unreachable, attempt ${ATTEMPT}/5"
         sleep 10; continue
     fi
+    LANE_ANSWERED=1
     STATUS=$(m_field "$CHECK" status)
     DOWNLOAD_URL=$(m_field "$CHECK" download_url)
     EXPECTED_MODDED=$(m_field "$CHECK" expected_modded_hash)
     log "binary distribution status: ${STATUS}"
     case "$STATUS" in
         up_to_date)
-            MOD_READY=1; break ;;
+            MOD_READY=1; remember_pairing "$CURRENT_HASH"; break ;;
         update_available)
-            log "downloading modded binary..."
+            # ⭐ THE CACHE IS TRIED FIRST, and this is the STEADY STATE rather
+            # than an update: SteamCMD put vanilla back a few lines ago, so the
+            # lane offers us the same binary we already installed last boot. If
+            # we hold exactly that file, this is 207 MB we do not pull (#2341).
+            if [ -n "$EXPECTED_MODDED" ] && [ "$CACHED_MODDED" = "$EXPECTED_MODDED" ] && cache_ok; then
+                if install_from_cache; then
+                    log "binary: installed ${EXPECTED_MODDED:0:16} FROM THE ON-VOLUME CACHE (0 bytes fetched)."
+                    MOD_READY=1; break
+                fi
+                warn "binary: the cached copy failed its own check - falling back to the download"
+            fi
+            log "downloading modded binary from ${PRIMAL_BINARY_BASE} ..."
             TMP_BIN="$ROOT/.primal_mod_download"
-            curl -fsS --max-time 900 -o "$TMP_BIN" "${API_BASE_URL}${DOWNLOAD_URL}" 2>/dev/null
+            curl -fsS --max-time 900 -o "$TMP_BIN" "${PRIMAL_BINARY_BASE}${DOWNLOAD_URL}" 2>/dev/null
             DL_SIZE=$(stat -c%s "$TMP_BIN" 2>/dev/null || echo 0)
             DL_HASH=$(md5_of "$TMP_BIN")
             if [ "$DL_SIZE" -gt 157286400 ] && { [ -z "$EXPECTED_MODDED" ] || [ "$DL_HASH" = "$EXPECTED_MODDED" ]; }; then
                 mv -f "$TMP_BIN" "$GAME_BINARY"
                 chmod +x "$GAME_BINARY"
                 log "modded binary installed (${DL_SIZE} bytes, hash ${DL_HASH:0:16}...)."
-                MOD_READY=1; break
+                MOD_READY=1; remember_pairing "$DL_HASH"; break
             fi
             warn "download invalid (size ${DL_SIZE}, hash ${DL_HASH:0:16}) - retrying"
             rm -f "$TMP_BIN"
             sleep 10 ;;
         no_mod_available)
-            warn "backend has no modded binary for vanilla ${VANILLA_HASH:0:16} yet."
+            warn "the lane has no modded binary for vanilla ${VANILLA_HASH:0:16} yet."
             break ;;
         vanilla_unknown)
             # Two very different states share this answer: (a) the game just
             # updated and no pairing exists yet, or (b) the binary on disk is
             # ALREADY the modded one (SteamCMD left it in place, so the "vanilla"
             # hash we sent is really a modded hash the pairing table does not key
-            # on). Disambiguate against the backend's own latest record.
-            LATEST=$(curl -fsS --max-time 30 "${API_BASE_URL}/api/binary/latest/linux" 2>/dev/null)
+            # on). Disambiguate against the lane's own latest record.
+            LATEST=$(curl -fsS --max-time 30 "${PRIMAL_BINARY_BASE}/api/binary/latest/linux" 2>/dev/null)
             LATEST_MODDED=$(m_field "$LATEST" modded_hash)
             if [ -n "$LATEST_MODDED" ] && [ "$CURRENT_HASH" = "$LATEST_MODDED" ]; then
                 log "on-disk binary IS the current modded binary (${CURRENT_HASH:0:16}) - up to date."
                 MOD_READY=1
+                # Cache it against the vanilla the LANE keys it on, not the
+                # modded hash we mistakenly sent as "vanilla" this pass.
+                LATEST_VANILLA=$(m_field "$LATEST" vanilla_hash)
+                [ -n "$LATEST_VANILLA" ] && VANILLA_HASH="$LATEST_VANILLA"
+                remember_pairing "$CURRENT_HASH"
             else
-                warn "backend does not recognize vanilla ${VANILLA_HASH:0:16} and the on-disk binary is not the current modded build."
+                warn "the lane does not recognize vanilla ${VANILLA_HASH:0:16} and the on-disk binary is not the current modded build."
             fi
             break ;;
         *)
@@ -474,19 +605,36 @@ for ATTEMPT in 1 2 3 4 5; do
             sleep 10 ;;
     esac
 done
+
 if [ "$MOD_READY" != "1" ]; then
-    if [ "${PRIMAL_ALLOW_VANILLA:-0}" = "1" ]; then
+    if [ "$LANE_ANSWERED" != "1" ] && cache_ok && install_from_cache; then
+        MOD_READY=1
+        warn "=============================================================="
+        warn "primal-binary: R2 unreachable, booting last-known-good ${CACHED_MODDED}"
+        warn "  ${PRIMAL_BINARY_BASE} did not answer in 5 attempts."
+        warn "  This binary was verified against that lane on a previous boot"
+        warn "  (recorded ${CACHED_AT:-unknown}) and re-checked by sha256 just now."
+        warn "  THE SERVER IS NOT RUNNING VANILLA. The mod is fully present."
+        warn "  What is degraded is the lane, not this server - if a NEW game"
+        warn "  build has shipped since, this boot would have failed instead."
+        warn "=============================================================="
+    elif [ "${PRIMAL_ALLOW_VANILLA:-0}" = "1" ]; then
         warn "=============================================================="
         warn "PRIMAL_ALLOW_VANILLA=1: LAUNCHING THE VANILLA BINARY."
         warn "The mod pak will NOT mount and no Primal feature will work."
         warn "This is a diagnostics-only state - unset the variable after."
         warn "=============================================================="
+    elif [ "$LANE_ANSWERED" = "1" ]; then
+        # ⚠️ NO ops event is pushed from here, and that is a GAP, not a choice:
+        # the plane's only ops-event route is /internal/ops/events, guarded by
+        # the plane's INTERNAL key - putting that on a customer volume would be
+        # a worse credential leak than the Heaven key this change removes
+        # (#1064). A phsk_-authed route is owed; see BUGS #2353.
+        die "MOD-BINARY-UNAVAILABLE: the lane ANSWERED and has no verified modded binary for vanilla ${VANILLA_HASH:0:16}. This is a REAL outage of the mod build (it lags a game update), not a network problem - the on-volume cache is deliberately NOT used, because it was built for a different game build. Vanilla is forbidden on this egg. The panel will retry; check ${PRIMAL_BINARY_BASE}/api/binary/status."
     else
-        die "MOD-BINARY-UNAVAILABLE: no verified modded binary for vanilla ${VANILLA_HASH:0:16} and vanilla is forbidden on this egg. The panel will retry; if this repeats, the mod build lags a game update - check ${API_BASE_URL}/api/binary/status."
+        die "MOD-BINARY-UNAVAILABLE: ${PRIMAL_BINARY_BASE} did not answer in 5 attempts AND this volume holds no verified modded binary for vanilla ${VANILLA_HASH:0:16} to fall back on (first boot, or the game updated while the lane was down). Vanilla is forbidden on this egg. The panel will retry."
     fi
 fi
-MODDED_HASH=$(md5_of "$GAME_BINARY")
-log "launch binary hash: ${MODDED_HASH:0:16}..."
 
 # ---------------------------------------------------------------------------
 # RENDER Game.ini  (defaults byte-matched to egg 40's; THE DATA PLANE overrides)
@@ -991,15 +1139,14 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# CONFIRM STARTUP with the backend (best-effort monitoring)
+# CONFIRM-STARTUP IS GONE (#2337). It POSTed this server's identity and hashes
+# to {api.primalheaven.com}/api/updates/confirm-startup with a Heaven service
+# key. It was best-effort monitoring for PRIMAL HEAVEN's fleet, it told the
+# product nothing, and it required a Heaven key on a customer volume. The
+# product already learns this server is up from its own boot-config fetch and
+# its vitals. ⛔ Do not reintroduce it against Heaven.
 # ---------------------------------------------------------------------------
-if [ -n "${SERVER_ID:-}" ] && [ -n "${API_KEY:-}" ]; then
-    CONF=$(curl -fsS -o /dev/null -w "%{http_code}" --max-time 30 -X POST \
-        -H "Content-Type: application/json" -H "X-API-Key: ${API_KEY}" \
-        -d "{\"server_id\":\"${SERVER_ID}\",\"server_name\":\"${SERVER_NAME:-$SERVER_ID}\",\"server_type\":\"survival\",\"platform\":\"linux\",\"panel_name\":\"${PANEL_NAME:-primal}\",\"vanilla_hash\":\"${VANILLA_HASH}\",\"modded_hash\":\"${MODDED_HASH}\",\"pterodactyl_uuid\":\"${P_SERVER_UUID:-}\"}" \
-        "${API_BASE_URL}/api/updates/confirm-startup" 2>/dev/null)
-    [ "$CONF" = "200" ] && log "startup confirmed with backend." || warn "startup confirmation failed (HTTP ${CONF:-none}) - continuing."
-fi
+
 
 # Dry-run hook: render the configs and stop (local tests + config preview).
 if [ "${PRIMAL_RENDER_ONLY:-0}" = "1" ]; then log "(render-only) done"; exit 0; fi

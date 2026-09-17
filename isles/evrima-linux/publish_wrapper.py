@@ -43,6 +43,14 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--version", required=True)
     ap.add_argument("--dry-run", action="store_true")
+    # STAGED PROOF (#2337). The fleet reads latest.json, so publishing straight
+    # to it ships to every server on this egg - including a paying customer's -
+    # before anything has booted the new wrapper on a real node. --manifest-key
+    # puts the same artifacts behind a DIFFERENT manifest, which a throwaway
+    # server can be pointed at via PRIMAL_WRAPPER_MANIFEST. Promote by re-running
+    # with the default key once the candidate has been proven.
+    ap.add_argument("--manifest-key", default="latest.json",
+                    help="manifest object name (default latest.json = the whole fleet)")
     args = ap.parse_args()
 
     gate = subprocess.run([sys.executable, str(HERE / "verify.py")])
@@ -74,9 +82,12 @@ def main() -> int:
         r2_put(f"{PREFIX}/{args.version}/{f['name']}", HERE / f["name"], "text/plain")
     mpath = HERE / ".manifest.tmp.json"
     mpath.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    r2_put(f"{PREFIX}/latest.json", mpath, "application/json")
+    r2_put(f"{PREFIX}/{args.manifest_key}", mpath, "application/json")
     mpath.unlink()
-    print(f"published {PREFIX} v{args.version} ({len(FILES)} files + latest.json)")
+    print(f"published {PREFIX} v{args.version} ({len(FILES)} files + {args.manifest_key})")
+    if args.manifest_key != "latest.json":
+        print(f"  CANDIDATE ONLY - the fleet still reads latest.json.")
+        print(f"  point one server at: {PUBLIC_BASE}/{PREFIX}/{args.manifest_key}")
     return 0
 
 
