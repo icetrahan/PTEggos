@@ -55,6 +55,7 @@ PLANE_DEFAULTS = {
     'legacyAiPlayerSpawns': True, 'legacyDayLength': 30, 'legacyDynamicTime': False,
     'legacyStartingTime': 341, 'legacyDeadBodyTime': 200, 'legacyRespawnTime': 30, 'legacyLogoutTime': 60,
     'legacyFootprintLifetime': 60, 'legacyGroupingMod': 'none', 'legacyEnabledMods': [],
+    'legacyBattleye': '', 'legacyExperimental': '', 'legacyTag': '', 'legacyDiscord': '',   # #2470 tri-state, '' = line omitted
 }
 # egg var -> (plane field, kind)
 EGG_TO_PLANE = {
@@ -67,6 +68,7 @@ EGG_TO_PLANE = {
     'SCENT': ('legacyScent', 'b'), 'ENABLE_AI': ('enableAi', 'b'), 'AI_MAX': ('legacyAiMax', 'n'), 'AI_RATE': ('legacyAiRate', 'n'),
     'AI_PLAYER_SPAWNS': ('legacyAiPlayerSpawns', 'b'), 'STARTING_TIME': ('legacyStartingTime', 'n'), 'DYNAMIC_TIME': ('legacyDynamicTime', 'b'),
     'DAY_LENGTH': ('legacyDayLength', 'n'), 'GROUPING_MOD': ('legacyGroupingMod', 's'), 'ENABLED_MODS': ('legacyEnabledMods', 'l'),
+    'BATTLEYE': ('legacyBattleye', 's'), 'EXPERIMENTAL': ('legacyExperimental', 's'), 'SERVER_TAG': ('legacyTag', 's'), 'SERVER_DISCORD': ('legacyDiscord', 's'),
 }
 
 def backfilled_row(env):
@@ -130,6 +132,7 @@ for sid, s in ENVJ.items():
         jd = os.path.join(td, 'defaults.json'); json.dump(boot_config(dict(PLANE_DEFAULTS), ['76500000000000001', '76500000000000002']), open(jd, 'w'))
         D = run(NEW, env, {'PRIMAL_BOOT_CONFIG_FILE': jd}, os.path.join(td, 'D'))
         row2 = dict(row); row2['legacyDeadBodyTime'] = 999; row2['legacyMap'] = 'Thenyaw' if row['legacyMap'] != 'Thenyaw' else 'Isle_V3'; row2['legacyEnabledMods'] = ['AnkyBonebreak']; row2['legacyGroupingMod'] = 'universal'
+        row2['legacyBattleye'] = 'true'; row2['legacyExperimental'] = 'false'; row2['legacyTag'] = '0'; row2['legacyDiscord'] = 'https://discord.gg/noobz'   # #2470: set on E only
         je = os.path.join(td, 'edited.json'); json.dump(boot_config(row2, ['76500000000000001', '76500000000000002']), open(je, 'w'))
         E = run(NEW, env, {'PRIMAL_BOOT_CONFIG_FILE': je}, os.path.join(td, 'E'))
 
@@ -145,6 +148,14 @@ for sid, s in ENVJ.items():
     ok('rendered Legacy Game.ini from eggvars' in C['out'], 'C: the render line names its source (eggvars)')
     ok('rendered Legacy Game.ini from file' in B['out'] and 'TEST HATCH' in B['out'], 'B: the render line names its source (file) and the hatch shouted')
     ok('ServerDeadBodyTime=999' in E['ini'], 'E: an edited plane value reaches Game.ini')
+    # #2470 - the four tri-state keys: absent from A/B/C/D (unset = no line), present on E, Discord trimmed to its code
+    for R, nm in ((A, 'A'), (B, 'B'), (C, 'C'), (D, 'D')):
+        ok(all(k not in R['ini'] for k in ('bServerBattleye=', 'bServerExperimental=', 'ServerTag=', 'ServerDiscord=')), f'{nm}: no session-extra line when the keys are unset (#2470)')
+    for want in ('bServerBattleye=true', 'bServerExperimental=false', 'ServerTag=0', 'ServerDiscord=noobz'):
+        ok(want in E['ini'].splitlines(), f'E: `{want}` rendered from the plane (#2470)')
+    ok('ServerDiscord=https' not in E['ini'], 'E: a pasted discord.gg URL is trimmed to the invite code')
+    ok('session-extras=battleye+experimental+tag+discord' in E['out'], 'E: the render line names the session extras it rendered')
+    ok('session-extras=none' in B['out'], 'B: the render line says none when nothing is set')
     ok('legacyDeadBodyTime egg=[' in E['out'], 'E: the superseded-egg-var NOTE names the changed key')
     ok(any('zzAnkyBonebreak' in p for p in E['paks']) and any('zUniversalGrouping' in p for p in E['paks']), 'E: the plane mod list drives the pak sync (Anky + Universal grouping installed)')
     ok(not any('EnhancedPara' in p for p in E['paks']), 'E: a mod dropped from the plane list is removed from Paks')

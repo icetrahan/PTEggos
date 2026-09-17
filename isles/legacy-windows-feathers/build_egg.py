@@ -108,6 +108,11 @@ egg = {
         ("Fall Damage", "FALL_DAMAGE", "1", "required|string|in:0,1", None),
         ("Turn In Place", "TURN_IN_PLACE", "1", "required|string|in:0,1", None),
         ("Allow Replay", "ALLOW_REPLAY", "1", "required|string|in:0,1", None),
+        # #2470 (2026-09-17) - tri-state: empty = the line is NOT rendered (game default).
+        ("BattlEye", "BATTLEYE", "", "nullable|string|in:,1,0,true,false", "Empty = game default (line omitted); 1/true or 0/false renders bServerBattleye"),
+        ("Experimental", "EXPERIMENTAL", "", "nullable|string|in:,1,0,true,false", "Empty = game default (line omitted); renders bServerExperimental"),
+        ("Server Tag", "SERVER_TAG", "", "nullable|string|max:8", "Empty = game default (line omitted); renders ServerTag"),
+        ("Discord invite code", "SERVER_DISCORD", "", "nullable|string|max:64", "Invite CODE only (the part after discord.gg/); empty = line omitted; renders ServerDiscord"),
         ("Dead Body Time (s)", "DEAD_BODY_TIME", "200", "required|integer|min:0", None),
         ("Respawn Time (s)", "RESPAWN_TIME", "30", "required|integer|min:0", None),
         ("Logout Time (s)", "LOGOUT_TIME", "60", "required|integer|min:0", None),
@@ -147,11 +152,11 @@ for v in egg["variables"]:
 # customer setting the wrapper takes from the plane has an egg fallback here, and vice versa.
 _wrapper_src = (here / "start-legacy.ps1").read_text(encoding="utf-8")
 _plane_keys = next(l for l in _wrapper_src.splitlines() if l.startswith("# PLANE_KEYS:")).split(":", 1)[1].strip().split(",")
-assert len(_plane_keys) == 31, f"PLANE_KEYS has {len(_plane_keys)} entries, expected 31 — update this builder deliberately"
+assert len(_plane_keys) == 35, f"PLANE_KEYS has {len(_plane_keys)} entries, expected 35 (9 shared + 26 legacy*, #2470 added 4) — update this builder deliberately"
 _customer_envs = {v["env_variable"] for v in egg["variables"] if v["env_variable"] not in ADMIN_ONLY}
-# 30 customer egg vars <-> 31 plane keys: serverPasswordEnabled has no egg var (an egg password is
+# 34 customer egg vars <-> 35 plane keys: serverPasswordEnabled has no egg var (an egg password is
 # simply set or empty). adminSteamIds <-> ADMIN_STEAM_IDS (the plane serves its union of three lists).
-assert len(_customer_envs) == 30, sorted(_customer_envs)
+assert len(_customer_envs) == 34, sorted(_customer_envs)  # 30 + the four #2470 tri-state vars
 assert len(_plane_keys) - 1 == len(_customer_envs)
 
 out = here / "egg-isle-legacy.json"

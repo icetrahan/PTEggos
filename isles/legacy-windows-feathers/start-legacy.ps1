@@ -26,11 +26,16 @@
 #     server_settings contract test are asserted EQUAL to this line, so the three
 #     cannot drift apart silently. Edit the list here, then the code below, then
 #     the panel + plane in the same change. Keep it on ONE line; tests parse it.
-# PLANE_KEYS: serverName,maxPlayers,serverPasswordEnabled,serverPassword,adminSteamIds,enableGlobalChat,fallDamage,allowReplay,enableAi,legacyGameMode,legacyMap,legacyMotd,legacyDisabledDinos,legacyAllowChat,legacyNameTags,legacyGrowth,legacyTurnInPlace,legacyNesting,legacyScent,legacyAiMax,legacyAiRate,legacyAiPlayerSpawns,legacyDayLength,legacyDynamicTime,legacyStartingTime,legacyDeadBodyTime,legacyRespawnTime,legacyLogoutTime,legacyFootprintLifetime,legacyGroupingMod,legacyEnabledMods
+# PLANE_KEYS: serverName,maxPlayers,serverPasswordEnabled,serverPassword,adminSteamIds,enableGlobalChat,fallDamage,allowReplay,enableAi,legacyGameMode,legacyMap,legacyMotd,legacyDisabledDinos,legacyAllowChat,legacyNameTags,legacyGrowth,legacyTurnInPlace,legacyNesting,legacyScent,legacyAiMax,legacyAiRate,legacyAiPlayerSpawns,legacyDayLength,legacyDynamicTime,legacyStartingTime,legacyDeadBodyTime,legacyRespawnTime,legacyLogoutTime,legacyFootprintLifetime,legacyGroupingMod,legacyEnabledMods,legacyBattleye,legacyExperimental,legacyTag,legacyDiscord
 #   - the 9 unprefixed keys are SHARED with the Evrima canon (same Game.ini
-#     meaning, same default); the 22 `legacy*` keys are Legacy-only and their
+#     meaning, same default); the 26 `legacy*` keys are Legacy-only and their
 #     plane defaults are byte-equal to the egg defaults below, so a server nobody
 #     has edited renders an IDENTICAL Game.ini from either rung.
+#   - legacyBattleye / legacyExperimental / legacyTag / legacyDiscord (2026-09-17, BUGS #2470,
+#     Ice: "if they have stuff set lets use it if not leave it") are TRI-STATE STRINGS:
+#     '' = the line is NOT rendered (the game's own default, exactly what every server
+#     rendered before this key existed); anything else renders `bServerBattleye=`,
+#     `bServerExperimental=`, `ServerTag=`, `ServerDiscord=` into igamesession.
 #   - adminSteamIds is served as the plane's union (hand + Discord-role + allow)
 #     minus deny; the allow/deny lists are inputs to it, never keys of their own.
 #
@@ -59,6 +64,19 @@ function Split-Csv([string]$v) {
     return @($v -split '[,\r\n]+' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
 }
 function EnvOr([string]$v, [string]$fb) { if ([string]::IsNullOrWhiteSpace($v)) { return $fb } else { return $v } }
+# '' | 'true' | 'false' - a Game.ini line that is only rendered when someone SET it (#2470).
+function Tri-Bool($v) {
+    $t = ('' + $v).Trim().ToLower()
+    if ($t -in @('1','true','yes','on'))  { return 'true' }
+    if ($t -in @('0','false','no','off')) { return 'false' }
+    return ''
+}
+# ServerDiscord is the INVITE CODE only; a pasted discord.gg URL is trimmed to its code.
+function Discord-Code([string]$v) {
+    $t = ('' + $v).Trim()
+    $t = $t -replace '^(https?://)?(www\.)?(discord\.gg|discord\.com/invite)/', ''
+    return $t.Trim('/')
+}
 
 # ── 1) DEFAULTS <- egg vars (the FALLBACK rung; the plane overrides per key) ──
 # Booleans are kept as the Game.ini literals 'true'/'false'; numbers as strings
@@ -94,6 +112,11 @@ $cfg = [ordered]@{
     DayLength         = EnvOr $env:DAY_LENGTH '30'
     GroupingMod       = (EnvOr $env:GROUPING_MOD 'none').ToLower()      # none | universal | diet | herbie
     EnabledMods       = @(Split-Csv $env:ENABLED_MODS)
+    # Tri-state ('' = omit the line). Egg vars BATTLEYE / EXPERIMENTAL accept 1/0/true/false.
+    Battleye          = Tri-Bool $env:BATTLEYE
+    Experimental      = Tri-Bool $env:EXPERIMENTAL
+    ServerTag         = (EnvOr $env:SERVER_TAG '').Trim()
+    ServerDiscord     = Discord-Code (EnvOr $env:SERVER_DISCORD '')
 }
 $gamePort  = EnvOr $env:SERVER_PORT '7777'
 $queryPort = EnvOr $env:SERVER_PORT_1 ([string]([int]$gamePort + 1))
@@ -219,6 +242,11 @@ if ($ss) {
     if (Has $ss 'legacyFootprintLifetime') { Take 'FootprintLifetime' 'legacyFootprintLifetime' ([string]$ss.legacyFootprintLifetime) }
     if (Has $ss 'legacyGroupingMod')       { Take 'GroupingMod'       'legacyGroupingMod'       (('' + $ss.legacyGroupingMod).ToLower()) }
     if (Has $ss 'legacyEnabledMods')       { Take 'EnabledMods'       'legacyEnabledMods'       @(@($ss.legacyEnabledMods) | ForEach-Object { ('' + $_).Trim() } | Where-Object { $_ }) }
+    # #2470 - tri-state: the plane's '' means "do not render the line" (Tri-Bool/Discord-Code normalise the rest)
+    if (Has $ss 'legacyBattleye')          { Take 'Battleye'          'legacyBattleye'          (Tri-Bool $ss.legacyBattleye) }
+    if (Has $ss 'legacyExperimental')      { Take 'Experimental'      'legacyExperimental'      (Tri-Bool $ss.legacyExperimental) }
+    if (Has $ss 'legacyTag')               { Take 'ServerTag'         'legacyTag'               (('' + $ss.legacyTag).Trim()) }
+    if (Has $ss 'legacyDiscord')           { Take 'ServerDiscord'     'legacyDiscord'           (Discord-Code ('' + $ss.legacyDiscord)) }
 
     Write-Host ("(config) canonical config {0} (players={1} mode={2} map={3} scope={4} updatedAt={5})" -f `
         $cfgSource.ToUpper(), $cfg.MaxPlayers, $cfg.GameMode, $cfg.Map, $canon.scope.server_settings, $canon.updatedAt)
@@ -295,6 +323,14 @@ if ($ss) {
 New-Item -ItemType Directory -Force -Path $cfgDir | Out-Null
 $adminLines = if ($admins.Count) { ($admins | ForEach-Object { "ServerAdmins=$_" }) -join "`r`n" } else { 'ServerAdmins=' }
 $dinoLines  = if ($cfg.DisabledDinos.Count) { ($cfg.DisabledDinos | ForEach-Object { "DisabledDinosaurs=$_" }) -join "`r`n" } else { 'DisabledDinosaurs=' }
+# #2470 - four igamesession keys rendered ONLY when set ('' = leave the game's default, and the
+# file stays byte-identical to what it rendered before these keys existed). Each starts with
+# its own CRLF so an unset key adds nothing, not even a blank line.
+$sessionExtra = ''
+if ($cfg.Battleye -ne '')      { $sessionExtra += "`r`nbServerBattleye=$($cfg.Battleye)" }
+if ($cfg.Experimental -ne '')  { $sessionExtra += "`r`nbServerExperimental=$($cfg.Experimental)" }
+if ($cfg.ServerTag -ne '')     { $sessionExtra += "`r`nServerTag=$($cfg.ServerTag)" }
+if ($cfg.ServerDiscord -ne '') { $sessionExtra += "`r`nServerDiscord=$($cfg.ServerDiscord)" }
 
 $gi = @"
 [/script/theisle.igamesession]
@@ -317,7 +353,7 @@ bServerScent=$($cfg.Scent)
 bServerAI=$($cfg.EnableAI)
 ServerAIMax=$($cfg.AIMax)
 ServerAIRate=$($cfg.AIRate)
-bServerAIPlayerSpawns=$($cfg.AIPlayerSpawns)
+bServerAIPlayerSpawns=$($cfg.AIPlayerSpawns)$sessionExtra
 $adminLines
 
 [/Script/Engine.GameSession]
@@ -330,7 +366,9 @@ ServerDayLength=$($cfg.DayLength)
 $dinoLines
 "@
 Set-Content -Path (Join-Path $cfgDir 'Game.ini') -Value $gi -Encoding ascii
-Write-Host "(config) rendered Legacy Game.ini from $cfgSource (players=$($cfg.MaxPlayers), mode=$($cfg.GameMode), admins=$($admins.Count) [$adminSource], disabled=$($cfg.DisabledDinos.Count))"
+$extraNames = @(); if ($cfg.Battleye -ne '') { $extraNames += 'battleye' }; if ($cfg.Experimental -ne '') { $extraNames += 'experimental' }; if ($cfg.ServerTag -ne '') { $extraNames += 'tag' }; if ($cfg.ServerDiscord -ne '') { $extraNames += 'discord' }
+$extraSay = if ($extraNames.Count) { ($extraNames -join '+') } else { 'none' }
+Write-Host "(config) rendered Legacy Game.ini from $cfgSource (players=$($cfg.MaxPlayers), mode=$($cfg.GameMode), admins=$($admins.Count) [$adminSource], disabled=$($cfg.DisabledDinos.Count), session-extras=$extraSay)"
 
 # ── MOTD (empty file = no MOTD popup; text = shown to players on join) ────────
 New-Item -ItemType Directory -Force -Path $savedDir | Out-Null
