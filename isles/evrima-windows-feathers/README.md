@@ -128,6 +128,28 @@ one by exactly one line:
 
 Restore both from `primal-credentials.env` before importing this egg for real use.
 
+## Comm-ban DLL lane (`PRIMAL_COMMBAN`, 2026-09-18 — BACKLOG A38, DECISIONS 09-17 R5)
+
+An ops-only egg variable (`user_viewable`/`user_editable` false, default **empty = off**).
+`1` makes the wrapper place `commban.dll` into `TheIsle\Binaries\Win64` from the sha-pinned
+R2 manifest `primal-commban/latest.json` (same shape as sigbypass: `{version, files:[{name,url,
+sha256,size}]}`, re-verified every boot), write `commban.ini` beside it from the server's own
+`PHSK_KEY` (`plane_base_url` / `server_key` / `server_id`), and arm a job that waits for THIS
+boot's `Bringing World` line, sleeps 10 s, then `LoadLibraryW`-injects it. Result →
+`_primal/primal-commban-inject.log`; the DLL's own verdict → `Win64\commban.log`
+(`[COMMBAN BOOT] … state=ARMED|REFUSED at <gate>`) and its first heartbeat off-box.
+
+- ⛔ **Independent of `ENABLE_PRIMAL_MOD`** by ruling — the pak lane's flag never arms an
+  injector. ⛔ **Not the owner's switch**: that is the panel's comm-ban card, which the DLL
+  reads from the plane on every poll. Placed + panel OFF = hooks nothing.
+- Fail-soft everywhere: a bad sha, a missing key or a 404 manifest boots the server with
+  **no injection**, said on the console; the plane's `commban_silent` detector pages ops.
+- The bench harnesses that exercised the two blocks out of context live in
+  `PrimalEverything/docs/audits/2026-09-17_commban-delivery/` (`egg_block_test.ps1` 19/19,
+  `egg_inject_test.ps1` — the verbatim job armed the DLL on the isolated server).
+- ⚠️ This egg has no CI matrix entry — it reaches the panel only by a **hand-import** of the
+  JSON. ⚠️ Any push touching `isles/**` still rebuilds the 4 ghcr images (rule 5).
+
 ⚠️ **Do not hand-edit the base64 in the egg JSON.** Change the loose files, then:
 
 ```
@@ -135,8 +157,8 @@ python isles/evrima-windows-feathers/embed.py    # re-embed + refresh verify.py'
 python isles/evrima-windows-feathers/verify.py   # the gate
 ```
 
-sha256 of the committed wrapper: **`e1e5a5f90810547b34d284e84ddbb9e8e7c69ea2d3c2a73b4e4dc112efa4e26d`**
-(61,364 B), recorded in `verify.py` as `WRAPPER_SHA` and refreshed by `embed.py`.
+sha256 of the committed wrapper: **`842e4a00f77441c213f6617da023bd2d1c4d89a46f5e79897d0295c5cc31b8c8`**
+(75,999 B, 2026-09-18 — the comm-ban DLL lane), recorded in `verify.py` as `WRAPPER_SHA` and refreshed by `embed.py`.
 ⚠️ **This line was stale by two wrapper versions when it was corrected on 2026-08-12** (it still
 named 46,224 B while the committed wrapper was 59,366 B). `embed.py` refreshes `verify.py` but
 **not this README**, so the drift is silent and recurs — check the byte count against the file,

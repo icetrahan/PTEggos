@@ -931,6 +931,107 @@ if ($env:ENABLE_PRIMAL_MOD -eq '1') {
 }
 
 # ---------------------------------------------------------------------------
+# PRIMAL COMM-BAN DLL (BACKLOG A38; DECISIONS 2026-09-17 R1-R6, Ice's words:
+# "injector on a NEW egg variable, Evrima only, its own binary, default OFF").
+#
+# A small, isolated DLL (IsleModRebuild_send/commban_dll) that hooks ProcessEvent
+# and swallows GetChatMessage frames from comm-banned players. It reads the list
+# from the data plane (GET /v1/comms-bans, this server's own phsk key), heartbeats
+# every 30 s, and posts every swallowed line off-box. Nothing else.
+#
+# GATE = PRIMAL_COMMBAN (ops-only egg variable, default EMPTY = off).
+# [!] NEVER ENABLE_PRIMAL_MOD: that flag is the pak lane's, and tying this DLL to it
+#    would arm an injector on every pak server the day it was set (rule from the
+#    09-07 audit: "arming a customer needs a binary push", i.e. its own switch).
+# [!] Placement is ops-only. The OWNER's switch is the panel's `comms_ban` card,
+#    read by the DLL from the plane on every poll - with the DLL placed and the
+#    panel OFF, it hooks nothing (design G7). With the panel ON and no DLL placed,
+#    the plane pages ops (`commban_silent`), not the owner.
+#
+# Delivery mirrors sigbypass: R2 manifest primal-commban/latest.json
+# {version, files:[{name:"commban.dll", url, sha256, size}]}, sha-pinned, re-checked
+# EVERY boot (content is the authority; SteamCMD strips nothing here but a partial
+# download must never be injected). Placed in TheIsle\Binaries\Win64 beside the
+# game, because the DLL reads commban.ini from ITS OWN directory (module dir).
+# Result of the injection -> _primal/primal-commban-inject.log; the DLL's own log
+# -> TheIsle\Binaries\Win64\commban.log ([COMMBAN BOOT] line, refusals by gate).
+# ---------------------------------------------------------------------------
+$cbOn      = (('' + $env:PRIMAL_COMMBAN).Trim() -eq '1')
+$cbDll     = Join-Path $binDirWin 'commban.dll'
+$cbIni     = Join-Path $binDirWin 'commban.ini'
+$cbVerFile = Join-Path $tmpl 'primal-commban.version'
+$cbReady   = $false
+if ($cbOn) {
+    $cbManifestUrl = EnvOr $env:PRIMAL_COMMBAN_MANIFEST 'https://pub-fb6fdcc2ce914775ba41c9813f80dc10.r2.dev/primal-commban/latest.json'
+    try {
+        $ProgressPreference = 'SilentlyContinue'
+        $cm = Invoke-RestMethod -Uri $cbManifestUrl -TimeoutSec 20
+        $cbFiles = @($cm.files)
+        if (-not $cbFiles -or $cbFiles.Count -lt 1) { throw 'commban manifest carries no files[]' }
+        New-Item -ItemType Directory -Force -Path $binDirWin | Out-Null
+        $cbNeed = @()
+        foreach ($fi in $cbFiles) {
+            $dst = Join-Path $binDirWin $fi.name
+            if (-not (Test-Path $dst)) { $cbNeed += $fi; continue }
+            $h = (Get-FileHash $dst -Algorithm SHA256).Hash.ToLower()
+            if ($h -ne ("" + $fi.sha256).ToLower()) { $cbNeed += $fi }
+        }
+        $cbFailed = 0
+        if ($cbNeed.Count) {
+            Write-Host "(commban) placing $($cbNeed.Count)/$($cbFiles.Count) file(s) (v$($cm.version)) into TheIsle\Binaries\Win64 ..."
+            foreach ($fi in $cbNeed) {
+                $dst = Join-Path $binDirWin $fi.name
+                $tmpf = "$dst.download"
+                Invoke-WebRequest -Uri $fi.url -OutFile $tmpf -UseBasicParsing
+                $sha = (Get-FileHash $tmpf -Algorithm SHA256).Hash.ToLower()
+                if ($sha -ne ("" + $fi.sha256).ToLower()) {
+                    Write-Host "(commban) sha256 MISMATCH on $($fi.name) (got $sha) - discarding; NOT injecting this boot"
+                    Remove-Item $tmpf -Force -ErrorAction SilentlyContinue
+                    $cbFailed++
+                } else {
+                    Move-Item -Force $tmpf $dst
+                    Write-Host "(commban) placed $($fi.name) ($($fi.size) bytes, v$($cm.version))"
+                }
+            }
+            Set-Content -Path $cbVerFile -Value $cm.version -Encoding ascii
+        } else {
+            Write-Host "(commban) up to date (v$($cm.version), sha-verified in place)"
+        }
+        # The DLL's config, beside it, rewritten every boot (a rotated key lands on the
+        # next restart). Keys match commban_dll/src/config.cpp. [!] selftest is a bench
+        # knob and is deliberately never written here.
+        if (-not $phsk) {
+            Write-Host "(commban) PHSK_KEY missing - the DLL has no plane to read the list from; NOT injecting"
+        } elseif ($cbFailed -ne 0 -or -not (Test-Path $cbDll)) {
+            Write-Host "(commban) DLL not in place (sha failures=$cbFailed) - NOT injecting this boot"
+        } else {
+            $cbBase = (EnvOr $env:PRIMAL_DATA_BASE 'https://data.primalhosted.com').TrimEnd('/')
+            $cbCfg = @(
+                '# Primal Hosted - auto-generated each boot from the server phsk_ key. Do not edit.',
+                '[commban]',
+                "plane_base_url = $cbBase",
+                "server_key = $phsk",
+                "server_id = $($env:P_SERVER_UUID)",
+                'list_poll_interval_ms = 30000',
+                'heartbeat_interval_ms = 30000',
+                'echo = on'
+            ) -join "`n"
+            Set-Content -Path $cbIni -Value $cbCfg -Encoding ascii
+            $cbReady = $true
+            Write-Host "(commban) wrote commban.ini (keylen=$($phsk.Length), plane=$cbBase); inject armed=$cbReady"
+        }
+    } catch {
+        # Fail-soft: the server boots; comm-bans are simply not enforced this boot, and
+        # the plane's `commban_silent` detector is what says so off-box.
+        Write-Host "(commban) manifest/download failed: $_ - NOT injecting this boot"
+    }
+} else {
+    # Off = inert. A stale ini beside the game would hold a key for nothing; drop it.
+    if (Test-Path $cbIni) { Remove-Item $cbIni -Force -ErrorAction SilentlyContinue }
+    Write-Host "(commban) off (PRIMAL_COMMBAN != 1)"
+}
+
+# ---------------------------------------------------------------------------
 # LAUNCH (foreground; Ptero restarts on exit). -stdout so feathers captures console.
 #
 # Launch the REAL Shipping binary directly, NOT the 0.23MB root TheIsleServer.exe
@@ -938,7 +1039,7 @@ if ($env:ENABLE_PRIMAL_MOD -eq '1') {
 # return and feathers would (wrongly) flag a crash. Running Shipping directly
 # means the wrapper blocks on the actual server process for its whole lifetime.
 #
-# Args are DOUBLE-QUOTED so PowerShell expands the variables — `-Port=$env:X`
+# Args are DOUBLE-QUOTED so PowerShell expands the variables - `-Port=$env:X`
 # (bareword) is passed literally by PS; `"-Port=$env:X"` expands correctly.
 # ---------------------------------------------------------------------------
 $exe = Join-Path $game 'TheIsle\Binaries\Win64\TheIsleServer-Win64-Shipping.exe'
@@ -951,7 +1052,7 @@ if (-not (Test-Path $exe)) { throw "server binary missing: $exe (did SteamCMD fi
 # (empty / 0.0.0.0), omit -MULTIHOME entirely so the server binds all interfaces -
 # single-IP boxes keep working unchanged.
 #
-# ⭐ THE CRITICAL PART (solved 2026-07-14 after a long hunt): -MULTIHOME only BINDS
+# * THE CRITICAL PART (solved 2026-07-14 after a long hunt): -MULTIHOME only BINDS
 # the socket to the IP. The Isle's EOS integration still ADVERTISES the box's PRIMARY
 # egress IP to the server browser, so clients connect to primary:queueport and never
 # reach a server on a secondary IP. The undocumented Redpoint EOS env var
@@ -960,7 +1061,7 @@ if (-not (Test-Path $exe)) { throw "server binary missing: $exe (did SteamCMD fi
 # IP is what makes per-IP isolation actually work end-to-end. Proven: client log
 # `Queue: connecting to queue socket <secondaryIP>:<port>`. See isle_evrima_egg/PER_IP_DDOS_ISOLATION.md.
 #
-# ⭐ THE THIRD LEG (solved 2026-08-12, #1281): the two legs above are still not
+# * THE THIRD LEG (solved 2026-08-12, #1281): the two legs above are still not
 # enough for The Isle 0.21.78x. Multihome has THREE legs and we shipped two:
 #   bind      -MULTIHOME=<ip>          🟢 binds the LISTEN sockets
 #   advertise EOS_OVERRIDE_HOST_IP     🟢 fixes what EOS tells the browser
@@ -975,7 +1076,7 @@ if (-not (Test-Path $exe)) { throw "server binary missing: $exe (did SteamCMD fi
 # CurlRequestOptions.LocalHostAddr = CURLOPT_INTERFACE), a SEPARATE parse from the
 # socket subsystem's MULTIHOME= - which is why every earlier session concluded
 # multihome "works": for joins, it does.
-# ⛔ It is ADDED to the other two, never instead of them.
+# [!] It is ADDED to the other two, never instead of them.
 # 🟢 Safe on single-IP / primary-IP servers: binding HTTP to the address the OS would
 # have chosen anyway is a no-op. Proven by the primary-IP regression arm (0 x 403).
 # Evidence: A/B/A on one server + three non-default IPs across two /16s, all listed
@@ -993,7 +1094,7 @@ if ($multihome -and $multihome -ne '0.0.0.0' -and $multihome -match '^\d{1,3}(\.
 }
 # Force-enable non-default playable species (egg var PRIMAL_FORCE_DINO, comma-
 # separated species names, e.g. "Oviraptor,Baryonyx"). Empty = the flag is
-# OMITTED entirely — a bare "-PrimalForceDino=" is never emitted, so every
+# OMITTED entirely - a bare "-PrimalForceDino=" is never emitted, so every
 # server that leaves the variable blank launches byte-identically to before.
 # Ice 2026-07-29: per-server species force-enable is a first-class capability
 # (#356/#378); needed the moment the mod's storage restores a forced species.
@@ -1029,7 +1130,7 @@ if ($env:PRIMAL_TOKEN_ARG -eq '1' -and $env:ENABLE_PRIMAL_MOD -eq '1' -and $phsk
 Write-Host "(start) $(Get-Date -Format HH:mm:ss) launching on port $env:SERVER_PORT, multihome $multihome ..."
 # CRITICAL: relax the error preference for the launch. Under 'Stop', the UE
 # server writing ANYTHING to stderr raises a NativeCommandError that terminates
-# this wrapper mid-run — the already-spawned server keeps running (orphaned),
+# this wrapper mid-run - the already-spawned server keeps running (orphaned),
 # but feathers sees the wrapper exit and (wrongly) flags a crash + detaches the
 # console. 'Continue' lets stderr flow to the console without killing us.
 $ErrorActionPreference = 'Continue'
@@ -1040,6 +1141,74 @@ $before  = @(Get-Process TheIsleServer-Win64-Shipping -ErrorAction SilentlyConti
 # The pak needs no injection - it is a content pak the engine mounts from the Paks
 # dir at startup - so that block was removed with the DLL lane. See git history of
 # this file (PTEggos) for the injector if a DLL lane is ever revived for Evrima.
+#
+# * Revived 2026-09-18 for the COMM-BAN DLL ONLY (A38, R5) - gated on $cbReady above
+# (PRIMAL_COMMBAN=1 + sha-verified DLL + a key), [!] never on ENABLE_PRIMAL_MOD.
+# Timing is the bench's: the DLL's G1 root scan wants the world up, so the job waits
+# for a "Bringing World" line written AFTER this launch (the log is recreated per
+# boot), then 10 s, then injects. LoadLibraryW's return is the remote thread's exit
+# code (0 = load FAILED); the module list is the independent confirmation. Both go
+# to _primal/primal-commban-inject.log; the DLL's own verdict is in
+# TheIsle\Binaries\Win64\commban.log and, off-box, in its first heartbeat.
+if ($cbReady) {
+    $cbInjLog = Join-Path $tmpl 'primal-commban-inject.log'
+    Start-Job -Name primal-commban-inject -ArgumentList $cbDll, $before, $cbInjLog, $isleLog, (Get-Date) -ScriptBlock {
+        param($dll, $beforeIds, $log, $isleLog, $launchedAt)
+        function W($m) { "$(Get-Date -Format 'HH:mm:ss') $m" | Out-File -FilePath $log -Append -Encoding ascii }
+        Add-Type -TypeDefinition @'
+using System; using System.Runtime.InteropServices;
+public static class PInj {
+  [DllImport("kernel32", SetLastError=true)] public static extern IntPtr OpenProcess(uint a, bool inh, uint pid);
+  [DllImport("kernel32", SetLastError=true)] public static extern IntPtr VirtualAllocEx(IntPtr h, IntPtr addr, uint sz, uint typ, uint prot);
+  [DllImport("kernel32", SetLastError=true)] public static extern bool WriteProcessMemory(IntPtr h, IntPtr addr, byte[] buf, uint sz, out UIntPtr wrote);
+  [DllImport("kernel32", CharSet=CharSet.Ansi, SetLastError=true)] public static extern IntPtr GetModuleHandleA(string n);
+  [DllImport("kernel32", CharSet=CharSet.Ansi, SetLastError=true)] public static extern IntPtr GetProcAddress(IntPtr h, string n);
+  [DllImport("kernel32", SetLastError=true)] public static extern IntPtr CreateRemoteThread(IntPtr h, IntPtr sa, uint sz, IntPtr start, IntPtr arg, uint fl, IntPtr tid);
+  [DllImport("kernel32", SetLastError=true)] public static extern uint WaitForSingleObject(IntPtr h, uint ms);
+  [DllImport("kernel32", SetLastError=true)] public static extern bool GetExitCodeThread(IntPtr h, out uint code);
+}
+'@
+        "===== primal-commban-inject $(Get-Date -Format o) =====" | Out-File -FilePath $log -Encoding ascii
+        $proc = $null
+        for ($i = 0; $i -lt 60 -and -not $proc; $i++) {
+            Start-Sleep -Milliseconds 500
+            $proc = Get-Process TheIsleServer-Win64-Shipping -ErrorAction SilentlyContinue | Where-Object { $beforeIds -notcontains $_.Id } | Select-Object -First 1
+        }
+        if (-not $proc) { W 'no server process appeared - abort inject'; return }
+        # The world, from THIS boot's log (recreated at launch; a line from the previous
+        # boot cannot pass the LastWriteTime check).
+        $up = $false
+        for ($i = 0; $i -lt 180 -and -not $up; $i++) {
+            Start-Sleep -Seconds 1
+            $proc.Refresh(); if ($proc.HasExited) { W 'server exited before the world came up - abort inject'; return }
+            $up = (Test-Path $isleLog) -and ((Get-Item $isleLog).LastWriteTime -gt $launchedAt) -and (Select-String -Path $isleLog -Pattern 'Bringing World' -Quiet)
+        }
+        if (-not $up) { W 'world not up after 180 s - abort inject (the DLL would refuse at G1 anyway)'; return }
+        Start-Sleep -Seconds 10
+        W "injecting into pid $($proc.Id): $dll"
+        $bytes = [System.Text.Encoding]::Unicode.GetBytes($dll + [char]0)
+        $h = [PInj]::OpenProcess(0x1F0FFF, $false, [uint32]$proc.Id)
+        if ($h -eq [IntPtr]::Zero) { W 'OpenProcess failed'; return }
+        $addr = [PInj]::VirtualAllocEx($h, [IntPtr]::Zero, [uint32]$bytes.Length, 0x3000, 0x04)
+        if ($addr -eq [IntPtr]::Zero) { W 'VirtualAllocEx failed'; return }
+        $wrote = [UIntPtr]::Zero
+        [void][PInj]::WriteProcessMemory($h, $addr, $bytes, [uint32]$bytes.Length, [ref]$wrote)
+        $ll = [PInj]::GetProcAddress([PInj]::GetModuleHandleA('kernel32.dll'), 'LoadLibraryW')
+        $t = [PInj]::CreateRemoteThread($h, [IntPtr]::Zero, 0, $ll, $addr, 0, [IntPtr]::Zero)
+        if ($t -eq [IntPtr]::Zero) { W 'CreateRemoteThread failed'; return }
+        [void][PInj]::WaitForSingleObject($t, 15000)
+        $ec = 0; [void][PInj]::GetExitCodeThread($t, [ref]$ec)
+        W "inject call complete (LoadLibraryW exit=0x$("{0:x}" -f $ec); 0 = load FAILED)"
+        Start-Sleep -Seconds 2
+        $name = [IO.Path]::GetFileName($dll)
+        try {
+            $mod = Get-Process -Id $proc.Id -Module -ErrorAction Stop | Where-Object { $_.ModuleName -ieq $name }
+            if ($mod) { W "VERIFIED: $name is loaded in pid $($proc.Id)  ($($mod.FileName))" }
+            else      { W "WARNING: $name NOT present in pid $($proc.Id) module list after inject" }
+        } catch { W "module verify inconclusive (enum failed: $($_.Exception.Message))" }
+    } | Out-Null
+    Write-Host "(commban) injector armed (waits for the world, then +10 s; result -> _primal/primal-commban-inject.log; DLL log -> TheIsle\Binaries\Win64\commban.log)"
+}
 
 Dbg "launching (server will detach; we supervise the real process)"
 # Launch form matches Hex's proven dedicated command (map URL carries the port; no
