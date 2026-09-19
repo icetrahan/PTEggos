@@ -1145,8 +1145,11 @@ $before  = @(Get-Process TheIsleServer-Win64-Shipping -ErrorAction SilentlyConti
 # * Revived 2026-09-18 for the COMM-BAN DLL ONLY (A38, R5) - gated on $cbReady above
 # (PRIMAL_COMMBAN=1 + sha-verified DLL + a key), [!] never on ENABLE_PRIMAL_MOD.
 # Timing is the bench's: the DLL's G1 root scan wants the world up, so the job waits
-# for a "Bringing World" line written AFTER this launch (the log is recreated per
-# boot), then 10 s, then injects. LoadLibraryW's return is the remote thread's exit
+# for a world-up line written AFTER this launch (the log is recreated per boot), then
+# 10 s, then injects. [!] #2551 (2026-09-19): a LIVE Heaven server's TheIsle.log never
+# carries "Bringing World" (the bench's did) - its boot writes "LogLoad: Took N seconds
+# to LoadMap(...)" - so the wait accepts EITHER; on the old pattern it aborted at 180 s
+# and PRIMAL_COMMBAN=1 was a silent no-op. LoadLibraryW's return is the remote thread's exit
 # code (0 = load FAILED); the module list is the independent confirmation. Both go
 # to _primal/primal-commban-inject.log; the DLL's own verdict is in
 # TheIsle\Binaries\Win64\commban.log and, off-box, in its first heartbeat.
@@ -1181,7 +1184,7 @@ public static class PInj {
         for ($i = 0; $i -lt 180 -and -not $up; $i++) {
             Start-Sleep -Seconds 1
             $proc.Refresh(); if ($proc.HasExited) { W 'server exited before the world came up - abort inject'; return }
-            $up = (Test-Path $isleLog) -and ((Get-Item $isleLog).LastWriteTime -gt $launchedAt) -and (Select-String -Path $isleLog -Pattern 'Bringing World' -Quiet)
+            $up = (Test-Path $isleLog) -and ((Get-Item $isleLog).LastWriteTime -gt $launchedAt) -and (Select-String -Path $isleLog -Pattern 'Bringing World|LogLoad: Took .* to LoadMap' -Quiet)
         }
         if (-not $up) { W 'world not up after 180 s - abort inject (the DLL would refuse at G1 anyway)'; return }
         Start-Sleep -Seconds 10
