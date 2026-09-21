@@ -110,6 +110,10 @@ want "treeKnockdownOn from mod_settings"   'TreeKnockdownOn=True'             "$
 want "bodySweepOn from mod_settings"       'BodySweepOn=False'                "$E"
 want "bodyHoldSec formatted like egg 40"   'BodyHoldSec=25.0'                 "$E"
 want "bodySweepLiftZ from mod_settings"    'BodySweepLiftZ=99000'             "$E"
+# A168 - the animated-skins pak knobs. cap=3 is the acceptance fixture (a 4th armed
+# pawn must log REFUSED); the rate is the plane's, not the pak default 20.
+want "AnimMaxAnimated from mod_settings"  'AnimMaxAnimated=3'                 "$E"
+want "AnimWriteHz from mod_settings"      'AnimWriteHz=5'                     "$E"
 # #1071: a numeric pak key without its sentinel is SILENTLY INERT.
 want "#1071 sentinel BodyHoldSet"          'BodyHoldSet=True'                 "$E"
 want "#1071 sentinel BSLiftSet"            'BSLiftSet=True'                   "$E"
@@ -142,6 +146,10 @@ want "non-identity keeps the built-in"     'AIDensity=0'                      "$
 nowant "egg AI_DENSITY did NOT win"        'AIDensity=1'                      "$G2"
 nowant "egg CORPSE_DECAY did NOT win"      'CorpseDecayMultiplier=3'          "$G2"
 want "no admins, and it says so"           'AdminsSteamIDs=0'                 "$G2"
+# A168 - no plane: no cap, half the pak's rate (Ice 09-21).
+E2="$T2/TheIsle/Saved/Config/LinuxServer/Engine.ini"
+want "no plane => AnimMaxAnimated=999"     'AnimMaxAnimated=999'               "$E2"
+want "no plane => AnimWriteHz=10"          'AnimWriteHz=10'                    "$E2"
 
 echo
 echo "== 3. THE BINARY PAIRING LADDER (#2337) - PAIRED / CACHED / DIE =="

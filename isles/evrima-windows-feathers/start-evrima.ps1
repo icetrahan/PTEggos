@@ -536,6 +536,14 @@ $modDefaults = [ordered]@{
     TreeKnockdownOn = 'False'
     AIMaxCount      = '40'
     SpeciesCapEvery = '30'
+    # A168 (Ice 2026-09-21: "idk why we're even putting a cap in the first place") -
+    # the animated-skins pak knobs (BUILD 149). NO cap by default (999 is a number
+    # no server reaches); bandwidth is held by the RATE instead - 10 Hz is half the
+    # pak's own 20, so 20 armed pawns cost what 10 did. The pak reads both at CDO
+    # construction, so a change lands on the next boot. Owned here => no longer a
+    # hand edit, and no longer carried forward (#1137) - the plane's value wins.
+    AnimMaxAnimated = '999'
+    AnimWriteHz     = '10'
 }
 # Format a number the way this script always has, so the byte-identical render
 # test is not tripped by PowerShell's own stringification (10 -> "10", not "10.0").
@@ -626,6 +634,21 @@ if ($ms) {
     if (Has $ms 'bodySweepLiftZ')  { $pakExtra['BodySweepLiftZ']  = ModNum  $ms.bodySweepLiftZ  $modDefaults.BodySweepLiftZ 0 }
     if (Has $ms 'aiMaxCount')      { $pakExtra['AIMaxCount']      = ModNum  $ms.aiMaxCount      $modDefaults.AIMaxCount 0 }
     if (Has $ms 'speciesCapEvery') { $pakExtra['SpeciesCapEvery'] = ModNum  $ms.speciesCapEvery $modDefaults.SpeciesCapEvery 0 }
+    if (Has $ms 'animMaxAnimated') { $pakExtra['AnimMaxAnimated'] = ModNum  $ms.animMaxAnimated $modDefaults.AnimMaxAnimated 0 }
+    if (Has $ms 'animWriteHz')     { $pakExtra['AnimWriteHz']     = ModNum  $ms.animWriteHz     $modDefaults.AnimWriteHz 0 }
+}
+
+# A168 - the pak turns AnimWriteHz <1 or >20 into 20 (its MOST expensive rate) and
+# AnimMaxAnimated <1 into 10, silently. The plane refuses both on write and clamps on
+# read; this only catches a value that reached us anyway - and SAYS so.
+if (@('20','10','5','4','2','1') -notcontains $pakExtra['AnimWriteHz']) {
+    Write-Host "(config) SKIPPED AnimWriteHz '$($pakExtra['AnimWriteHz'])' - not one of 20/10/5/4/2/1; rendering the default $($modDefaults.AnimWriteHz). A168"
+    $pakExtra['AnimWriteHz'] = $modDefaults.AnimWriteHz
+}
+$capN = 0
+if (-not [int]::TryParse([string]$pakExtra['AnimMaxAnimated'], [ref]$capN) -or $capN -lt 1 -or $capN -gt 999) {
+    Write-Host "(config) SKIPPED AnimMaxAnimated '$($pakExtra['AnimMaxAnimated'])' - not a whole number 1..999; rendering the default $($modDefaults.AnimMaxAnimated). A168"
+    $pakExtra['AnimMaxAnimated'] = $modDefaults.AnimMaxAnimated
 }
 
 # --- #1071 SENTINELS, DERIVED. Never authored, never a panel field. ------------
