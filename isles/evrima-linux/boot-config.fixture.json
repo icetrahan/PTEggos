@@ -45,7 +45,9 @@
       "aiMaxCount": 77,
       "speciesCapEvery": 45,
       "speciesCapList": ["Tyrannosaurus:2", "BROKEN_NO_COLON", "Triceratops:5"],
-      "forceDinoList": []
+      "forceDinoList": [],
+      "animMaxAnimated": 3,
+      "animWriteHz": 5
     }
   },
   "scope": { "server_settings": "server", "mod_settings": "server" },

@@ -945,7 +945,7 @@ mod_csv_shaped() { # $1 = newline list, $2 = label, $3 = 1 when <Species>:<N> is
 declare -A PAK_EXTRA=()
 # Order is egg 40's `$modDefaults` order - the cutover proof is a byte-diff and
 # a reordering diff is noise that hides a real one.
-PAK_EXTRA_ORDER=("BodySweepOn" "BodySweepList" "BodyHoldSec" "BodySweepLiftZ" "TreeKnockdownOn" "AIMaxCount" "SpeciesCapEvery")
+PAK_EXTRA_ORDER=("BodySweepOn" "BodySweepList" "BodyHoldSec" "BodySweepLiftZ" "TreeKnockdownOn" "AIMaxCount" "SpeciesCapEvery" "AnimMaxAnimated" "AnimWriteHz")
 PAK_EXTRA[BodySweepOn]="True"
 PAK_EXTRA[BodySweepList]="Triceratops"
 PAK_EXTRA[BodyHoldSec]="10.0"
@@ -953,6 +953,12 @@ PAK_EXTRA[BodySweepLiftZ]="150000"
 PAK_EXTRA[TreeKnockdownOn]="False"
 PAK_EXTRA[AIMaxCount]="40"
 PAK_EXTRA[SpeciesCapEvery]="30"
+# A168 (Ice 2026-09-21: "idk why we're even putting a cap in the first place") -
+# the animated-skins pak knobs (BUILD 149), same defaults as egg 40: NO cap (999 is
+# a number no server reaches), bandwidth held by the RATE (10 Hz = half the pak's
+# own 20). Read at CDO construction, so a change lands on the next boot.
+PAK_EXTRA[AnimMaxAnimated]="999"
+PAK_EXTRA[AnimWriteHz]="10"
 
 if [ -n "$CANON" ]; then
     c_has mod_settings bodySweepOn     && PAK_EXTRA[BodySweepOn]=$(c_bool mod_settings bodySweepOn)
@@ -962,6 +968,19 @@ if [ -n "$CANON" ]; then
     c_has mod_settings bodySweepLiftZ  && PAK_EXTRA[BodySweepLiftZ]=$(mod_num "$(c_str mod_settings bodySweepLiftZ)" 0 "150000")
     c_has mod_settings aiMaxCount      && PAK_EXTRA[AIMaxCount]=$(mod_num "$(c_str mod_settings aiMaxCount)" 0 "40")
     c_has mod_settings speciesCapEvery && PAK_EXTRA[SpeciesCapEvery]=$(mod_num "$(c_str mod_settings speciesCapEvery)" 0 "30")
+    c_has mod_settings animMaxAnimated && PAK_EXTRA[AnimMaxAnimated]=$(mod_num "$(c_str mod_settings animMaxAnimated)" 0 "999")
+    c_has mod_settings animWriteHz     && PAK_EXTRA[AnimWriteHz]=$(mod_num "$(c_str mod_settings animWriteHz)" 0 "10")
+fi
+# A168 - the pak turns AnimWriteHz <1 or >20 into 20 (its MOST expensive rate) and
+# AnimMaxAnimated <1 into 10, silently. The plane refuses both on write and clamps on
+# read; this only catches a value that reached us anyway - and SAYS so.
+case " 20 10 5 4 2 1 " in *" ${PAK_EXTRA[AnimWriteHz]} "*) ;; *)
+    log "config: SKIPPED AnimWriteHz '${PAK_EXTRA[AnimWriteHz]}' - not one of 20/10/5/4/2/1; rendering the default 10. A168"
+    PAK_EXTRA[AnimWriteHz]="10" ;;
+esac
+if ! [[ "${PAK_EXTRA[AnimMaxAnimated]}" =~ ^[0-9]{1,3}$ ]] || [ "${PAK_EXTRA[AnimMaxAnimated]}" -lt 1 ]; then
+    log "config: SKIPPED AnimMaxAnimated '${PAK_EXTRA[AnimMaxAnimated]}' - not a whole number 1..999; rendering the default 999. A168"
+    PAK_EXTRA[AnimMaxAnimated]="999"
 fi
 
 # #1071 WIRE SENTINELS, DERIVED - never a panel field, never authored.
