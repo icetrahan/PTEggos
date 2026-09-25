@@ -1055,6 +1055,67 @@ if ($cbOn) {
 }
 
 # ---------------------------------------------------------------------------
+# primal-loader: THE GAME LOADS ITS OWN COMM-BAN DLL (A230, 2026-09-25).
+# The injector job below finds the game's process from OUTSIDE and reaches into it; on Legacy
+# that outside step failed two ways in two days (#2700 wrong pid, #2724 right pid refused) and
+# servers ran for hours without their DLL. ROOT FIX: dsound.dll above (Ultimate ASI Loader,
+# the sigbypass lane's) already loads every *.asi beside the exe at process start, so
+# primal-loader.asi (PTEggos loader/primal-loader) runs INSIDE this server's own process on
+# every start and LoadLibraryW's commban.dll itself once THIS boot's world is up (+10 s) - the
+# same moment the injector was proven at. The injector job is now the VERIFIER + fallback.
+# It MUST run after the SteamCMD update (validate strips unknown files) - it does: this block
+# sits after sigbypass + commban. dsound.dll is left to sigbypass when it is already there.
+# [!] Comm-ban OFF (no $cbReady, or PRIMAL_LOADER=0) REMOVES primal-loader.asi + .ini.
+# ---------------------------------------------------------------------------
+$ldrAsi  = Join-Path $binDirWin 'primal-loader.asi'
+$ldrIni  = Join-Path $binDirWin 'primal-loader.ini'
+$ldrLog  = Join-Path $tmpl 'primal-loader.log'
+if ($cbReady -and ((EnvOr $env:PRIMAL_LOADER '1').Trim() -ne '0')) {
+    $ldrManifestUrl = EnvOr $env:PRIMAL_LOADER_MANIFEST 'https://pub-fb6fdcc2ce914775ba41c9813f80dc10.r2.dev/primal-loader/latest.json'
+    try {
+        $ProgressPreference = 'SilentlyContinue'
+        $lm = Invoke-RestMethod -Uri $ldrManifestUrl -TimeoutSec 20
+        $lFiles = @($lm.files)
+        if (-not $lFiles -or $lFiles.Count -lt 1) { throw 'loader manifest carries no files[]' }
+        $lBad = 0
+        foreach ($fi in $lFiles) {
+            $dst = Join-Path $binDirWin $fi.name
+            if ($fi.name -ieq 'dsound.dll' -and (Test-Path $dst)) { continue }   # sigbypass owns it on Evrima
+            $h = if (Test-Path $dst) { (Get-FileHash $dst -Algorithm SHA256).Hash.ToLower() } else { '' }
+            if ($h -eq ("" + $fi.sha256).ToLower()) { continue }
+            $tmpf = "$dst.download"
+            Invoke-WebRequest -Uri $fi.url -OutFile $tmpf -UseBasicParsing
+            $sha = (Get-FileHash $tmpf -Algorithm SHA256).Hash.ToLower()
+            if ($sha -ne ("" + $fi.sha256).ToLower()) {
+                Write-Host "(primal-loader) sha256 MISMATCH on $($fi.name) (got $sha) - discarding"
+                Remove-Item $tmpf -Force -ErrorAction SilentlyContinue; $lBad++
+            } else { Move-Item -Force $tmpf $dst; Write-Host "(primal-loader) placed $($fi.name) ($($fi.size) bytes, v$($lm.version))" }
+        }
+        $ini = @(
+            '; Primal Hosted - written by start-evrima.ps1 every boot. Do not edit.',
+            "log=$ldrLog",
+            "world_log=$(Join-Path $game 'TheIsle\Saved\Logs\TheIsle.log')",
+            'world_match=LogWorld: Bringing World',
+            'world_match=to LoadMap(',
+            'world_timeout_s=600',
+            'settle_s=10',
+            'retry_s=30',
+            'retries=20',
+            "load=$cbDll"
+        ) -join "`r`n"
+        Set-Content -Path $ldrIni -Value $ini -Encoding ascii
+        "===== boot $(Get-Date -Format o) (wrapper) - loader v$($lm.version), files sha-verified=$($lBad -eq 0) =====" | Out-File -FilePath $ldrLog -Encoding ascii
+        if ($lBad -eq 0) { Write-Host "(primal-loader) v$($lm.version) in place (sha-verified): the game loads commban.dll ITSELF at world-up; log -> _primal/primal-loader.log" }
+        else { Write-Host "(primal-loader) $lBad file(s) failed sha - the injector watchdog carries this boot" }
+    } catch {
+        Write-Host "(primal-loader) manifest/download failed: $_ - the injector watchdog carries this boot"
+    }
+} else {
+    foreach ($f in @($ldrAsi, $ldrIni)) { if (Test-Path $f) { Remove-Item -Force $f -ErrorAction SilentlyContinue } }
+    Write-Host "(primal-loader) off (commban ready=$cbReady PRIMAL_LOADER=$($env:PRIMAL_LOADER)) - primal-loader.asi/.ini removed, the game loads nothing by itself"
+}
+
+# ---------------------------------------------------------------------------
 # LAUNCH (foreground; Ptero restarts on exit). -stdout so feathers captures console.
 #
 # Launch the REAL Shipping binary directly, NOT the 0.23MB root TheIsleServer.exe
@@ -1208,8 +1269,8 @@ if ($cbReady) {
     # #2700: identity (Find-OwnServer), retry, a VERIFIED-or-FAILED verdict, and a report to
     # the plane (POST /v1/boot-report, this server's own phsk_ key); the supervisor below
     # prints the verdict loudly. The DLL's own off-box witness stays `commban_silent`.
-    $cbJob = Start-Job -Name primal-commban-inject -ArgumentList $cbDll, $before, $cbInjLog, $isleLog, $launchedAt, $volRoot, ${function:Find-OwnServer}.ToString(), $cbTries, "$cbBaseR/v1/boot-report", $phsk -ScriptBlock {
-        param($dll, $beforeIds, $log, $isleLog, $launchedAt, $vol, $findSrc, $tries, $reportUrl, $key)
+    $cbJob = Start-Job -Name primal-commban-inject -ArgumentList $cbDll, $before, $cbInjLog, $isleLog, $launchedAt, $volRoot, ${function:Find-OwnServer}.ToString(), $cbTries, "$cbBaseR/v1/boot-report", $phsk, $ldrLog -ScriptBlock {
+        param($dll, $beforeIds, $log, $isleLog, $launchedAt, $vol, $findSrc, $tries, $reportUrl, $key, $loaderLog)
         function W($m) { "$(Get-Date -Format 'HH:mm:ss') $m" | Out-File -FilePath $log -Append -Encoding ascii }
         Set-Item -Path function:Find-OwnServer -Value ([scriptblock]::Create($findSrc))
         Add-Type -TypeDefinition @'
@@ -1227,11 +1288,15 @@ public static class PInj {
 }
 '@
         "===== primal-commban-inject $(Get-Date -Format o) =====" | Out-File -FilePath $log -Encoding ascii
-        W "identity: exe under $vol\, not running before launch, started >= $($launchedAt.ToString('HH:mm:ss')) - user $env:USERNAME, $tries attempt(s)"
         $name = [IO.Path]::GetFileName($dll)
+        $modLike = [IO.Path]::GetFileNameWithoutExtension($dll) + '*' + [IO.Path]::GetExtension($dll)
+        # Seconds the in-process loader gets after the world line (its own settle is 10) / between watchdog passes.
+        $graceS = 30; try { if ($env:PRIMAL_INJECT_GRACE_S) { $graceS = [Math]::Max(0, [int]$env:PRIMAL_INJECT_GRACE_S) } } catch { }
+        $watchS = 60; try { if ($env:PRIMAL_INJECT_WATCH_S) { $watchS = [Math]::Max(1, [int]$env:PRIMAL_INJECT_WATCH_S) } } catch { }
+        W "identity: exe under $vol\, not running before launch, started >= $($launchedAt.ToString('HH:mm:ss')) - user $env:USERNAME; burst $tries, then every $watchS s while the server runs (A230)"
         function Has-Mod([int]$procId) {
             # $true = in the module list, $false = enumerated and absent, $null = could not enumerate
-            try { return [bool](Get-Process -Id $procId -Module -ErrorAction Stop | Where-Object { $_.ModuleName -ieq $name }) } catch { return $null }
+            try { return [bool](Get-Process -Id $procId -Module -ErrorAction Stop | Where-Object { $_.ModuleName -like $modLike }) } catch { return $null }
         }
         # Whose process may we inject? The wrapper's own user, OR the node's per-server user. Feathers runs
         # each game as pt_<first 8 chars of the volume uuid> while this wrapper can run as the machine
@@ -1299,43 +1364,70 @@ public static class PInj {
                 return "report FAILED: $($_.Exception.Message)"
             }
         }
-        function Fail-Early([string]$why) {
-            W "FAILED: $why"
-            $rep = Report @{ ok = $false; reason = $why; pid = $null; path = $null } 0
-            return "FAILED: $why ($rep)"
+        # ---- A230: VERIFY, then KEEP it verified, for as long as THIS server's process lives ----
+        # 1. wait for our process (<= 60 s) and THIS boot's world (<= 600 s, the loader's own budget);
+        # 2. give the in-process primal-loader its settle (+10 s) and a grace (+20 s) to load the DLL itself;
+        # 3. then every pass: Try-Inject (re-find -> identity/owner gate -> "already loaded" = healthy).
+        #    Healthy -> VERIFIED (once per pid; says whether primal-loader or the injector put it there).
+        #    Absent  -> inject; the first attempts back off 5/10/20 s, then one attempt every 60 s,
+        #    FOREVER while the process lives (the old job gave up after 4 and the server ran mod-less for
+        #    hours, #2724). The plane hears the first FAILED and the eventual VERIFIED (which resolves it).
+        #    A module that DISAPPEARS from a verified pid is logged as WATCHDOG and re-injected.
+        # AMBIGUOUS / wrong owner stay refusals on every pass - never a guess (#2700).
+        for ($i = 0; $i -lt 120 -and @(Find-OwnServer $vol $beforeIds $launchedAt).Count -eq 0; $i++) { Start-Sleep -Milliseconds 500 }
+        if (@(Find-OwnServer $vol $beforeIds $launchedAt).Count -eq 0) {
+            $r = @{ ok = $false; reason = "no process of THIS server (exe under $vol) appeared within 60 s"; pid = $null; path = $null }
+            W "FAILED: $($r.reason)"; $rep = Report $r 0
+            return "FAILED: $($r.reason) ($rep)"
         }
-
-        # Wait (<= 30 s) for THIS server's process.
-        for ($i = 0; $i -lt 60 -and @(Find-OwnServer $vol $beforeIds $launchedAt).Count -eq 0; $i++) { Start-Sleep -Milliseconds 500 }
-        if (@(Find-OwnServer $vol $beforeIds $launchedAt).Count -eq 0) { return (Fail-Early "no process of THIS server (exe under $vol) appeared within 30 s") }
-        # The world, from THIS boot's log (recreated at launch; a line from the previous
-        # boot cannot pass the LastWriteTime check).
         $up = $false
-        for ($i = 0; $i -lt 180 -and -not $up; $i++) {
-            Start-Sleep -Seconds 1
-            if (@(Find-OwnServer $vol $beforeIds $launchedAt).Count -eq 0) { return (Fail-Early 'server exited before the world came up') }
-            $up = (Test-Path $isleLog) -and ((Get-Item $isleLog).LastWriteTime -gt $launchedAt) -and (Select-String -Path $isleLog -Pattern 'Bringing World|LogLoad: Took .* to LoadMap' -Quiet)
+        for ($i = 0; $i -lt 600 -and -not $up; $i++) {
+            if (@(Find-OwnServer $vol $beforeIds $launchedAt).Count -eq 0) { W 'server process ended before its world came up - nothing to verify (the next boot starts over)'; return 'ENDED before the world came up' }
+            $up = (Test-Path $isleLog) -and ((Get-Item $isleLog).LastWriteTime -gt $launchedAt) -and (Select-String -Path $isleLog -Pattern 'LogWorld: Bringing World|LogLoad: Took .* to LoadMap' -Quiet)
+            if (-not $up) { Start-Sleep -Seconds 1 }
         }
-        if (-not $up) { return (Fail-Early 'world not up after 180 s (the DLL would refuse at G1 anyway)') }
-        Start-Sleep -Seconds 10
-        $r = $null
-        for ($n = 1; $n -le $tries; $n++) {
+        W $(if ($up) { "world is up; waiting $graceS s for primal-loader (in-process) before the first check" } else { "world line not seen in 600 s - checking anyway" })
+        Start-Sleep -Seconds $graceS
+        $verifiedPid = $null; $failReported = $false; $n = 0
+        while ($true) {
             $r = Try-Inject
-            if ($r.ok) { break }
-            W "attempt $n/$tries FAILED: $($r.reason)"
-            if ($n -lt $tries) { Start-Sleep -Seconds ([Math]::Min(30, 5 * [Math]::Pow(2, $n - 1))) }
-        }
-        if ($r.ok) {
-            W "VERIFIED: $name is loaded in pid $($r.pid) ($($r.path)) - attempt $n/$tries, $($r.reason)"
-            $rep = Report $r $n
-            "VERIFIED pid $($r.pid) attempt $n/$tries ($rep)"
-        } else {
-            W "FAILED: $name is NOT loaded after $tries attempt(s) - last: $($r.reason)"
-            $rep = Report $r $tries
-            "FAILED after $tries attempt(s): $($r.reason) ($rep)"
+            if ($r.ok) {
+                # A pass that had to INJECT into the pid we had already verified = the DLL went missing
+                # and this pass healed it (the watchdog case). Said and reported, never silent.
+                if ($r.reason -ne 'already loaded' -and $verifiedPid -and $r.pid -eq $verifiedPid) {
+                    W "WATCHDOG: $name was GONE from verified pid $($r.pid) - re-injected"
+                    $verifiedPid = $null
+                }
+                if ($r.pid -ne $verifiedPid) {
+                    $via = if ($r.reason -ne 'already loaded') { "the injector (attempt $([Math]::Max(1, $n)))" }
+                           elseif ((Test-Path $loaderLog) -and (Select-String -Path $loaderLog -Pattern "pid $($r.pid) LOADED" -SimpleMatch -Quiet)) { 'primal-loader (in-process, no injection)' }
+                           else { 'already present (hot-swap or a previous pass)' }
+                    W "VERIFIED: $name is loaded in pid $($r.pid) ($($r.path)) - via $via"
+                    $rep = Report $r ([Math]::Max(1, $n))
+                    "VERIFIED pid $($r.pid) via $via ($rep)"
+                    $verifiedPid = $r.pid; $failReported = $false; $n = 0
+                }
+                Start-Sleep -Seconds $watchS
+                continue
+            }
+            if (-not $r.pid -and $r.reason -like 'no process of THIS server*') {
+                W "server process ended - the watchdog stops (a new boot starts a new one)"
+                return 'ENDED (server process exited)'
+            }
+            if ($verifiedPid -and $r.pid -eq $verifiedPid) { W "WATCHDOG: $name was GONE from verified pid $($r.pid) - re-inject FAILED, retrying" }
+            $verifiedPid = $null
+            $n++
+            W "attempt $n FAILED: $($r.reason)"
+            if (-not $failReported -and $n -ge $tries) {
+                W "FAILED: the mod is NOT loaded after $n attempt(s) - last: $($r.reason) - STILL RETRYING every $watchS s while this server runs"
+                $rep = Report $r $n
+                "FAILED after $n attempt(s), still retrying: $($r.reason) ($rep)"
+                $failReported = $true
+            }
+            if ($n -lt $tries) { Start-Sleep -Seconds ([Math]::Min(30, 5 * [Math]::Pow(2, $n - 1))) } else { Start-Sleep -Seconds $watchS }
         }
     }
-    Write-Host "(commban) injector armed (identity = exe under $volRoot; waits for the world, then +10 s; $cbTries attempt(s); result -> _primal/primal-commban-inject.log; DLL log -> TheIsle\Binaries\Win64\commban.log)"
+    Write-Host "(commban) verify+heal armed (identity = exe under $volRoot; primal-loader first, then inject: burst $cbTries + every 60 s while the server runs; result -> _primal/primal-commban-inject.log; loader -> _primal/primal-loader.log; DLL log -> TheIsle\Binaries\Win64\commban.log)"
 }
 
 Dbg "launching (server will detach; we supervise the real process)"
@@ -1368,20 +1460,28 @@ if ($own.Count -gt 1) {
     Dbg "WARNING: $($own.Count) processes under $volRoot - supervising newest $($proc.Id)"
 }
 Dbg "supervising server pid $($proc.Id) ($($proc.Path))"
-# The comm-ban inject verdict, LOUD, on the console the moment the injector finishes (#2700).
+# The verify+heal job's verdicts, LOUD, on the console the moment each one happens (#2700, A230).
+# The job lives as long as the server, so its lines are drained incrementally, never waited for.
 function Show-InjectVerdict {
-    if (-not $script:cbJob -or $script:cbJob.State -eq 'Running' -or $script:cbJob.State -eq 'NotStarted') { return }
-    $v = ('' + (Receive-Job $script:cbJob -ErrorAction SilentlyContinue | Select-Object -Last 1)).Trim()
-    if ($v -like 'VERIFIED*') { Write-Host "(commban) inject $v" }
-    else {
-        if (-not $v) { $v = "injector ended ($($script:cbJob.State)) with NO verdict - read _primal/primal-commban-inject.log" }
-        Write-Host '(commban) ****************************************************************'
-        Write-Host "(commban) *** COMM-BAN DLL NOT LOADED: $v"
-        Write-Host '(commban) *** Comm-banned players can chat on this server. Restart it. (#2700)'
-        Write-Host '(commban) ****************************************************************'
+    if (-not $script:cbJob) { return }
+    foreach ($line in @(Receive-Job $script:cbJob -ErrorAction SilentlyContinue)) {
+        $v = ('' + $line).Trim()
+        if (-not $v) { continue }
+        if ($v -like 'VERIFIED*') { Write-Host "(commban) inject $v" }
+        elseif ($v -like 'ENDED*') { Write-Host "(commban) verify+heal $v" }
+        else {
+            Write-Host '(commban) ****************************************************************'
+            Write-Host "(commban) *** COMM-BAN DLL NOT LOADED: $v"
+            Write-Host '(commban) *** Comm-banned players can chat on this server. The wrapper keeps'
+            Write-Host '(commban) *** retrying every 60 s; read _primal/primal-commban-inject.log. (#2700, A230)'
+            Write-Host '(commban) ****************************************************************'
+        }
     }
-    Remove-Job $script:cbJob -Force -ErrorAction SilentlyContinue
-    $script:cbJob = $null
+    if ($script:cbJob.State -ne 'Running' -and $script:cbJob.State -ne 'NotStarted') {
+        if ($script:cbJob.State -ne 'Completed') { Write-Host "(commban) *** verify+heal job ended $($script:cbJob.State) - read _primal/primal-commban-inject.log" }
+        Remove-Job $script:cbJob -Force -ErrorAction SilentlyContinue
+        $script:cbJob = $null
+    }
 }
 
 $pos = 0
@@ -1403,5 +1503,7 @@ while (-not $proc.HasExited) {
     Start-Sleep -Milliseconds 750
     $proc.Refresh()
 }
+Show-InjectVerdict
+if ($script:cbJob) { Stop-Job $script:cbJob -ErrorAction SilentlyContinue; Remove-Job $script:cbJob -Force -ErrorAction SilentlyContinue }
 Dbg "server pid $($proc.Id) exited"
 Write-Host "(exit) $(Get-Date -Format HH:mm:ss) server process ended; Ptero will restart per policy."
