@@ -515,17 +515,51 @@ $ErrorActionPreference = 'Continue'
 $url = "$map`?Port=$gamePort`?QueryPort=$queryPort`?MaxPlayers=$($cfg.MaxPlayers)`?game=$($cfg.GameMode)`?listen"
 Write-Host "(start) $(Get-Date -Format HH:mm:ss) launching: $url"
 $before = @(Get-Process TheIsleServer-Win64-Shipping -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
+$launchedAt = Get-Date
 
-# Primal DLL mod injection (deployment scaffold). Arm a background job that waits
-# for the NEW server process, then LoadLibraryW-injects the DLL via CreateRemoteThread
-# (same technique as isle_mod_rebuild/inject_isle_mod.py, done in-process with P/Invoke
-# so the container needs no Python). Result -> _primal/primal-inject.log. The final
-# live inject + command-fetch verification is the remaining "last bit of testing".
+# *** #2700 (2026-09-24) - WHICH PROCESS IS OURS. A Windows node runs MANY Isle servers
+# (Legacy AND Evrima share one exe name), and they restart in the same second. The old
+# rule - "the first TheIsleServer-Win64-Shipping that was not running before launch" -
+# picked DM NA's process (another tenant, pt_9ef0f72e) at Noobz Legacy 2's 01:01:05Z
+# boot. OpenProcess was denied only because every server runs as its own pt_ user; the
+# server then ran 4.5 h with NO mod and nothing said so. It nearly repeated at 05:25Z.
+# IDENTITY now: the exe lives under THIS server's own volume, it was not running before
+# this launch, and it started after it. Nothing else counts. Two matches = REFUSE by
+# name (a stale boot of this same server is still alive) - never guess between them.
+# The injector job and the supervisor below both use this one function.
+$volRoot = (Resolve-Path $root).ProviderPath.TrimEnd('\')
+function Find-OwnServer([string]$vol, $beforeIds, [datetime]$since) {
+    $prefix = $vol.TrimEnd('\') + '\'
+    foreach ($p in @(Get-Process TheIsleServer-Win64-Shipping -ErrorAction SilentlyContinue)) {
+        if ($beforeIds -contains $p.Id) { continue }
+        # .Path is $null for a process we may not query (another pt_ user's) - excluded.
+        $path = $null; try { $path = $p.Path } catch { }
+        if (-not $path -or -not $path.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { continue }
+        $gone = $false; try { $gone = $p.HasExited } catch { }
+        if ($gone) { continue }
+        $st = $null; try { $st = $p.StartTime } catch { }
+        if ($st -and $st -lt $since.AddSeconds(-5)) { continue }
+        $p
+    }
+}
+
+# Primal DLL mod injection. A background job waits for THIS server's new process
+# (Find-OwnServer), then LoadLibraryW-injects the DLL via CreateRemoteThread and
+# VERIFIES it from the process's own module list. #2700: it retries (re-find ->
+# OpenProcess -> inject -> verify) and, when every attempt fails, it (1) writes
+# FAILED to _primal/primal-inject.log, (2) reports to the plane's ops spine
+# (POST /v1/boot-report with this server's own phsk_ key - no new secret), which
+# pages, and (3) the supervisor below prints the verdict LOUDLY on the console.
+# The boot continues either way (the game runs), but a failed inject is never
+# folded into success (rule 13): the verdict line is VERIFIED or FAILED, nothing else.
+$injJob = $null
 if ($env:ENABLE_PRIMAL_MOD -eq '1' -and (Test-Path $primalDll)) {
     $injLog = Join-Path $primalDir 'primal-inject.log'
-    Start-Job -Name primal-inject -ArgumentList $primalDll, $before, $injLog -ScriptBlock {
-        param($dll, $beforeIds, $log)
+    $injTries = 4; try { $injTries = [Math]::Max(1, [int](EnvOr $env:PRIMAL_INJECT_ATTEMPTS '4')) } catch { }
+    $injJob = Start-Job -Name primal-inject -ArgumentList $primalDll, $before, $injLog, $volRoot, $launchedAt, ${function:Find-OwnServer}.ToString(), $injTries, "$dataBase/v1/boot-report", $phsk -ScriptBlock {
+        param($dll, $beforeIds, $log, $vol, $launchedAt, $findSrc, $tries, $reportUrl, $key)
         function W($m) { "$(Get-Date -Format 'HH:mm:ss') $m" | Out-File -FilePath $log -Append -Encoding ascii }
+        Set-Item -Path function:Find-OwnServer -Value ([scriptblock]::Create($findSrc))
         Add-Type -TypeDefinition @'
 using System; using System.Runtime.InteropServices;
 public static class PInj {
@@ -537,41 +571,94 @@ public static class PInj {
   [DllImport("kernel32", SetLastError=true)] public static extern IntPtr CreateRemoteThread(IntPtr h, IntPtr sa, uint sz, IntPtr start, IntPtr arg, uint fl, IntPtr tid);
   [DllImport("kernel32", SetLastError=true)] public static extern uint WaitForSingleObject(IntPtr h, uint ms);
   [DllImport("kernel32", SetLastError=true)] public static extern bool GetExitCodeThread(IntPtr h, out uint code);
+  [DllImport("kernel32", SetLastError=true)] public static extern bool CloseHandle(IntPtr h);
 }
 '@
         "===== primal-inject $(Get-Date -Format o) =====" | Out-File -FilePath $log -Encoding ascii
-        $proc = $null
-        for ($i = 0; $i -lt 60 -and -not $proc; $i++) {
-            Start-Sleep -Milliseconds 500
-            $proc = Get-Process TheIsleServer-Win64-Shipping -ErrorAction SilentlyContinue | Where-Object { $beforeIds -notcontains $_.Id } | Select-Object -First 1
-        }
-        if (-not $proc) { W 'no server process appeared - abort inject'; return }
-        Start-Sleep -Seconds 10   # let the server finish init before injecting
-        W "injecting into pid $($proc.Id): $dll"
-        $bytes = [System.Text.Encoding]::Unicode.GetBytes($dll + [char]0)
-        $h = [PInj]::OpenProcess(0x1F0FFF, $false, [uint32]$proc.Id)
-        if ($h -eq [IntPtr]::Zero) { W 'OpenProcess failed'; return }
-        $addr = [PInj]::VirtualAllocEx($h, [IntPtr]::Zero, [uint32]$bytes.Length, 0x3000, 0x04)
-        if ($addr -eq [IntPtr]::Zero) { W 'VirtualAllocEx failed'; return }
-        $wrote = [UIntPtr]::Zero
-        [void][PInj]::WriteProcessMemory($h, $addr, $bytes, [uint32]$bytes.Length, [ref]$wrote)
-        $ll = [PInj]::GetProcAddress([PInj]::GetModuleHandleA('kernel32.dll'), 'LoadLibraryW')
-        $t = [PInj]::CreateRemoteThread($h, [IntPtr]::Zero, 0, $ll, $addr, 0, [IntPtr]::Zero)
-        if ($t -eq [IntPtr]::Zero) { W 'CreateRemoteThread failed'; return }
-        [void][PInj]::WaitForSingleObject($t, 15000)
-        # LoadLibraryW's return (HMODULE, low 32 bits) is the remote thread exit code:
-        # 0 => load FAILED (bad deps / bitness / DllMain crash); non-zero => loaded.
-        $ec = 0; [void][PInj]::GetExitCodeThread($t, [ref]$ec)
-        W "inject call complete (LoadLibraryW exit=0x$("{0:x}" -f $ec); 0 = load FAILED)"
-        Start-Sleep -Seconds 2
+        W "identity: exe under $vol\, not running before launch, started >= $($launchedAt.ToString('HH:mm:ss')) - user $env:USERNAME, $tries attempt(s)"
         $name = [IO.Path]::GetFileName($dll)
-        try {
-            $mod = Get-Process -Id $proc.Id -Module -ErrorAction Stop | Where-Object { $_.ModuleName -ieq $name }
-            if ($mod) { W "VERIFIED: $name is loaded in pid $($proc.Id)  ($($mod.FileName))" }
-            else      { W "WARNING: $name NOT present in pid $($proc.Id) module list after inject" }
-        } catch { W "module verify inconclusive (enum failed: $($_.Exception.Message))" }
-    } | Out-Null
-    Write-Host "(primal-mod) injector armed (post-boot; result -> _primal/primal-inject.log; mod runtime -> _primal/legacy_mod.log)"
+        function Has-Mod([int]$procId) {
+            # $true = in the module list, $false = enumerated and absent, $null = could not enumerate
+            try { return [bool](Get-Process -Id $procId -Module -ErrorAction Stop | Where-Object { $_.ModuleName -ieq $name }) } catch { return $null }
+        }
+        function Owner-Of([int]$procId) {
+            try {
+                $w = Get-CimInstance Win32_Process -Filter "ProcessId=$procId" -ErrorAction Stop
+                $o = Invoke-CimMethod -InputObject $w -MethodName GetOwner -ErrorAction Stop
+                if ($o.ReturnValue -eq 0) { return "$($o.User)" }
+            } catch { }
+            return $null
+        }
+        # One attempt. Returns @{ ok; reason; pid; path }. Every exit names itself.
+        function Try-Inject {
+            $c = @(Find-OwnServer $vol $beforeIds $launchedAt)
+            if ($c.Count -eq 0) { return @{ ok = $false; reason = "no process of THIS server (exe under $vol) is running"; pid = $null; path = $null } }
+            if ($c.Count -gt 1) { return @{ ok = $false; reason = "AMBIGUOUS - $($c.Count) new processes under this volume (pids $(($c | ForEach-Object { $_.Id }) -join ', ')); refusing to guess"; pid = $null; path = $null } }
+            $p = $c[0]; $ppath = $p.Path
+            $owner = Owner-Of $p.Id
+            if ($owner -and $env:USERNAME -and $owner -ine $env:USERNAME) { return @{ ok = $false; reason = "pid $($p.Id) is owned by '$owner', not '$env:USERNAME' - refusing"; pid = $p.Id; path = $ppath } }
+            $already = Has-Mod $p.Id
+            if ($already -eq $true) { return @{ ok = $true; reason = "already loaded"; pid = $p.Id; path = $ppath } }
+            W "injecting into pid $($p.Id) (owner=$(if ($owner) { $owner } else { 'unread' }), exe=$ppath): $dll"
+            $bytes = [System.Text.Encoding]::Unicode.GetBytes($dll + [char]0)
+            $h = [PInj]::OpenProcess(0x1F0FFF, $false, [uint32]$p.Id)
+            if ($h -eq [IntPtr]::Zero) { return @{ ok = $false; reason = "OpenProcess failed on pid $($p.Id) (Win32 error $([Runtime.InteropServices.Marshal]::GetLastWin32Error()))"; pid = $p.Id; path = $ppath } }
+            try {
+                $addr = [PInj]::VirtualAllocEx($h, [IntPtr]::Zero, [uint32]$bytes.Length, 0x3000, 0x04)
+                if ($addr -eq [IntPtr]::Zero) { return @{ ok = $false; reason = "VirtualAllocEx failed on pid $($p.Id)"; pid = $p.Id; path = $ppath } }
+                $wrote = [UIntPtr]::Zero
+                [void][PInj]::WriteProcessMemory($h, $addr, $bytes, [uint32]$bytes.Length, [ref]$wrote)
+                $ll = [PInj]::GetProcAddress([PInj]::GetModuleHandleA('kernel32.dll'), 'LoadLibraryW')
+                $t = [PInj]::CreateRemoteThread($h, [IntPtr]::Zero, 0, $ll, $addr, 0, [IntPtr]::Zero)
+                if ($t -eq [IntPtr]::Zero) { return @{ ok = $false; reason = "CreateRemoteThread failed on pid $($p.Id)"; pid = $p.Id; path = $ppath } }
+                [void][PInj]::WaitForSingleObject($t, 15000)
+                # LoadLibraryW's return (HMODULE, low 32 bits) is the remote thread exit code:
+                # 0 => load FAILED (bad deps / bitness / DllMain crash); non-zero => loaded.
+                $ec = 0; [void][PInj]::GetExitCodeThread($t, [ref]$ec)
+                [void][PInj]::CloseHandle($t)
+                W "inject call complete (LoadLibraryW exit=0x$("{0:x}" -f $ec); 0 = load FAILED)"
+            } finally { [void][PInj]::CloseHandle($h) }
+            Start-Sleep -Seconds 2
+            # The module list is the verdict - not the exit code, not the absence of an error.
+            $has = Has-Mod $p.Id
+            if ($has -eq $true)  { return @{ ok = $true;  reason = "loaded"; pid = $p.Id; path = $ppath } }
+            if ($has -eq $false) { return @{ ok = $false; reason = "$name NOT in pid $($p.Id)'s module list after inject (LoadLibraryW exit=0x$("{0:x}" -f $ec))"; pid = $p.Id; path = $ppath } }
+            return @{ ok = $false; reason = "module list of pid $($p.Id) could not be read - UNVERIFIED"; pid = $p.Id; path = $ppath }
+        }
+        function Report($r, [int]$n) {
+            if (-not $key) { W 'NOT REPORTED off-box: no PHSK_KEY on this server'; return 'unreported (no key)' }
+            try {
+                $body = @{ stage = 'inject'; game = 'legacy'; ok = [bool]$r.ok; attempts = $n; reason = "$($r.reason)"; pid = $r.pid; exePath = "$($r.path)"; dll = $name; volume = $vol } | ConvertTo-Json -Compress
+                $resp = Invoke-RestMethod -Method Post -Uri $reportUrl -Headers @{ Authorization = "Bearer $key" } -ContentType 'application/json' -Body $body -TimeoutSec 15
+                W "reported to the plane: $($resp | ConvertTo-Json -Compress)"
+                return "reported (paged=$($resp.paged))"
+            } catch {
+                W "REPORT TO THE PLANE FAILED: $($_.Exception.Message) - the plane's own mod-absent watch is the backstop"
+                return "report FAILED: $($_.Exception.Message)"
+            }
+        }
+
+        # Wait (<= 30 s) for THIS server's process to appear, then give it 10 s of init.
+        for ($i = 0; $i -lt 60 -and @(Find-OwnServer $vol $beforeIds $launchedAt).Count -eq 0; $i++) { Start-Sleep -Milliseconds 500 }
+        Start-Sleep -Seconds 10
+        $r = $null
+        for ($n = 1; $n -le $tries; $n++) {
+            $r = Try-Inject
+            if ($r.ok) { break }
+            W "attempt $n/$tries FAILED: $($r.reason)"
+            if ($n -lt $tries) { Start-Sleep -Seconds ([Math]::Min(30, 5 * [Math]::Pow(2, $n - 1))) }
+        }
+        if ($r.ok) {
+            W "VERIFIED: $name is loaded in pid $($r.pid) ($($r.path)) - attempt $n/$tries, $($r.reason)"
+            $rep = Report $r $n
+            "VERIFIED pid $($r.pid) attempt $n/$tries ($rep)"
+        } else {
+            W "FAILED: the mod is NOT loaded after $tries attempt(s) - last: $($r.reason)"
+            $rep = Report $r $tries
+            "FAILED after $tries attempt(s): $($r.reason) ($rep)"
+        }
+    }
+    Write-Host "(primal-mod) injector armed (identity = exe under $volRoot; $injTries attempt(s); result -> _primal/primal-inject.log; mod runtime -> _primal/legacy_mod.log)"
 
     # Hot-swap watcher: stage/unstage WITHOUT a server restart. Injects a new DLL
     # version on demand when _primal/restage.flag appears (paired with the mod's
@@ -653,12 +740,38 @@ if ($mhIp -and $mhIp -ne '0.0.0.0' -and $mhIp -match '^\d{1,3}(\.\d{1,3}){3}$') 
 # `&` returns fast and we fall through to find + supervise the detached process.
 & $exe $url @mhArgs -log
 
-$proc = Get-Process TheIsleServer-Win64-Shipping -ErrorAction SilentlyContinue |
-        Where-Object { $before -notcontains $_.Id } | Select-Object -First 1
+# #2700: the SAME identity as the injector - "the first new process" here used to be
+# able to supervise ANOTHER server's life (and HasExited on another pt_ user's process
+# cannot even be read). Both of two matches are OURS (same volume), so the supervisor
+# takes the newest and SAYS so; the injector, which must not guess, refuses instead.
+$own = @()
+for ($i = 0; $i -lt 30 -and $own.Count -ne 1; $i++) {
+    $own = @(Find-OwnServer $volRoot $before $launchedAt)
+    if ($own.Count -ne 1) { Start-Sleep -Milliseconds 500 }
+}
+$proc = $own | Sort-Object { try { $_.StartTime } catch { [datetime]::MinValue } } | Select-Object -Last 1
+if ($own.Count -gt 1) { Write-Host "(start) *** $($own.Count) new server processes under THIS volume (pids $(($own | ForEach-Object { $_.Id }) -join ', ')) - supervising the newest ($($proc.Id)); a second copy of this server is running - restart it ***" }
+# The inject verdict, LOUD, on the console the moment the injector finishes (#2700).
+function Show-InjectVerdict {
+    if (-not $script:injJob -or $script:injJob.State -eq 'Running' -or $script:injJob.State -eq 'NotStarted') { return }
+    $v = ('' + (Receive-Job $script:injJob -ErrorAction SilentlyContinue | Select-Object -Last 1)).Trim()
+    if ($v -like 'VERIFIED*') { Write-Host "(primal-mod) inject $v" }
+    else {
+        if (-not $v) { $v = "injector ended ($($script:injJob.State)) with NO verdict - read _primal/primal-inject.log" }
+        Write-Host '(primal-mod) ****************************************************************'
+        Write-Host "(primal-mod) *** MOD NOT LOADED: $v"
+        Write-Host '(primal-mod) *** The game is running WITHOUT the Primal mod: no telemetry, admin,'
+        Write-Host '(primal-mod) *** storage or anticheat. Restart this server. (#2700)'
+        Write-Host '(primal-mod) ****************************************************************'
+    }
+    Remove-Job $script:injJob -Force -ErrorAction SilentlyContinue
+    $script:injJob = $null
+}
 if ($proc) {
-    Write-Host "(start) supervising detached server pid $($proc.Id)"
+    Write-Host "(start) supervising detached server pid $($proc.Id) ($($proc.Path))"
     $pos = 0
     while (-not $proc.HasExited) {
+        Show-InjectVerdict
         if (Test-Path $isleLog) {
             try {
                 $fs = [IO.File]::Open($isleLog, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
