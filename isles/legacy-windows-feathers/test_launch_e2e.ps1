@@ -11,7 +11,15 @@
 # Case OK  : new wrapper, rivals racing -> VERIFIED in ITS OWN pid, console + report agree.
 # Case FAIL: LegacyMod.dll is not a DLL -> FAILED banner on the console + ok=false report.
 # -Old     : the pre-fix wrapper under the same race, reported (not asserted) for contrast.
-param([string]$Old)
+# A230: the fake child writes THIS boot's TheIsle.log with the world line (the verify+heal job
+# waits for it), and the job runs on a 2 s cadence. The loader manifest points at a dead URL
+# here, so the INJECTOR carries these two cases (the fallback path, on purpose).
+# -Loader <dir with dsound.dll + primal-loader.asi> -FakeIsle <test_fake_isle.exe>:
+#   Case LOADER: the wrapper places both files from a (file://) manifest and writes the ini; the
+#   stand-in game (imports DSOUND, detaches like Legacy) loads LegacyMod.dll ITSELF; the job reads
+#   VERIFIED "via primal-loader" and injects nothing. Case OFF: the same volume booted with
+#   ENABLE_PRIMAL_MOD=0 has primal-loader.asi + .ini REMOVED.
+param([string]$Old, [string]$Loader, [string]$FakeIsle)
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $new  = Join-Path $here 'start-legacy.ps1'
@@ -19,10 +27,25 @@ $work = Join-Path ([IO.Path]::GetTempPath()) ("launch-e2e-" + [guid]::NewGuid().
 New-Item -ItemType Directory -Force -Path $work | Out-Null
 $fakeExe = Join-Path $work 'fake.exe'
 Add-Type -OutputAssembly $fakeExe -OutputType ConsoleApplication -TypeDefinition @'
-using System; using System.Diagnostics; using System.Threading;
+using System; using System.Diagnostics; using System.IO; using System.Threading;
 public static class FakeIsle {
   public static void Main(string[] a) {
-    if (a.Length >= 2 && a[0] == "--child") { Thread.Sleep(int.Parse(a[1]) * 1000); return; }
+    if (a.Length >= 2 && a[0] == "--child") {
+      // THIS boot's game log, shareable like UE's, with the world line after 2 s (A230).
+      string dir = Path.GetDirectoryName(Process.GetCurrentProcess().MainModule.FileName);
+      string logs = Path.GetFullPath(Path.Combine(dir, @"..\..\Saved\Logs"));
+      Directory.CreateDirectory(logs);
+      using (var fs = new FileStream(Path.Combine(logs, "TheIsle.log"), FileMode.Create, FileAccess.Write, FileShare.ReadWrite))
+      using (var w = new StreamWriter(fs)) {
+        w.WriteLine("Log file open"); w.Flush();
+        int secs = int.Parse(a[1]);
+        for (int s = 0; s < secs; s++) {
+          w.WriteLine(s == 2 ? "LogWorld: Bringing World /Game/TheIsle/Maps/Fake/Fake.Fake up for play" : "LogFake: tick " + s); w.Flush();
+          Thread.Sleep(1000);
+        }
+      }
+      return;
+    }
     string life = Environment.GetEnvironmentVariable("FAKE_LIFE"); if (string.IsNullOrEmpty(life)) life = "60";
     var psi = new ProcessStartInfo(Process.GetCurrentProcess().MainModule.FileName, "--child " + life);
     psi.UseShellExecute = false; psi.CreateNoWindow = true;
@@ -70,7 +93,8 @@ function Boot([string]$wrapper, [string]$root, [hashtable]$extra) {
     $envSave = @{}
     $vars = @{ ENABLE_PRIMAL_MOD = '1'; PRIMAL_MOD_MANIFEST = "http://127.0.0.1:$port/no-manifest.json"; PHSK_KEY = 'phsk_TEST_NOT_A_KEY'
                PRIMAL_DATA_BASE = "http://127.0.0.1:$port"; SERVER_NAME = 'e2e'; MAP = 'Isle V3'; GAME_MODE = 'Survival'; MAX_PLAYERS = '10'
-               SERVER_PORT = '17780'; SERVER_PORT_1 = '17781'; MULTIHOME_AUTO = '0'; FAKE_LIFE = '60'; PRIMAL_INJECT_ATTEMPTS = '2' }
+               SERVER_PORT = '17780'; SERVER_PORT_1 = '17781'; MULTIHOME_AUTO = '0'; FAKE_LIFE = '60'; PRIMAL_INJECT_ATTEMPTS = '2'
+               PRIMAL_INJECT_GRACE_S = '2'; PRIMAL_INJECT_WATCH_S = '2'; PRIMAL_LOADER_MANIFEST = "http://127.0.0.1:$port/no-loader.json" }
     foreach ($k in $extra.Keys) { $vars[$k] = $extra[$k] }
     foreach ($k in $vars.Keys) { $envSave[$k] = [Environment]::GetEnvironmentVariable($k); [Environment]::SetEnvironmentVariable($k, $vars[$k]) }
     $outF = Join-Path $root 'console.txt'
@@ -88,7 +112,8 @@ function Boot([string]$wrapper, [string]$root, [hashtable]$extra) {
     }
     [void]$w.WaitForExit(150000)
     if (-not $w.HasExited) { Stop-Process -Id $w.Id -Force }
-    return @{ out = (Get-Content $outF -Raw -ErrorAction SilentlyContinue); log = (Get-Content (Join-Path $root '_primal\primal-inject.log') -Raw -ErrorAction SilentlyContinue) }
+    return @{ out = (Get-Content $outF -Raw -ErrorAction SilentlyContinue); log = (Get-Content (Join-Path $root '_primal\primal-inject.log') -Raw -ErrorAction SilentlyContinue)
+              ldr = (Get-Content (Join-Path $root '_primal\primal-loader.log') -Raw -ErrorAction SilentlyContinue) }
 }
 
 $fail = 0; $lines = New-Object System.Collections.Generic.List[string]
@@ -118,6 +143,30 @@ try {
     Check 'fail: one ok=false report with a reason' ($rep2.Count -eq 1 -and $rep2[0].ok -eq $false -and $rep2[0].reason) (($rep2 | ConvertTo-Json -Compress))
     Check 'fail: the boot still continued (supervised to the end)' ("$($r2.out)" -match 'Legacy server process ended') ''
     Write-Host '--- fail: console (primal-mod lines) ---'; "$($r2.out)" -split "`r?`n" | Where-Object { $_ -match 'primal-mod|\(start\) supervising' } | ForEach-Object { Write-Host "  $_" }
+
+    # ── LOADER (A230): the game loads its own mod; the job only verifies ──
+    if ($Loader) {
+        $ld = New-Root 'loader' $true
+        Copy-Item $FakeIsle (Join-Path $ld 'server\TheIsle\Binaries\Win64\TheIsleServer-Win64-Shipping.exe') -Force
+        $files = foreach ($n in 'dsound.dll', 'primal-loader.asi') {
+            $f = Join-Path $Loader $n
+            @{ name = $n; url = ([Uri]$f).AbsoluteUri; sha256 = (Get-FileHash $f -Algorithm SHA256).Hash.ToLower(); size = (Get-Item $f).Length }
+        }
+        $man = Join-Path $work 'loader-latest.json'
+        @{ version = 'e2e'; files = @($files) } | ConvertTo-Json -Depth 4 | Set-Content $man -Encoding ascii
+        $r4 = Boot $new $ld @{ PRIMAL_LOADER_MANIFEST = ([Uri]$man).AbsoluteUri; PRIMAL_INJECT_GRACE_S = '15' }
+        $bin = Join-Path $ld 'server\TheIsle\Binaries\Win64'
+        $sup4 = [regex]::Match("$($r4.out)", 'supervising detached server pid (\d+)')
+        Check 'loader: wrapper placed dsound.dll + primal-loader.asi (sha-verified) + ini' ((Test-Path "$bin\dsound.dll") -and (Test-Path "$bin\primal-loader.asi") -and (Test-Path "$bin\primal-loader.ini") -and ("$($r4.out)" -match '\(primal-loader\) ve2e in place \(sha-verified\)')) ([regex]::Match("$($r4.out)", '\(primal-loader\)[^\r\n]*in place[^\r\n]*').Value)
+        Check 'loader: the game loaded LegacyMod.dll ITSELF (its own pid)' ($sup4.Success -and "$($r4.ldr)" -match "pid $($sup4.Groups[1].Value) LOADED: .*LegacyMod\.dll") ([regex]::Match("$($r4.ldr)", '[^\r\n]*LOADED[^\r\n]*').Value)
+        Check 'loader: job VERIFIED via primal-loader, injected nothing' (("$($r4.log)" -match "VERIFIED: LegacyMod.dll is loaded in pid $($sup4.Groups[1].Value) .* via primal-loader") -and ("$($r4.log)" -notmatch 'injecting into pid')) ([regex]::Match("$($r4.log)", 'VERIFIED:[^\r\n]*').Value)
+        $rep4 = @(Reports | Where-Object { $_.volume -like "*\loader" })
+        Check 'loader: one ok=true report' ($rep4.Count -eq 1 -and $rep4[0].ok -eq $true) (($rep4 | ConvertTo-Json -Compress))
+        Write-Host '--- loader: primal-loader.log ---'; "$($r4.ldr)".Trim() -split "`r?`n" | ForEach-Object { Write-Host "  $_" }
+        # ── OFF: the same volume, mod disabled -> the loader files are removed, nothing loads ──
+        $r5 = Boot $new $ld @{ ENABLE_PRIMAL_MOD = '0'; FAKE_LIFE = '6'; PRIMAL_LOADER_MANIFEST = ([Uri]$man).AbsoluteUri }
+        Check 'off: primal-loader.asi + .ini removed' (-not (Test-Path "$bin\primal-loader.asi") -and -not (Test-Path "$bin\primal-loader.ini") -and ("$($r5.out)" -match '\(primal-loader\) off')) ([regex]::Match("$($r5.out)", '\(primal-loader\) off[^\r\n]*').Value)
+    }
 
     # ── OLD, same race, for the record ──
     if ($Old) {

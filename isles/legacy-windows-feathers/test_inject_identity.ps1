@@ -1,4 +1,5 @@
-# #2700 acceptance - the boot injector picks ITS OWN server's process, retries, and reports.
+# #2700 + A230 acceptance - the boot verify+heal job picks ITS OWN server's process, retries
+# (a burst, then forever while the process lives), re-injects a DLL that disappears, and reports.
 #
 # Runs the REAL code out of start-legacy.ps1 (Find-OwnServer + the primal-inject job's
 # scriptblock, lifted by AST - no copy that could drift) against fake volumes on THIS box:
@@ -9,6 +10,10 @@
 # in that pid's module list. Then the failure paths: nothing under the volume, two under
 # it (AMBIGUOUS), each must end FAILED and POST a report (captured by a local listener).
 # The pre-fix one-liner is run beside it on the same race so the difference is on record.
+# A230 cases: a broken DLL that is fixed AFTER the burst still ends VERIFIED (no give-up); a DLL
+# unloaded from a verified pid is re-injected (WATCHDOG); a DLL the in-process primal-loader
+# loaded is VERIFIED "via primal-loader" with no injection. The job never ends on its own now,
+# so the harness reads its lines as they come and stops it.
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File test_inject_identity.ps1
 # Exit 0 = every case PASS. Needs no admin; kills only the pids it started.
@@ -78,24 +83,68 @@ $listener = Start-Job -ArgumentList $port, $capDir -ScriptBlock {
 }
 Start-Sleep -Milliseconds 700
 
-function Run-Injector([string]$vol, $before, [datetime]$at, [int]$tries) {
+# The job inherits these: no loader grace (nothing loads in-process here unless a case says so),
+# a 2 s watchdog/retry cadence instead of 60 s.
+$env:PRIMAL_INJECT_GRACE_S = '0'; $env:PRIMAL_INJECT_WATCH_S = '2'
+function Run-Injector([string]$vol, $before, [datetime]$at, [int]$tries, [string]$url = "http://127.0.0.1:$port/v1/boot-report") {
     $log = Join-Path $vol "_primal\$jobName.log"
     $dll = Join-Path $vol "_primal\$dllName"
-    $url = "http://127.0.0.1:$port/v1/boot-report"
+    $ldr = Join-Path $vol '_primal\primal-loader.log'
+    # THIS boot's log carries the world-up line (written after launch, as the engine would)
+    $isle = Join-Path $vol 'server\TheIsle\Saved\Logs\TheIsle.log'
+    New-Item -ItemType Directory -Force -Path (Split-Path $isle) | Out-Null
+    Start-Sleep -Milliseconds 50
+    'LogLoad: Took 1.5 seconds to LoadMap(/Game/TheIsle/Maps/Game/Gateway/Gateway)' | Out-File $isle -Encoding ascii
     if ($Egg -eq 'evrima') {
-        # THIS boot's log carries the world-up line (written after launch, as the engine would)
-        $isle = Join-Path $vol 'server\TheIsle\Saved\Logs\TheIsle.log'
-        New-Item -ItemType Directory -Force -Path (Split-Path $isle) | Out-Null
-        Start-Sleep -Milliseconds 50
-        'LogLoad: Took 1.5 seconds to LoadMap(/Game/TheIsle/Maps/Game/Gateway/Gateway)' | Out-File $isle -Encoding ascii
-        $a = @($dll, $before, $log, $isle, $at, $vol, $findSrc, $tries, $url, 'phsk_TEST_NOT_A_KEY')
+        $a = @($dll, $before, $log, $isle, $at, $vol, $findSrc, $tries, $url, 'phsk_TEST_NOT_A_KEY', $ldr)
     } else {
-        $a = @($dll, $before, $log, $vol, $at, $findSrc, $tries, $url, 'phsk_TEST_NOT_A_KEY')
+        $a = @($dll, $before, $log, $vol, $at, $findSrc, $tries, $url, 'phsk_TEST_NOT_A_KEY', $isle, $ldr)
     }
     $j = Start-Job -ScriptBlock ([scriptblock]::Create($injectSrc)) -ArgumentList $a
-    return @{ job = $j; log = $log }
+    return @{ job = $j; log = $log; seen = (New-Object System.Collections.Generic.List[string]) }
 }
-function Finish($r) { [void](Wait-Job $r.job -Timeout 240); $v = ('' + (Receive-Job $r.job | Select-Object -Last 1)).Trim(); Remove-Job $r.job -Force; return $v }
+# The next verdict line the job emits that matches $like (or any line), within $sec. The job keeps running.
+function Next-Line($r, [string]$like = '*', [int]$sec = 240) {
+    $until = (Get-Date).AddSeconds($sec)
+    while ((Get-Date) -lt $until) {
+        foreach ($l in @(Receive-Job $r.job -ErrorAction SilentlyContinue)) { $r.seen.Add(('' + $l).Trim()) }
+        $hit = $r.seen | Where-Object { $_ -like $like } | Select-Object -First 1
+        if ($hit) { [void]$r.seen.Remove($hit); return $hit }
+        if ($r.job.State -ne 'Running' -and $r.job.State -ne 'NotStarted') {
+            foreach ($l in @(Receive-Job $r.job -ErrorAction SilentlyContinue)) { $r.seen.Add(('' + $l).Trim()) }
+            $hit = $r.seen | Where-Object { $_ -like $like } | Select-Object -First 1
+            if ($hit) { [void]$r.seen.Remove($hit) }
+            return $hit
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    return $null
+}
+function Stop-Run($r) { Stop-Job $r.job -ErrorAction SilentlyContinue; Remove-Job $r.job -Force -ErrorAction SilentlyContinue }
+function Finish($r) { $v = Next-Line $r; Stop-Run $r; return ('' + $v).Trim() }
+# FreeLibrary the DLL inside another process (what a module "disappearing" looks like to the watchdog).
+Add-Type -TypeDefinition @'
+using System; using System.Runtime.InteropServices;
+public static class PFree {
+  [DllImport("kernel32", SetLastError=true)] public static extern IntPtr OpenProcess(uint a, bool inh, uint pid);
+  [DllImport("kernel32", CharSet=CharSet.Ansi)] public static extern IntPtr GetModuleHandleA(string n);
+  [DllImport("kernel32", CharSet=CharSet.Ansi)] public static extern IntPtr GetProcAddress(IntPtr h, string n);
+  [DllImport("kernel32", SetLastError=true)] public static extern IntPtr CreateRemoteThread(IntPtr h, IntPtr sa, uint sz, IntPtr start, IntPtr arg, uint fl, IntPtr tid);
+  [DllImport("kernel32")] public static extern uint WaitForSingleObject(IntPtr h, uint ms);
+  [DllImport("kernel32")] public static extern bool CloseHandle(IntPtr h);
+}
+'@
+function Unload-In([int]$procId, [string]$modName) {
+    $m = Get-Process -Id $procId -Module | Where-Object { $_.ModuleName -ieq $modName } | Select-Object -First 1
+    if (-not $m) { return $false }
+    $h = [PFree]::OpenProcess(0x1F0FFF, $false, [uint32]$procId)
+    $fl = [PFree]::GetProcAddress([PFree]::GetModuleHandleA('kernel32.dll'), 'FreeLibrary')
+    for ($k = 0; $k -lt 8 -and (Get-Process -Id $procId -Module | Where-Object { $_.ModuleName -ieq $modName }); $k++) {
+        $t = [PFree]::CreateRemoteThread($h, [IntPtr]::Zero, 0, $fl, $m.BaseAddress, 0, [IntPtr]::Zero); [void][PFree]::WaitForSingleObject($t, 5000); [void][PFree]::CloseHandle($t)
+    }
+    [void][PFree]::CloseHandle($h)
+    return -not (Get-Process -Id $procId -Module | Where-Object { $_.ModuleName -ieq $modName })
+}
 function Old-Pick($before) { (Get-Process TheIsleServer-Win64-Shipping -ErrorAction SilentlyContinue | Where-Object { $before -notcontains $_.Id } | Select-Object -First 1).Id }
 
 $results = New-Object System.Collections.Generic.List[string]
@@ -131,7 +180,7 @@ try {
     $before = @(Get-Process TheIsleServer-Win64-Shipping -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
     $at = Get-Date; $p1 = Start-Fake $volA; $p2 = Start-Fake $volA
     $vd = Finish (Run-Injector $volA $before $at 2)
-    Check 'ambiguous -> FAILED' ($vd -like 'FAILED after 2 attempt(s): AMBIGUOUS*') "'$vd'"
+    Check 'ambiguous -> FAILED' ($vd -like 'FAILED after 2 attempt(s), still retrying: AMBIGUOUS*') "'$vd'"
     Check 'ambiguous -> nothing injected' ((@(Get-Process -Id $p1.Id, $p2.Id -Module | Where-Object { $_.ModuleName -ieq $dllName }).Count) -eq 0) "$dllName in neither pid"
     Stop-Process -Id $p1.Id, $p2.Id -Force -ErrorAction SilentlyContinue
 
@@ -139,6 +188,84 @@ try {
     Start-Sleep -Milliseconds 500
     $reps = @(Get-ChildItem $capDir -Filter *.json | Sort-Object { [int]$_.BaseName } | ForEach-Object { Get-Content $_.FullName -Raw | ConvertFrom-Json })
     Check 'one report per injector run' ($reps.Count -eq 6) "$($reps.Count) POSTs captured"
+    $baseReports = $reps.Count
+
+    # A230 1: NO GIVE-UP. The DLL is unloadable through the whole burst (FAILED reported), then fixed:
+    # the job must keep trying and end VERIFIED - one ok=false then one ok=true report.
+    $dllC = Join-Path $volC "_primal\$dllName"
+    [IO.File]::WriteAllText($dllC, 'not a dll')
+    $before = @(Get-Process TheIsleServer-Win64-Shipping -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
+    $at = Get-Date; $pc = Start-Fake $volC
+    $rc = Run-Injector $volC $before $at 2
+    $f1 = Next-Line $rc 'FAILED*'
+    Check 'no-give-up: burst FAILED is reported, still retrying' ($f1 -like 'FAILED after 2 attempt(s), still retrying:*') "'$f1'"
+    Start-Sleep -Seconds 3
+    Check 'no-give-up: the job is still running after the burst' ($rc.job.State -eq 'Running') "job state $($rc.job.State)"
+    Copy-Item $srcDll $dllC -Force
+    $v1 = Next-Line $rc 'VERIFIED*' 60
+    Check 'no-give-up: fixed DLL -> VERIFIED by the injector, same pid' ($v1 -like "VERIFIED pid $($pc.Id) via the injector*") "'$v1'"
+
+    # A230 2: WATCHDOG. Unload the DLL from the verified pid: the job must notice and re-inject.
+    $gone = Unload-In $pc.Id $dllName
+    $v2 = Next-Line $rc 'VERIFIED*' 60
+    $wd = Select-String -Path $rc.log -Pattern "WATCHDOG: $dllName was GONE from verified pid $($pc.Id)" -SimpleMatch -Quiet
+    Check 'watchdog: unloaded DLL is re-injected' ($gone -and $wd -and $v2 -like "VERIFIED pid $($pc.Id) via the injector*") "unloaded=$gone watchdog-line=$wd then '$v2'"
+    if (-not ($gone -and $wd)) {
+        Write-Host "--- watchdog debug: job state $($rc.job.State); log:"; Get-Content $rc.log | ForEach-Object { Write-Host "  $_" }
+        $rc.job.ChildJobs | ForEach-Object { $_.Error } | ForEach-Object { Write-Host "  JOB ERROR: $_" }
+        Write-Host "  modules now: $((Get-Process -Id $pc.Id -Module | Where-Object { $_.ModuleName -like 'LegacyMod*' -or $_.ModuleName -like 'commban*' } | ForEach-Object ModuleName) -join ',')"
+    }
+    Stop-Run $rc; Stop-Process -Id $pc.Id -Force -ErrorAction SilentlyContinue
+
+    # A230 3: the in-process loader already loaded it -> VERIFIED "via primal-loader", NOTHING injected.
+    # Stand-in for primal-loader: get the DLL into the process first (a one-off run, stopped at
+    # VERIFIED), write the loader's own log line for that pid, then start the real job fresh.
+    $before = @(Get-Process TheIsleServer-Win64-Shipping -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
+    $at = Get-Date; $pa = Start-Fake $volA
+    Start-Sleep -Milliseconds 300
+    $pre = Run-Injector $volA $before $at 1; [void](Next-Line $pre 'VERIFIED*' 60); Stop-Run $pre
+    "2026-09-25T00:00:00Z pid $($pa.Id) LOADED: $volA\_primal\$dllName handle=0x0" | Out-File (Join-Path $volA '_primal\primal-loader.log') -Encoding ascii
+    $ra = Run-Injector $volA $before $at 2
+    $v3 = Next-Line $ra 'VERIFIED*' 60
+    $injected = Select-String -Path $ra.log -Pattern 'injecting into pid' -SimpleMatch -Quiet
+    Check 'loader-loaded: VERIFIED via primal-loader, no injection' ($v3 -like "VERIFIED pid $($pa.Id) via primal-loader*" -and -not $injected) "'$v3' injected-by-job=$injected"
+    Stop-Run $ra; Stop-Process -Id $pa.Id -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 500
+    $all = @(Get-ChildItem $capDir -Filter *.json | Sort-Object { [int]$_.BaseName } | ForEach-Object { Get-Content $_.FullName -Raw | ConvertFrom-Json })
+    $newer = @($all | Select-Object -Skip $baseReports)
+    # no-give-up: fail + ok; watchdog: ok; the pre-load run: ok; loader-loaded: ok
+    Check 'A230 reports: first FAILED, then each VERIFIED' ($newer.Count -eq 5 -and $newer[0].body.ok -eq $false -and @($newer | Select-Object -Skip 1 | Where-Object { -not $_.body.ok }).Count -eq 0) (($newer | ForEach-Object { "ok=$($_.body.ok)" }) -join ' ')
+
+    # A230 4: THE PLANE IS DOWN when the job verifies (09-25 19:46Z Noobz L1: the VERIFIED POST timed out
+    # once and was dropped). The verdict must be re-sent on a later pass and arrive once the plane is up.
+    $port2 = Get-Random -Minimum 40001 -Maximum 50000
+    $cap2 = Join-Path $work 'reports2'; New-Item -ItemType Directory -Force -Path $cap2 | Out-Null
+    $before = @(Get-Process TheIsleServer-Win64-Shipping -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
+    $at = Get-Date; $pb = Start-Fake $volB
+    $rr = Run-Injector $volB $before $at 2 "http://127.0.0.1:$port2/v1/boot-report"
+    $v4 = Next-Line $rr 'VERIFIED*' 60
+    Check 'plane-down: VERIFIED, and says the report FAILED' ($v4 -like "VERIFIED pid $($pb.Id)*report FAILED*") "'$v4'"
+    $late = Start-Job -ArgumentList $port2, $cap2 -ScriptBlock {
+        param($port, $dir)
+        $l = [System.Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $port); $l.Start()
+        $c = $l.AcceptTcpClient(); $s = $c.GetStream(); $s.ReadTimeout = 5000
+        $buf = New-Object byte[] 65536; $got = 0
+        do { $n = $s.Read($buf, $got, $buf.Length - $got); $got += $n; $req = [Text.Encoding]::UTF8.GetString($buf, 0, $got)
+             $he = $req.IndexOf("`r`n`r`n"); $len = if ($req -match 'Content-Length:\s*(\d+)') { [int]$Matches[1] } else { 0 }
+        } while ($n -gt 0 -and ($he -lt 0 -or $got -lt $he + 4 + $len))
+        $req.Substring($he + 4) | Out-File (Join-Path $dir 'late.json') -Encoding utf8
+        $resp = '{"ok":true,"recorded":true,"paged":false}'
+        $out = [Text.Encoding]::ASCII.GetBytes("HTTP/1.1 200 OK`r`nContent-Type: application/json`r`nContent-Length: $($resp.Length)`r`nConnection: close`r`n`r`n$resp")
+        $s.Write($out, 0, $out.Length); $s.Flush(); $c.Close(); $l.Stop()
+    }
+    $t0 = Get-Date
+    while (-not (Test-Path (Join-Path $cap2 'late.json')) -and ((Get-Date) - $t0).TotalSeconds -lt 30) { Start-Sleep -Milliseconds 300 }
+    Start-Sleep -Milliseconds 500
+    $lateBody = if (Test-Path (Join-Path $cap2 'late.json')) { Get-Content (Join-Path $cap2 'late.json') -Raw | ConvertFrom-Json } else { $null }
+    $retryLine = Select-String -Path $rr.log -Pattern 'verdict reached the plane on a retry' -SimpleMatch -Quiet
+    Check 'plane-down: the SAME verdict arrives once the plane is up' ($lateBody -and $lateBody.ok -eq $true -and $lateBody.pid -eq $pb.Id -and $retryLine) "late POST ok=$($lateBody.ok) pid=$($lateBody.pid); log says retried=$retryLine"
+    Stop-Run $rr; Stop-Job $late -ErrorAction SilentlyContinue; Remove-Job $late -Force -ErrorAction SilentlyContinue
+    Stop-Process -Id $pb.Id -Force -ErrorAction SilentlyContinue
     Check 'reports carry the server key' (@($reps | Where-Object { $_.auth -ne 'phsk_TEST_NOT_A_KEY' }).Count -eq 0) 'Bearer = the phsk_ passed in'
     $bad = @($reps | Where-Object { -not $_.body.ok })
     Check 'failures reported as ok=false' ($bad.Count -eq 2 -and @($bad | Where-Object { $_.body.stage -ne 'inject' -or -not $_.body.reason -or $_.body.game -ne $Egg }).Count -eq 0) (($bad | ForEach-Object { "ok=$($_.body.ok) reason='$($_.body.reason)'" }) -join ' | ')
