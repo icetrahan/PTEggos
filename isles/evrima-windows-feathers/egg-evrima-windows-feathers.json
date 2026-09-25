@@ -412,7 +412,7 @@
             "name": "Primal Comm-ban DLL",
             "description": "OPS ONLY (BACKLOG A38, DECISIONS 2026-09-17 R5). 1 = place + inject the isolated comm-ban DLL (sha-pinned from R2 primal-commban/latest.json) after the world is up. Empty/0 = off (default). Evrima only. Independent of ENABLE_PRIMAL_MOD. The OWNER's on/off is the panel's comm-ban card; this only decides whether the binary is on the box.",
             "env_variable": "PRIMAL_COMMBAN",
-            "default_value": "",
+            "default_value": "1",
             "user_viewable": false,
             "user_editable": false,
             "rules": "nullable|string|in:0,1",
