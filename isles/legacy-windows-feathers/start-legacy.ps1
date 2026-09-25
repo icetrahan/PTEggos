@@ -746,7 +746,15 @@ public static class PInj {
         W $(if ($up) { "world is up; waiting $graceS s for primal-loader (in-process) before the first check" } else { "world line not seen in 600 s - checking anyway" })
         Start-Sleep -Seconds $graceS
         $verifiedPid = $null; $failReported = $false; $n = 0
+        # A verdict the plane did not acknowledge is re-sent on every pass until it is (rule 12 - never
+        # ack-once: 09-25 19:46Z Noobz L1's VERIFIED POST timed out once and its page stayed raised).
+        # Only the LATEST verdict is kept: a newer one replaces an older unsent one.
+        $unsent = $null
         while ($true) {
+            if ($unsent) {
+                $rep = Report $unsent.r $unsent.n
+                if ($rep -notlike 'report FAILED*') { W "the earlier $(if ($unsent.r.ok) { 'VERIFIED' } else { 'FAILED' }) verdict reached the plane on a retry ($rep)"; $unsent = $null }
+            }
             $r = Try-Inject
             if ($r.ok) {
                 # A pass that had to INJECT into the pid we had already verified = the DLL went missing
@@ -761,6 +769,7 @@ public static class PInj {
                            else { 'already present (hot-swap or a previous pass)' }
                     W "VERIFIED: $name is loaded in pid $($r.pid) ($($r.path)) - via $via"
                     $rep = Report $r ([Math]::Max(1, $n))
+                    $unsent = if ($rep -like 'report FAILED*') { @{ r = $r; n = [Math]::Max(1, $n) } } else { $null }
                     "VERIFIED pid $($r.pid) via $via ($rep)"
                     $verifiedPid = $r.pid; $failReported = $false; $n = 0
                 }
@@ -778,6 +787,7 @@ public static class PInj {
             if (-not $failReported -and $n -ge $tries) {
                 W "FAILED: the mod is NOT loaded after $n attempt(s) - last: $($r.reason) - STILL RETRYING every $watchS s while this server runs"
                 $rep = Report $r $n
+                $unsent = if ($rep -like 'report FAILED*') { @{ r = $r; n = $n } } else { $null }
                 "FAILED after $n attempt(s), still retrying: $($r.reason) ($rep)"
                 $failReported = $true
             }
