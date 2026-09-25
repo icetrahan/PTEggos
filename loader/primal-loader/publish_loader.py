@@ -16,7 +16,7 @@ After upload every file is re-downloaded from the PUBLIC url and its sha compare
 Nothing reads this manifest until a wrapper that names it boots, so publishing changes no live server.
 Requires wrangler + CLOUDFLARE_API_TOKEN/ACCOUNT_ID (from the Primal creds env if unset), never printed.
 """
-import argparse, hashlib, json, os, pathlib, subprocess, sys, tempfile, time, urllib.request
+import argparse, hashlib, json, os, pathlib, subprocess, sys, tempfile, time
 
 BUCKET = "primal-legacy-mods"
 PREFIX = "primal-loader"
@@ -32,9 +32,10 @@ def sha(b):
 
 
 def get(url):
-    req = urllib.request.Request(url + ("&" if "?" in url else "?") + f"nocache={int(time.time())}", headers={"User-Agent": "primal-loader-publish/1"})
-    with urllib.request.urlopen(req, timeout=60) as r:
-        return r.read()
+    # curl, not urllib: on the build workstation Python's TLS chain for r2.dev fails ("certificate has
+    # expired", 2026-09-25) while curl (schannel) verifies it. Cache-busted so a read-back is the live object.
+    u = url + ("&" if "?" in url else "?") + f"nocache={int(time.time())}"
+    return subprocess.run(["curl", "-sSfL", "--max-time", "60", "-A", "primal-loader-publish/1", u], capture_output=True, check=True).stdout
 
 
 def cf_env():
