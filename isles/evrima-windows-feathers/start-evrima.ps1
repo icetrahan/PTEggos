@@ -1233,6 +1233,18 @@ public static class PInj {
             # $true = in the module list, $false = enumerated and absent, $null = could not enumerate
             try { return [bool](Get-Process -Id $procId -Module -ErrorAction Stop | Where-Object { $_.ModuleName -ieq $name }) } catch { return $null }
         }
+        # Whose process may we inject? The wrapper's own user, OR the node's per-server user. Feathers runs
+        # each game as pt_<first 8 chars of the volume uuid> while this wrapper can run as the machine
+        # account (NS...$): 09-25 16:37Z the old one-user check refused the RIGHT pid on 9900080
+        # ('pt_d0e7cefe' vs 'NS1006204$') and three Legacy servers ran without the mod (xstore hotfix).
+        # An unread owner ($null) is not a refusal - Find-OwnServer's volume + start-time identity already holds.
+        function Get-VolumeUser([string]$v) { return 'pt_' + ((Split-Path $v -Leaf).Split('-')[0]) }
+        function Test-OurOwner([string]$o, [string]$v, [string]$me) {
+            if (-not $o) { return $true }
+            if ($o -ieq (Get-VolumeUser $v)) { return $true }
+            if (-not $me) { return $true }
+            return ($o -ieq $me)
+        }
         function Owner-Of([int]$procId) {
             try {
                 $w = Get-CimInstance Win32_Process -Filter "ProcessId=$procId" -ErrorAction Stop
@@ -1248,7 +1260,7 @@ public static class PInj {
             if ($c.Count -gt 1) { return @{ ok = $false; reason = "AMBIGUOUS - $($c.Count) new processes under this volume (pids $(($c | ForEach-Object { $_.Id }) -join ', ')); refusing to guess"; pid = $null; path = $null } }
             $p = $c[0]; $ppath = $p.Path
             $owner = Owner-Of $p.Id
-            if ($owner -and $env:USERNAME -and $owner -ine $env:USERNAME) { return @{ ok = $false; reason = "pid $($p.Id) is owned by '$owner', not '$env:USERNAME' - refusing"; pid = $p.Id; path = $ppath } }
+            if (-not (Test-OurOwner $owner $vol $env:USERNAME)) { return @{ ok = $false; reason = "pid $($p.Id) is owned by '$owner', not '$env:USERNAME' or '$(Get-VolumeUser $vol)' - refusing"; pid = $p.Id; path = $ppath } }
             if ((Has-Mod $p.Id) -eq $true) { return @{ ok = $true; reason = "already loaded"; pid = $p.Id; path = $ppath } }
             W "injecting into pid $($p.Id) (owner=$(if ($owner) { $owner } else { 'unread' }), exe=$ppath): $dll"
             $bytes = [System.Text.Encoding]::Unicode.GetBytes($dll + [char]0)
