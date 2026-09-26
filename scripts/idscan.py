@@ -246,6 +246,11 @@ def main(argv=None):
     except (RuntimeError, ValueError, OSError) as e:
         print("idscan: ERROR - could not scan (%s). This is not a pass." % e)
         return 2
+    if a.full and seen == 0:
+        # explicit paths that yield NOTHING = the caller pointed at untracked or unreadable files
+        # (a temp-index commit leaves new files out of `git ls-files`); rule 13: not a pass.
+        print("idscan: ERROR - --full %s scanned 0 lines: the paths are untracked, ignored or empty. This is not a pass." % " ".join(a.full))
+        return 2
     by_kind = {}
     files = set()
     for path, lineno, kind, masked in findings:
