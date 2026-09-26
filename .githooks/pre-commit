@@ -1,0 +1,18 @@
+#!/bin/sh
+# pre-commit - idscan (BACKLOG A264, BUGS #2451, hard rule 10): no Steam64 / Discord snowflake / key prefix
+# in the ADDED lines of this commit. Scans the staged diff only; prints everything MASKED.
+# Install once per clone:   git config core.hooksPath .githooks
+# The CI twin is .github/workflows/id-scan.yml; the canonical scanner is primal-everything-meta/scripts/idscan.py.
+PY=$(command -v python3 2>/dev/null || command -v python 2>/dev/null)
+if [ -z "$PY" ]; then
+    echo "idscan: no python on PATH - refusing to commit blind (rule 13: a scan that did not run is not a pass)"
+    exit 1
+fi
+if ! "$PY" scripts/idscan.py --staged; then
+    echo
+    echo "idscan refused the staged diff (see above). Mask the id (7656119...NN), use a synthetic fixture"
+    echo "(a Steam64 at or below 76561197960265728 is impossible; 76561199999xxxxxx is the test tail), or add an"
+    echo ".idscan-allow entry WITH a reason. A key never gets an entry: rotate it."
+    exit 1
+fi
+exit 0

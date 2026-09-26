@@ -1,0 +1,38 @@
+# id-scan.yml - refuse id-shaped numbers and key-shaped strings in the ADDED lines of every push and PR
+# (BACKLOG A264, BUGS #2451, hard rule 10). scripts/idscan.py is a verbatim copy of
+# primal-everything-meta/scripts/idscan.py (the canonical one; fix it there, then re-copy). The gate reads
+# added lines only, so the existing backlog (printed by the census step, REPORT ONLY) never blocks a commit.
+# The workstation-side twin is .githooks/pre-commit (git config core.hooksPath .githooks).
+name: id-scan
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  id-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Gate - no Steam64 / Discord snowflake / key prefix in the added lines
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            python3 scripts/idscan.py --diff-base "origin/${{ github.base_ref }}"
+          else
+            python3 scripts/idscan.py --range "${{ github.event.before }}..${{ github.sha }}"
+          fi
+
+      - name: Census - the whole tree, REPORT ONLY (the FIX backlog; never a gate)
+        if: always()
+        shell: bash
+        run: python3 scripts/idscan.py --full --report --max-print 0 || true
