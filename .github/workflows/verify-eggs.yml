@@ -1,0 +1,36 @@
+# verify eggs — every egg's embedded wrapper blob == its loose, reviewable file (BACKLOG A255).
+#
+# Why: A168 (#3, d305940) changed isles/evrima-linux/start-evrima.sh but not the blob embedded in the egg,
+# merged green (the only CI here builds docker images), and main sat with `verify.py` FAILING 3 gates from
+# 09-22 on. A new egg-42 server or an egg import would have installed the pre-A168 wrapper, and nothing said so.
+# This job runs each egg's own judge on every push and pull request; it touches no image and fires nothing.
+#
+# ⛔ It lives outside isles/** on purpose: a change to this file does not trigger isles.yml (#398, rule 5).
+name: verify eggs
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: egg 40 — Evrima (Windows / feathers)
+        if: always()
+        run: python isles/evrima-windows-feathers/verify.py
+      - name: egg 42 — Evrima (Linux / Primal)
+        if: always()
+        run: python isles/evrima-linux/verify.py
+      - name: egg 41 — Legacy (Windows / feathers)
+        if: always()
+        run: python .github/scripts/verify_legacy_egg.py
