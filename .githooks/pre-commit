@@ -11,7 +11,7 @@ fi
 if ! "$PY" scripts/idscan.py --staged; then
     echo
     echo "idscan refused the staged diff (see above). Mask the id (7656119...NN), use a synthetic fixture"
-    echo "(a Steam64 below 76561197960265729 is impossible; 76561199999xxxxxx is the test tail), or add an"
+    echo "(a Steam64 at or below 76561197960265728 is impossible; 76561199999xxxxxx is the test tail), or add an"
     echo ".idscan-allow entry WITH a reason. A key never gets an entry: rotate it."
     exit 1
 fi

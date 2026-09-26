@@ -9,7 +9,7 @@ plane's tests, 28 in tenant_web's — every one written by a session doing the r
 proof) that did not mask on the way past. A rule nobody checks is a wish. This checks.
 
 What it flags (each with a synthetic-by-shape rule, so fixtures do not need an allowlist entry):
-  steam64     7656119 + 10 digits.   SYNTHETIC: below 76561197960265729 (an impossible account id) or
+  steam64     7656119 + 10 digits.   SYNTHETIC: at or below 76561197960265728 (account id 0, impossible) or
               the documented test tail 76561199999xxxxxx.
   snowflake   17-19 digits that DECODE to a Discord timestamp between 2015 and a year from now
               (a 19-digit ns timestamp or a 17-digit round number is not a snowflake).
@@ -51,7 +51,8 @@ KEY = re.compile(
     r"|https://discord(?:app)?\.com/api/webhooks/[0-9]+/[A-Za-z0-9_-]{30,}"
     r"|[MN][A-Za-z0-9_-]{23,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,})")
 MARKERS = ("idscan-ok", "scan-ok")
-STEAM_FLOOR = 76561197960265729          # account id 1
+STEAM64_BASE = 76561197960265728         # account id 0 - itself synthetic by the rule below, so this file passes its own gate
+STEAM_FLOOR = STEAM64_BASE + 1
 STEAM_TEST_TAIL = re.compile(r"^76561199999\d{6}$")
 DISCORD_EPOCH_MS = 1420070400000
 SNOW_MIN_MS = 1420070400000              # 2015-01-01
@@ -260,7 +261,7 @@ def main(argv=None):
              " (REPORT ONLY - not a gate)" if a.report else ""))
     if findings and not a.report:
         print("idscan: REFUSED. Mask the id (7656119...NN / 1234...56), replace a fixture with a synthetic one "
-              "(a Steam64 below 76561197960265729 is impossible, 76561199999xxxxxx is the test tail), "
+              "(a Steam64 at or below 76561197960265728 is impossible, 76561199999xxxxxx is the test tail), "
               "or add `# idscan-ok` / an `.idscan-allow` entry WITH a reason. A key never gets an entry: rotate it.")
         return 1
     return 0
