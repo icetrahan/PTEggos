@@ -1,0 +1,4 @@
+# .idscan-allow - values/paths scripts/idscan.py treats as known-safe. One entry per line, EVERY entry with a reason.
+# Forms: a literal value - a glob on the value (7650000000*) - path:<glob> for whole files that are synthetic by policy.
+# A KEY never gets an entry: rotate it. Existing history is not gated (the gate reads added lines only).
+765000000*   # legacy-windows-feathers/render_test.py: synthetic ids for the egg rung (17 digits, not a Steam64, decode inside the snowflake window)
