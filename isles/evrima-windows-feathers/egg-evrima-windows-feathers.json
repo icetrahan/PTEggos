@@ -419,6 +419,16 @@
             "field_type": "text"
         },
         {
+            "name": "Primal Comm-ban Manifest (lab)",
+            "description": "OPS ONLY, LAB ONLY (BUGS #3168, A430). Overrides the URL of the comm-ban manifest the boot script verifies commban.dll against (default: the R2 primal-commban/latest.json). Blank = the default (EnvOr treats blank as unset), which every customer server keeps. Set only on a probe-lab server for a test DLL sitting.",
+            "env_variable": "PRIMAL_COMMBAN_MANIFEST",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "nullable|string|max:300",
+            "field_type": "text"
+        },
+        {
             "name": "Primal Mod Manifest",
             "description": "Primal Mod Manifest (rendered into Game.ini each boot).",
             "env_variable": "PRIMAL_MOD_MANIFEST",
