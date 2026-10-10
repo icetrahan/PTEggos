@@ -173,6 +173,33 @@ that is expected, and `verify.py` compares the *committed* file only.
 named the pre-BUILD-39 28 KB wrapper as of 2026-07-29). Anchor on block names, not
 line numbers, and let `embed.py` own the sha.
 
+## Mass migration and patrol timing (BUGS #3328, #3362)
+
+Ice's ruling: one mass migration per run, 15 minutes after every boot, started by `commban.dll`'s mass
+rung (1.3.0+). The game's own mass check runs every `MassMigrationTime` from boot and is never saved
+across a restart, so on a 12 h schedule it never fired.
+
+The wrapper writes three `[/script/theisle.tigamesession]` keys into the rendered Game.ini:
+
+| Key | Value | When |
+|---|---|---|
+| `MassMigrationDisableTime` | `2700` (45 min) | every boot |
+| `IndividualPatrolTime` | `300` (a patrol zone handed out every 5 min, not 20) | every boot |
+| `MassMigrationTime` | `172800` (48 h, above every restart gap, so the game's own check never fires) | only when THIS boot loads a commban.dll whose manifest version is 1.3.0 or newer |
+
+⛔ `MassMigrationTime` must never be parked on a server whose DLL does not start the mass: that server
+would never get one. The game also requires T > 1.1 × D, or a mass never ends; `test_masstiming.ps1`
+asserts both. Every boot says which way it went:
+
+- `(config) Game.ini: MassMigrationDisableTime=2700 IndividualPatrolTime=300`
+- `(config) Game.ini: MassMigrationTime=172800 - commban v<x> starts this run's mass itself`, or
+  `(config) Game.ini: MassMigrationTime left to the game (12 h) - no commban mass rung this boot (...)`
+- the DLL's own `[MASS]` lines in `Win64\commban.log` (`started at +<s> s … zone=…`, `ended at …`, or
+  `SKIPPED` / `FAILED` / `NO SEAM` with the reason).
+
+`powershell -ExecutionPolicy Bypass -File isles/evrima-windows-feathers/test_masstiming.ps1` runs the
+real lines lifted from the wrapper (42 checks).
+
 ## 🔴 ASCII ONLY in `start-evrima.ps1` **and `install.ps1`**
 
 The wrapper is UTF-8 **without a BOM**, so PowerShell 5.1 on the feathers node

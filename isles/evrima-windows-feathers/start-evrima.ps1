@@ -489,6 +489,22 @@ if ($aiOn -match '^(1|true|yes|on)$' -and $aiUpload -and $aiManifest) {
     Write-Host "(config) Game.ini: AI-learning section OMITTED ($why) - the game's own defaults apply"
 }
 
+# Mass migration + patrol timing, fleet constants (Ice's ruling; BUGS #3328, #3362).
+# MassMigrationTime is set after the commban block: only a boot whose DLL starts the run's mass
+# itself may park the game's own check, or that server never gets a mass at all.
+function Set-SessionKey([string]$ini, [string]$key, [string]$value) {
+    $ini = [regex]::Replace($ini, "(?mi)^[ \t]*$([regex]::Escape($key))[ \t]*=.*\r?\n", '')
+    $re = New-Object System.Text.RegularExpressions.Regex('(?mi)^\[/script/theisle\.tigamesession\][ \t]*\r?\n')
+    return $re.Replace($ini, ('$0' + $key + '=' + $value + "`r`n"), 1)
+}
+$gi = Set-SessionKey $gi 'MassMigrationDisableTime' '2700'
+$gi = Set-SessionKey $gi 'IndividualPatrolTime' '300'
+if ($gi -match '(?mi)^MassMigrationDisableTime=2700\r?$' -and $gi -match '(?mi)^IndividualPatrolTime=300\r?$') {
+    Write-Host "(config) Game.ini: MassMigrationDisableTime=2700 IndividualPatrolTime=300"
+} else {
+    Write-Host "(config) Game.ini: WARNING no [/script/theisle.tigamesession] section - migration timing NOT set, the game's defaults apply"
+}
+
 Set-Content -Path (Join-Path $cfgDir 'Game.ini') -Value $gi -Encoding ascii
 Write-Host ("(config) rendered Game.ini from {0} config (players={1}, classes={2}, admins={3}, vips={4})" -f `
             $cfgSource, $cfg.MaxPlayers, $classes.Count, $cfg.AdminSteamIds.Count, $cfg.VipSteamIds.Count)
@@ -1098,6 +1114,19 @@ if ($cbOn) {
     # Off = inert. A stale ini beside the game would hold a key for nothing; drop it.
     if (Test-Path $cbIni) { Remove-Item $cbIni -Force -ErrorAction SilentlyContinue }
     Write-Host "(commban) off (PRIMAL_COMMBAN != 1)"
+}
+
+# MassMigrationTime = 48 h (above every restart gap) only when THIS boot loads a commban.dll whose
+# mass rung (>= 1.3.0) starts the run's one mass; otherwise the game's own 12 h check stands.
+$cbMassVer = 0
+if ($cbReady -and $cm -and (('' + $cm.version) -match '^(\d+)\.(\d+)')) { $cbMassVer = [int]$Matches[1] * 1000 + [int]$Matches[2] }
+$giPath = Join-Path $cfgDir 'Game.ini'
+if ($cbMassVer -ge 1003) {
+    $gi = Set-SessionKey (Get-Content $giPath -Raw) 'MassMigrationTime' '172800'
+    Set-Content -Path $giPath -Value $gi -Encoding ascii
+    Write-Host "(config) Game.ini: MassMigrationTime=172800 - commban v$($cm.version) starts this run's mass itself"
+} else {
+    Write-Host "(config) Game.ini: MassMigrationTime left to the game (12 h) - no commban mass rung this boot (ready=$cbReady, v=$(if ($cm) { $cm.version } else { 'none' }))"
 }
 
 # ---------------------------------------------------------------------------
