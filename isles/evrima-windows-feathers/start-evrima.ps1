@@ -688,52 +688,103 @@ if ($ms -and (Has $ms 'forceDinoList')) { $pakForceDino = ModCsvShaped $ms.force
 # (`mod_settings`), which is what that hatch was pretending to be.
 
 # --- CARRY FORWARD every hand-set pak key this script does not own (#1137) -----
-# The emit below REPLACES the whole section, so any key it does not re-emit is
-# destroyed on every boot. Until now exactly ONE key survived that: the #1071
-# PrimalModLogging carry-forward, hardcoded by name. That made the config
-# mandate's delivery half unbuildable - the pak could declare a new Config
-# variable and read it, and nothing on this box could ever put it in the file
-# (#1137). BUILD 120's four IrisCensus* scalars are the first casualties: a
-# hand-added IrisCensusOn=True worked for exactly one boot, then reverted.
-# This generalises that one special case into the rule it always implied, so a
-# future pak knob needs NO wrapper edit to become settable.
+# The emit below REPLACES the whole section, so a key it does not re-emit is gone
+# on the next boot unless it is carried. The set is "keys this script OWNS", not
+# "keys it emitted this boot": ForceDinoList and SpeciesCapList are omitted when
+# empty, and judging by what was emitted would make clearing them impossible.
 #
-# ⚠️ THE SET BELOW IS "KEYS THIS SCRIPT OWNS", NOT "KEYS IT EMITTED THIS BOOT" -
-# and that distinction is the whole correctness of this block. ForceDinoList and
-# SpeciesCapList are deliberately OMITTED when empty so the pak's own default
-# holds ("EMPTY IS NOT ZERO", above). Judged by what was emitted, clearing one in
-# the panel would carry its OLD value forward for ever and the setting would be
-# silently un-clearable - the plane would say empty and the box would not agree.
+# A carried key is operator-writable through the file manager, so the pak must
+# never read a key whose VALUE is a console command - config selects from a closed
+# set the pak owns. That rule lives with the pak; this is where the persistence it
+# depends on lives.
 #
-# ⛔ A carried key is operator-writable through the file manager, so the pak must
-# never read a key whose VALUE is a console command: config selects from a CLOSED
-# SET the pak owns (BUILD 120's IrisCensusCmds is the pattern). Otherwise this
-# block is customer-writable console execution on a box we run. That rule lives
-# with the pak and this loop cannot enforce it - it is stated here because this
-# is where the persistence it depends on was introduced.
+# The live file cannot be the only source (#3363): a clean game exit DELETES
+# Saved/Config/WindowsServer/Engine.ini. _primal/engine-carry.ini keeps the last
+# known hand-set keys - written at every render, and by the supervise loop when
+# the live file changes while the server runs - and is read only when the live
+# file or its pak section is missing. It never holds an owned key (no ApiToken).
 $pakManaged = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
 foreach ($k in @('ApiToken', 'PollURL', 'ForceDinoList', 'SpeciesCapList')) { [void]$pakManaged.Add($k) }
 foreach ($k in $pakExtra.Keys) { [void]$pakManaged.Add($k) }
 
-$carried = [ordered]@{}
+$pakSectionName = '/Game/TheIsle/Core/Session/BP_TIGameSession.BP_TIGameSession_C'
 $liveEnginePath = Join-Path $cfgDir 'Engine.ini'
-if (Test-Path $liveEnginePath) {
-    # Scope the scan to the pak's OWN section. The #1071 code this replaces used a
-    # bare whole-file regex, which would have matched a same-named key sitting in
-    # [Core.Log] or a game section and silently promoted it into the pak's block.
-    $curEng = Get-Content $liveEnginePath -Raw
-    $secMatch = [regex]::Match(
-        $curEng,
-        "(?ms)^\s*\[/Game/TheIsle/Core/Session/BP_TIGameSession\.BP_TIGameSession_C\][^\r\n]*\r?\n(.*?)(?=^\s*\[|\z)")
-    if ($secMatch.Success) {
-        foreach ($line in ($secMatch.Groups[1].Value -split "`r?`n")) {
-            if ($line -match '^\s*[;#]') { continue }
-            if ($line -notmatch '^\s*([A-Za-z0-9_]+)\s*=\s*(.*?)\s*$') { continue }
-            $ck = $Matches[1]; $cv = $Matches[2]
-            if ($pakManaged.Contains($ck)) { continue }
-            if ($carried.Contains($ck)) { continue }   # UE takes the FIRST copy; so do we
-            $carried[$ck] = $cv
-        }
+$carryPath      = Join-Path $tmpl 'engine-carry.ini'
+
+# $null = no file, or no pak section in it: nothing to judge. An empty map = a pak
+# section with no hand-set key, which IS an answer (an operator cleared them).
+# Scoped to the pak's own section, so a same-named key in [Core.Log] is never promoted.
+function Read-HandSetPakKeys([string]$path) {
+    if (-not (Test-Path -LiteralPath $path)) { return $null }
+    $txt = Get-Content -LiteralPath $path -Raw
+    if ($null -eq $txt) { $txt = '' }
+    $m = [regex]::Match($txt, '(?ms)^\s*\[' + [regex]::Escape($pakSectionName) + '\][^\r\n]*\r?\n(.*?)(?=^\s*\[|\z)')
+    if (-not $m.Success) { return $null }
+    $keys = [ordered]@{}
+    foreach ($line in ($m.Groups[1].Value -split "`r?`n")) {
+        if ($line -match '^\s*[;#]') { continue }
+        if ($line -notmatch '^\s*([A-Za-z0-9_]+)\s*=\s*(.*?)\s*$') { continue }
+        $ck = $Matches[1]; $cv = $Matches[2]
+        if ($pakManaged.Contains($ck)) { continue }
+        if ($keys.Contains($ck)) { continue }   # UE takes the FIRST copy; so do we
+        $keys[$ck] = $cv
+    }
+    return $keys
+}
+
+function Format-PakKeys($keys) {
+    if ($keys.Count) { return (@($keys.Keys) -join ', ') } else { return 'none' }
+}
+
+# Header-only when nothing is hand-set, so "cleared" reads back as an empty map and
+# never as "no copy".
+function Save-PakCarry($keys) {
+    $lines = @("[$pakSectionName]") + @($keys.Keys | ForEach-Object { "$_=$($keys[$_])" })
+    $tmpCarry = "$carryPath.tmp"
+    [System.IO.File]::WriteAllText($tmpCarry, (($lines -join "`n") + "`n"), [System.Text.Encoding]::ASCII)
+    Move-Item -LiteralPath $tmpCarry -Destination $carryPath -Force
+}
+
+# Called from the supervise loop. Saves an operator's mid-run edit for the next boot
+# the moment the file changes, because the clean exit that follows deletes it.
+function Sync-PakCarry {
+    if (-not $script:carryArmed) { return }
+    try {
+        if (-not (Test-Path -LiteralPath $liveEnginePath)) { return }
+        $stamp = (Get-Item -LiteralPath $liveEnginePath).LastWriteTimeUtc
+        if ($stamp -eq $script:engStamp) { return }
+        $script:engStamp = $stamp
+        $now = Read-HandSetPakKeys $liveEnginePath
+        if ($null -eq $now) { return }
+        $was = Read-HandSetPakKeys $carryPath
+        $nowText = (@($now.Keys | ForEach-Object { "$_=$($now[$_])" }) -join "`n")
+        if ($null -ne $was -and $nowText -eq (@($was.Keys | ForEach-Object { "$_=$($was[$_])" }) -join "`n")) { return }
+        Save-PakCarry $now
+        Write-Host "(config) Engine.ini changed while running - saved $($now.Count) hand-set pak key(s) for the next boot (#3363): $(Format-PakKeys $now)"
+    } catch {
+        Write-Host "(config) WARNING could not save the hand-set pak keys of the live Engine.ini ($($_.Exception.Message)) - a clean exit would lose an edit made since boot (#3363)"
+    }
+}
+
+# Rule 13: the note names its source on every boot, so "nothing was hand-set", "the
+# live file was gone" and "there was nothing to carry from" never share a silence.
+# KEY NAMES ONLY - a carried value could be a secret, and this goes to the console.
+$carried = Read-HandSetPakKeys $liveEnginePath
+if ($null -ne $carried) {
+    if ($carried.Count) {
+        $carryNote = "(config) Engine.ini: carried forward $($carried.Count) hand-set pak key(s) (#1137/#1071): $(Format-PakKeys $carried)"
+    } else {
+        $carryNote = "(config) Engine.ini: carry-forward ran, no hand-set pak keys present (#1137)"
+    }
+} else {
+    if (Test-Path -LiteralPath $liveEnginePath) { $liveState = 'has no pak section' }
+    else { $liveState = 'is MISSING at boot (a clean game exit deletes it)' }
+    $carried = Read-HandSetPakKeys $carryPath
+    if ($null -ne $carried) {
+        $carryNote = "(config) Engine.ini $liveState - carried forward $($carried.Count) hand-set pak key(s) from _primal/engine-carry.ini (#1137/#3363): $(Format-PakKeys $carried)"
+    } else {
+        $carried = [ordered]@{}
+        $carryNote = "(config) Engine.ini $liveState and there is no _primal/engine-carry.ini - no hand-set pak key could be carried (#1137/#3363)"
     }
 }
 
@@ -747,16 +798,11 @@ if ($env:ENABLE_PRIMAL_MOD -eq '1' -and $phsk) {
     if ($pakForceDino) { $sessLines.Add("ForceDinoList=$pakForceDino") }
     foreach ($pk in $pakExtra.Keys) { $sessLines.Add("$pk=$($pakExtra[$pk])") }
     foreach ($ck in $carried.Keys) { $sessLines.Add("$ck=$($carried[$ck])") }
-    # ⭐ Rule 13: a skip is not a success. This line prints on EVERY boot, in both
-    # states, so "nothing was hand-set" and "the carry-forward did not run" can
-    # never be the same silence - which is precisely how #1137 stayed invisible.
-    # ⛔ KEY NAMES ONLY, never values: ApiToken is excluded by $pakManaged, but a
-    # future carried key could hold a secret and this goes to the Ptero console.
-    if ($carried.Count) {
-        Write-Host "(config) Engine.ini: carried forward $($carried.Count) hand-set pak key(s) (#1137/#1071): $(($carried.Keys) -join ', ')"
-    } else {
-        Write-Host "(config) Engine.ini: carry-forward ran, no hand-set pak keys present (#1137)"
+    Write-Host $carryNote
+    try { Save-PakCarry $carried } catch {
+        Write-Host "(config) WARNING could not write _primal/engine-carry.ini ($($_.Exception.Message)) - a clean exit before the next boot would lose the hand-set pak keys (#3363)"
     }
+    $script:carryArmed = $true
     $sessBlock = ($sessLines -join "`r`n")
     # Idempotent: if the template ever grows this section, REPLACE it rather than
     # appending a second copy (UE takes the first, so a duplicate would silently
@@ -1497,6 +1543,7 @@ function Show-InjectVerdict {
 $pos = 0
 while (-not $proc.HasExited) {
     Show-InjectVerdict
+    Sync-PakCarry
     if (Test-Path $isleLog) {
         try {
             $fs = [IO.File]::Open($isleLog, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)

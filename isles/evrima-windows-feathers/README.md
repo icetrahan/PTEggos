@@ -50,6 +50,7 @@ Those four are live images for the Linux eggs. Push deliberately.
 | `embed.py` | puts the loose files back into the egg JSON (the fixer) |
 | `verify.py` | proves every extracted file matches what ships (the judge) |
 | `gate_test.py` | drives `install.ps1`'s failure gate through 9 real states (#346) |
+| `test_carryforward.ps1` | runs the wrapper's real hand-set pak key lines through 20 states (#1137, #3363) |
 
 None of the loose files are read from here by anything — `install.ps1` lives in the
 panel DB, and it writes the other three from base64. They exist so a change is
@@ -61,6 +62,7 @@ lives inside the JSON. `embed.py` walks both, `verify.py` gates both:
 python isles/evrima-windows-feathers/embed.py     # after editing any loose file
 python isles/evrima-windows-feathers/verify.py    # the gate
 python isles/evrima-windows-feathers/gate_test.py # the install gate's own test
+powershell -NoProfile -ExecutionPolicy Bypass -File isles/evrima-windows-feathers/test_carryforward.ps1
 ```
 
 ## 🔴 The install script must FAIL when there is no bootable binary (#346)
@@ -202,6 +204,35 @@ every Isle server, already committed twice elsewhere in this repo
 (`isles/deathmatch/entrypoint.sh`, `testing/deathmatch/entrypoint.sh`), and
 required verbatim to boot. Blanking them would also break the byte-equality
 `verify.py` checks.
+
+## Hand-set pak keys survive a clean exit (#1137, #3363)
+
+The wrapper rewrites the pak's `BP_TIGameSession_C` section of `Engine.ini` on every boot and
+carries forward any key in it that the wrapper does not own (an operator's `IrisCensusEvery`,
+`WireVersion`, `TestKit`...). A clean game exit **deletes**
+`Saved/Config/WindowsServer/Engine.ini` (lab-proven: RCON `exit` deleted it every time; a hard
+kill never does). So the live file is not the only source:
+
+- `_primal/engine-carry.ini` holds the last known hand-set keys. It is written at every render,
+  and by the supervise loop the moment the live file changes while the server runs. It never
+  holds an owned key, so never the `ApiToken`.
+- The copy is read **only** when the live file, or its pak section, is missing. A live file wins,
+  so an operator who deletes a key line has cleared it.
+- Every boot prints one line naming the source. Grep the console for these:
+
+| Console line starts | Meaning |
+|---|---|
+| `(config) Engine.ini: carried forward N hand-set pak key(s) (#1137/#1071)` | read from the live file |
+| `(config) Engine.ini: carry-forward ran, no hand-set pak keys present` | live file, nothing hand-set |
+| `(config) Engine.ini is MISSING at boot ... from _primal/engine-carry.ini` | a clean exit deleted it; keys came from the copy |
+| `(config) Engine.ini has no pak section ... from _primal/engine-carry.ini` | a mod-off boot or a hand-rewritten file; keys came from the copy |
+| `... and there is no _primal/engine-carry.ini` | nothing to carry from (first boot, or keys set before this change shipped) |
+| `(config) Engine.ini changed while running - saved N ...` | an edit made mid-run is kept for the next boot |
+
+⚠️ On feathers the panel's `^C` stop is **not** a clean exit: winproc's `Stop` terminates the job
+object for every stop type except a console command, so a restart is a hard kill and the live file
+survives. The copy covers the exits that are clean: an RCON or console `exit`, the game quitting
+by itself, or a future daemon that sends a real Ctrl+C.
 
 ## `PRIMAL_FORCE_DINO` (id 296)
 
