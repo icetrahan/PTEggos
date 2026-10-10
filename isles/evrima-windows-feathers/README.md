@@ -194,7 +194,7 @@ asserts both. Every boot says which way it went:
 - `(config) Game.ini: MassMigrationDisableTime=2700 IndividualPatrolTime=300`
 - `(config) Game.ini: MassMigrationTime=172800 - commban v<x> starts this run's mass itself`, or
   `(config) Game.ini: MassMigrationTime left to the game (12 h) - no commban mass rung this boot (...)`
-- the DLL's own `[MASS]` lines in `Win64\commban.log` (`started at +<s> s … zone=…`, `ended at …`, or
+- the DLL's own `[MASS]` lines in `Win64\commban.log` (`started at +<s> s … zone=…`, `ended by …`, or
   `SKIPPED` / `FAILED` / `NO SEAM` with the reason).
 
 `powershell -ExecutionPolicy Bypass -File isles/evrima-windows-feathers/test_masstiming.ps1` runs the
