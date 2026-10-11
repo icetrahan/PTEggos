@@ -50,6 +50,7 @@ Those four are live images for the Linux eggs. Push deliberately.
 | `embed.py` | puts the loose files back into the egg JSON (the fixer) |
 | `verify.py` | proves every extracted file matches what ships (the judge) |
 | `gate_test.py` | drives `install.ps1`'s failure gate through 9 real states (#346) |
+| `test_carryforward.ps1` | runs the wrapper's real hand-set pak key lines through 20 states (#1137, #3363) |
 
 None of the loose files are read from here by anything — `install.ps1` lives in the
 panel DB, and it writes the other three from base64. They exist so a change is
@@ -61,6 +62,7 @@ lives inside the JSON. `embed.py` walks both, `verify.py` gates both:
 python isles/evrima-windows-feathers/embed.py     # after editing any loose file
 python isles/evrima-windows-feathers/verify.py    # the gate
 python isles/evrima-windows-feathers/gate_test.py # the install gate's own test
+powershell -NoProfile -ExecutionPolicy Bypass -File isles/evrima-windows-feathers/test_carryforward.ps1
 ```
 
 ## 🔴 The install script must FAIL when there is no bootable binary (#346)
@@ -171,6 +173,39 @@ that is expected, and `verify.py` compares the *committed* file only.
 named the pre-BUILD-39 28 KB wrapper as of 2026-07-29). Anchor on block names, not
 line numbers, and let `embed.py` own the sha.
 
+## Mass migration and patrol timing (BUGS #3328, #3362)
+
+Ice's ruling: one mass migration per run, 15 minutes after every boot, started by `commban.dll`'s mass
+rung (1.3.0+). The game's own mass check runs every `MassMigrationTime` from boot and is never saved
+across a restart, so on a 12 h schedule it never fired.
+
+The wrapper writes three `[/script/theisle.tigamesession]` keys into the rendered Game.ini:
+
+| Key | Value | When |
+|---|---|---|
+| `MassMigrationDisableTime` | `2700` (45 min) | every boot |
+| `IndividualPatrolTime` | `300` (a patrol zone handed out every 5 min, not 20) | every boot |
+| `MassMigrationTime` | `172800` (48 h, above every restart gap, so the game's own check never fires) | only when THIS boot loads a commban.dll whose manifest version is 1.3.0 or newer |
+
+⛔ `MassMigrationTime` must never be parked on a server whose DLL does not start the mass: that server
+would never get one. The game also requires T > 1.1 × D, or a mass never ends; `test_masstiming.ps1`
+asserts both.
+
+A mass that is running at a restart comes back from the save with no end timer. The DLL replaces it at
++15 min (`[MASS] … loaded from the last run's save … replacing it`); without the DLL it stays open until
+the game's own next check.
+
+Every boot says which way it went:
+
+- `(config) Game.ini: MassMigrationDisableTime=2700 IndividualPatrolTime=300`
+- `(config) Game.ini: MassMigrationTime=172800 - commban v<x> starts this run's mass itself`, or
+  `(config) Game.ini: MassMigrationTime left to the game (12 h) - no commban mass rung this boot (...)`
+- the DLL's own `[MASS]` lines in `Win64\commban.log` (`started at +<s> s … zone=…`, `ended by …`, or
+  `SKIPPED` / `FAILED` / `NO SEAM` with the reason).
+
+`powershell -ExecutionPolicy Bypass -File isles/evrima-windows-feathers/test_masstiming.ps1` runs the
+real lines lifted from the wrapper (42 checks).
+
 ## 🔴 ASCII ONLY in `start-evrima.ps1` **and `install.ps1`**
 
 The wrapper is UTF-8 **without a BOM**, so PowerShell 5.1 on the feathers node
@@ -202,6 +237,35 @@ every Isle server, already committed twice elsewhere in this repo
 (`isles/deathmatch/entrypoint.sh`, `testing/deathmatch/entrypoint.sh`), and
 required verbatim to boot. Blanking them would also break the byte-equality
 `verify.py` checks.
+
+## Hand-set pak keys survive a clean exit (#1137, #3363)
+
+The wrapper rewrites the pak's `BP_TIGameSession_C` section of `Engine.ini` on every boot and
+carries forward any key in it that the wrapper does not own (an operator's `IrisCensusEvery`,
+`WireVersion`, `TestKit`...). A clean game exit **deletes**
+`Saved/Config/WindowsServer/Engine.ini` (lab-proven: RCON `exit` deleted it every time; a hard
+kill never does). So the live file is not the only source:
+
+- `_primal/engine-carry.ini` holds the last known hand-set keys. It is written at every render,
+  and by the supervise loop the moment the live file changes while the server runs. It never
+  holds an owned key, so never the `ApiToken`.
+- The copy is read **only** when the live file, or its pak section, is missing. A live file wins,
+  so an operator who deletes a key line has cleared it.
+- Every boot prints one line naming the source. Grep the console for these:
+
+| Console line starts | Meaning |
+|---|---|
+| `(config) Engine.ini: carried forward N hand-set pak key(s) (#1137/#1071)` | read from the live file |
+| `(config) Engine.ini: carry-forward ran, no hand-set pak keys present` | live file, nothing hand-set |
+| `(config) Engine.ini is MISSING at boot ... from _primal/engine-carry.ini` | a clean exit deleted it; keys came from the copy |
+| `(config) Engine.ini has no pak section ... from _primal/engine-carry.ini` | a mod-off boot or a hand-rewritten file; keys came from the copy |
+| `... and there is no _primal/engine-carry.ini` | nothing to carry from (first boot, or keys set before this change shipped) |
+| `(config) Engine.ini changed while running - saved N ...` | an edit made mid-run is kept for the next boot |
+
+⚠️ On feathers the panel's `^C` stop is **not** a clean exit: winproc's `Stop` terminates the job
+object for every stop type except a console command, so a restart is a hard kill and the live file
+survives. The copy covers the exits that are clean: an RCON or console `exit`, the game quitting
+by itself, or a future daemon that sends a real Ctrl+C.
 
 ## `PRIMAL_FORCE_DINO` (id 296)
 
