@@ -189,7 +189,13 @@ The wrapper writes three `[/script/theisle.tigamesession]` keys into the rendere
 
 ⛔ `MassMigrationTime` must never be parked on a server whose DLL does not start the mass: that server
 would never get one. The game also requires T > 1.1 × D, or a mass never ends; `test_masstiming.ps1`
-asserts both. Every boot says which way it went:
+asserts both.
+
+A mass that is running at a restart comes back from the save with no end timer. The DLL replaces it at
++15 min (`[MASS] … loaded from the last run's save … replacing it`); without the DLL it stays open until
+the game's own next check.
+
+Every boot says which way it went:
 
 - `(config) Game.ini: MassMigrationDisableTime=2700 IndividualPatrolTime=300`
 - `(config) Game.ini: MassMigrationTime=172800 - commban v<x> starts this run's mass itself`, or
