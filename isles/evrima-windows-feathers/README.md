@@ -51,6 +51,7 @@ Those four are live images for the Linux eggs. Push deliberately.
 | `verify.py` | proves every extracted file matches what ships (the judge) |
 | `gate_test.py` | drives `install.ps1`'s failure gate through 9 real states (#346) |
 | `test_carryforward.ps1` | runs the wrapper's real hand-set pak key lines through 20 states (#1137, #3363) |
+| `test_noinject.ps1` | runs the wrapper's real comm-ban "not injecting" lines and its report job against a local listener (#3499) |
 
 None of the loose files are read from here by anything — `install.ps1` lives in the
 panel DB, and it writes the other three from base64. They exist so a change is
@@ -145,7 +146,8 @@ boot's `Bringing World` line, sleeps 10 s, then `LoadLibraryW`-injects it. Resul
   injector. ⛔ **Not the owner's switch**: that is the panel's comm-ban card, which the DLL
   reads from the plane on every poll. Placed + panel OFF = hooks nothing.
 - Fail-soft everywhere: a bad sha, a missing key or a 404 manifest boots the server with
-  **no injection**, said on the console; the plane's `commban_silent` detector pages ops.
+  **no injection** — and says so off-box by name (next section). `commban_silent` stays the
+  backstop for a DLL that loaded and then went quiet.
 - The bench harnesses that exercised the two blocks out of context live in
   `PrimalEverything/docs/audits/2026-09-17_commban-delivery/` (`egg_block_test.ps1` 19/19,
   `egg_inject_test.ps1` — the verbatim job armed the DLL on the isolated server).
@@ -159,8 +161,8 @@ python isles/evrima-windows-feathers/embed.py    # re-embed + refresh verify.py'
 python isles/evrima-windows-feathers/verify.py   # the gate
 ```
 
-sha256 of the committed wrapper: **`842e4a00f77441c213f6617da023bd2d1c4d89a46f5e79897d0295c5cc31b8c8`**
-(75,999 B, 2026-09-18 — the comm-ban DLL lane), recorded in `verify.py` as `WRAPPER_SHA` and refreshed by `embed.py`.
+sha256 of the committed wrapper: **`8b1abc0a2efe9b1d1a73d5c04ab5db2aed875f7b076fe5989b2abf77867a93ce`**
+(106,561 B — the not-injecting report, #3499), recorded in `verify.py` as `WRAPPER_SHA` and refreshed by `embed.py`.
 ⚠️ **This line was stale by two wrapper versions when it was corrected on 2026-08-12** (it still
 named 46,224 B while the committed wrapper was 59,366 B). `embed.py` refreshes `verify.py` but
 **not this README**, so the drift is silent and recurs — check the byte count against the file,
@@ -172,6 +174,34 @@ that is expected, and `verify.py` compares the *committed* file only.
 ⚠️ The line references and shas in this section have gone stale twice (they still
 named the pre-BUILD-39 28 KB wrapper as of 2026-07-29). Anchor on block names, not
 line numbers, and let `embed.py` own the sha.
+
+## An armed boot that does not inject says so (BUGS #3499)
+
+With `PRIMAL_COMMBAN=1`, every branch that boots the game WITHOUT the DLL sets a code and a
+reason, prints a banner, and posts them to the plane with the server's own key
+(`POST /v1/boot-report`, `ok:false`, `attempts:0`, `skipped:<code>`). The post runs in a job
+(`primal-commban-skip`), so a slow plane never holds the launch, and repeats every 60 s until the
+plane answers: a 2xx, or a 4xx no retry can change.
+
+| `skipped` | The boot did not inject because |
+|---|---|
+| `prepare_failed` | the manifest read, a download, a sha check or the ini write threw — the reason names the step and the error |
+| `sha_mismatch` | a downloaded file failed its manifest sha256 |
+| `dll_missing` | the manifest placed its files and `commban.dll` is still not on disk |
+| `no_key` | `PHSK_KEY` is missing. ⛔ Not postable — there is no key to post with; the console and the history say so |
+
+- The manifest read and each download are tried **3 times** (2 s, then 5 s apart) before a boot
+  gives up on them.
+- ⛔ `PRIMAL_COMMBAN` empty is **off, not a skip**: an unarmed server reports nothing.
+- `_primal/primal-commban-history.log` keeps one line per boot (which way it went and why, the
+  verify job's verdicts, the report's outcome), the last 200. ⛔ It is the only log here that
+  survives a boot — `primal-commban-inject.log`, `primal-loader.log` and `wrapper-debug.log` are
+  truncated at every start, so they answer for the current boot only.
+- A plane that predates `skipped` records the same post as a failed inject (`reason` carries the
+  code in words), so the wrapper and the plane can ship in either order.
+
+`powershell -NoProfile -ExecutionPolicy Bypass -File isles/evrima-windows-feathers/test_noinject.ps1`
+runs the wrapper's real lines through 13 boots and posts to a local listener over real HTTP (32 checks).
 
 ## Mass migration and patrol timing (BUGS #3328, #3362)
 
