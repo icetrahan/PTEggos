@@ -113,5 +113,11 @@ if re.search(r'RconPassword\s*=\s*\'(?!CHANGEME\')', blob):
     ok = False
     print("FAIL  start-evrima.ps1 RconPassword fallback is not the placeholder")
 
+# ⛔ #3542: the key turns on the game's ambient bird, which cannot animate. The
+# game's default is off, and fish have their own key.
+if b'bspawnambientfauna' in open(os.path.join(HERE, 'Game.ini.tmpl'), 'rb').read().lower():
+    ok = False
+    print('FAIL  Game.ini.tmpl writes bSpawnAmbientFauna (#3542)')
+
 print('PASS' if ok else 'FAIL')
 sys.exit(0 if ok else 1)
