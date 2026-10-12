@@ -26,7 +26,7 @@ FILES = ['Engine.ini.tmpl', 'Game.ini.tmpl', 'start-evrima.ps1']
 # one line, on purpose -- see README.md "Scrubbed values". Updated for the pak
 # deploy lane (BUILD 39, #411): the DLL lane was replaced by the pak lane, the
 # sig-bypass drop was added, and Engine.ini now carries the mod's session block.
-WRAPPER_SHA = 'bd3dae5be400ff4a7eabe3f0caf553eb59a2db516fbf5f36ebaa336b1bb087f2'
+WRAPPER_SHA = '8b1abc0a2efe9b1d1a73d5c04ab5db2aed875f7b076fe5989b2abf77867a93ce'
 
 egg = json.load(open(EGG, encoding='utf-8'))
 install = egg['scripts']['installation']['script']
@@ -112,6 +112,12 @@ for pat in ('phdk_', 'ptlc_', 'ptla_'):
 if re.search(r'RconPassword\s*=\s*\'(?!CHANGEME\')', blob):
     ok = False
     print("FAIL  start-evrima.ps1 RconPassword fallback is not the placeholder")
+
+# ⛔ #3542: the key turns on the game's ambient bird, which cannot animate. The
+# game's default is off, and fish have their own key.
+if b'bspawnambientfauna' in open(os.path.join(HERE, 'Game.ini.tmpl'), 'rb').read().lower():
+    ok = False
+    print('FAIL  Game.ini.tmpl writes bSpawnAmbientFauna (#3542)')
 
 print('PASS' if ok else 'FAIL')
 sys.exit(0 if ok else 1)

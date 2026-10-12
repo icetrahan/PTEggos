@@ -1040,19 +1040,40 @@ if ($env:ENABLE_PRIMAL_MOD -eq '1') {
 # game, because the DLL reads commban.ini from ITS OWN directory (module dir).
 # Result of the injection -> _primal/primal-commban-inject.log; the DLL's own log
 # -> TheIsle\Binaries\Win64\commban.log ([COMMBAN BOOT] line, refusals by gate).
+#
+# [!] An ARMED boot that will NOT inject sets $cbSkip (a code + the reason). It is posted
+#    to the plane and appended to _primal/primal-commban-history.log, which is never
+#    truncated at boot - the other logs here are. Codes:
+#      prepare_failed (the manifest read, a download, a sha check or the ini write threw -
+#                      the reason names the step)
+#      sha_mismatch | dll_missing | no_key (not postable: there is no key to post with)
 # ---------------------------------------------------------------------------
+# One network read, tried 3 times (2 s, then 5 s apart). The last error is rethrown.
+function Invoke-Retried([scriptblock]$op, [string]$what) {
+    for ($try = 1; ; $try++) {
+        try { return (& $op) }
+        catch {
+            if ($try -ge 3) { throw }
+            Write-Host "(commban) $what failed (attempt $try of 3): $($_.Exception.Message) - retrying"
+            Start-Sleep -Seconds $(if ($try -eq 1) { 2 } else { 5 })
+        }
+    }
+}
 $cbOn      = (('' + $env:PRIMAL_COMMBAN).Trim() -eq '1')
 $cbDll     = Join-Path $binDirWin 'commban.dll'
 $cbIni     = Join-Path $binDirWin 'commban.ini'
 $cbVerFile = Join-Path $tmpl 'primal-commban.version'
 $cbReady   = $false
+$cbSkip    = $null
 if ($cbOn) {
     $cbManifestUrl = EnvOr $env:PRIMAL_COMMBAN_MANIFEST 'https://pub-fb6fdcc2ce914775ba41c9813f80dc10.r2.dev/primal-commban/latest.json'
+    $cbStep = 'the manifest read'
     try {
         $ProgressPreference = 'SilentlyContinue'
-        $cm = Invoke-RestMethod -Uri $cbManifestUrl -TimeoutSec 20
+        $cm = Invoke-Retried { Invoke-RestMethod -Uri $cbManifestUrl -TimeoutSec 20 } 'manifest read'
         $cbFiles = @($cm.files)
         if (-not $cbFiles -or $cbFiles.Count -lt 1) { throw 'commban manifest carries no files[]' }
+        $cbStep = 'the sha check of the files in place'
         New-Item -ItemType Directory -Force -Path $binDirWin | Out-Null
         $cbNeed = @()
         foreach ($fi in $cbFiles) {
@@ -1067,7 +1088,8 @@ if ($cbOn) {
             foreach ($fi in $cbNeed) {
                 $dst = Join-Path $binDirWin $fi.name
                 $tmpf = "$dst.download"
-                Invoke-WebRequest -Uri $fi.url -OutFile $tmpf -UseBasicParsing
+                $cbStep = "the download of $($fi.name)"
+                Invoke-Retried { Invoke-WebRequest -Uri $fi.url -OutFile $tmpf -UseBasicParsing } "download of $($fi.name)" | Out-Null
                 $sha = (Get-FileHash $tmpf -Algorithm SHA256).Hash.ToLower()
                 if ($sha -ne ("" + $fi.sha256).ToLower()) {
                     Write-Host "(commban) sha256 MISMATCH on $($fi.name) (got $sha) - discarding; NOT injecting this boot"
@@ -1085,9 +1107,15 @@ if ($cbOn) {
         # The DLL's config, beside it, rewritten every boot (a rotated key lands on the
         # next restart). Keys match commban_dll/src/config.cpp. [!] selftest is a bench
         # knob and is deliberately never written here.
+        $cbStep = 'the commban.ini write'
         if (-not $phsk) {
+            $cbSkip = @{ code = 'no_key'; reason = 'PHSK_KEY is missing: the DLL has no plane to read the list from' }
             Write-Host "(commban) PHSK_KEY missing - the DLL has no plane to read the list from; NOT injecting"
-        } elseif ($cbFailed -ne 0 -or -not (Test-Path $cbDll)) {
+        } elseif ($cbFailed -ne 0) {
+            $cbSkip = @{ code = 'sha_mismatch'; reason = "$cbFailed of $($cbNeed.Count) downloaded file(s) failed sha256 against manifest v$($cm.version)" }
+            Write-Host "(commban) DLL not in place (sha failures=$cbFailed) - NOT injecting this boot"
+        } elseif (-not (Test-Path $cbDll)) {
+            $cbSkip = @{ code = 'dll_missing'; reason = "commban.dll is not on disk after placing manifest v$($cm.version) ($($cbFiles.Count) file(s): $((@($cbFiles | ForEach-Object { $_.name }) -join ', ')))" }
             Write-Host "(commban) DLL not in place (sha failures=$cbFailed) - NOT injecting this boot"
         } else {
             $cbBase = (EnvOr $env:PRIMAL_DATA_BASE 'https://data.primalhosted.com').TrimEnd('/')
@@ -1106,10 +1134,12 @@ if ($cbOn) {
             Write-Host "(commban) wrote commban.ini (keylen=$($phsk.Length), plane=$cbBase); inject armed=$cbReady"
         }
     } catch {
-        # Fail-soft: the server boots; comm-bans are simply not enforced this boot, and
-        # the plane's `commban_silent` detector is what says so off-box.
-        Write-Host "(commban) manifest/download failed: $_ - NOT injecting this boot"
+        # Fail-soft: the server boots; comm-bans are not enforced this boot.
+        $cbReady = $false
+        $cbSkip = @{ code = 'prepare_failed'; reason = "$cbStep failed: $($_.Exception.Message)" }
+        Write-Host "(commban) $cbStep failed: $_ - NOT injecting this boot"
     }
+    if (-not $cbReady -and -not $cbSkip) { $cbSkip = @{ code = 'unknown'; reason = 'the wrapper did not arm the DLL and recorded no reason' } }
 } else {
     # Off = inert. A stale ini beside the game would hold a key for nothing; drop it.
     if (Test-Path $cbIni) { Remove-Item $cbIni -Force -ErrorAction SilentlyContinue }
@@ -1515,6 +1545,53 @@ public static class PInj {
     Write-Host "(commban) verify+heal armed (identity = exe under $volRoot; primal-loader first, then inject: burst $cbTries + every 60 s while the server runs; result -> _primal/primal-commban-inject.log; loader -> _primal/primal-loader.log; DLL log -> TheIsle\Binaries\Win64\commban.log)"
 }
 
+# One line per boot, kept across boots (the last 200): which way the comm-ban DLL went, and why.
+$cbHist = Join-Path $tmpl 'primal-commban-history.log'
+function Add-CommbanHistory([string]$m) {
+    try {
+        $keep = @(); if (Test-Path $cbHist) { $keep = @(Get-Content $cbHist -Tail 199) }
+        Set-Content -Path $cbHist -Value ($keep + "$(Get-Date -Format o) $m") -Encoding ascii
+    } catch { }
+}
+# An ARMED boot without the DLL says so off-box, by name. The post runs in a job, so a slow
+# plane never holds the launch, and it repeats until the plane answers (rule 12): 2xx, or a
+# 4xx that no retry can change. [!] No key = nothing to post with; the console and the history say so.
+$cbSkipJob = $null
+if (-not $cbOn) {
+    Add-CommbanHistory 'off (PRIMAL_COMMBAN != 1)'
+} elseif ($cbReady) {
+    Add-CommbanHistory "armed v$($cm.version): verify+heal started"
+} else {
+    Add-CommbanHistory "NOT INJECTED ($($cbSkip.code)): $($cbSkip.reason)"
+    Write-Host '(commban) ****************************************************************'
+    Write-Host "(commban) *** COMM-BAN DLL NOT INJECTED THIS BOOT ($($cbSkip.code)): $($cbSkip.reason)"
+    Write-Host '(commban) *** Comm-banned players can chat on this server until its next boot.'
+    Write-Host '(commban) ****************************************************************'
+    if ($phsk) {
+        $cbBaseS = (EnvOr $env:PRIMAL_DATA_BASE 'https://data.primalhosted.com').TrimEnd('/')
+        $cbSkipRetryS = 60; try { if ($env:PRIMAL_INJECT_WATCH_S) { $cbSkipRetryS = [Math]::Max(1, [int]$env:PRIMAL_INJECT_WATCH_S) } } catch { }
+        $cbSkipJob = Start-Job -Name primal-commban-skip -ArgumentList "$cbBaseS/v1/boot-report", $phsk, $cbSkip.code, $cbSkip.reason, $volRoot, $cbSkipRetryS -ScriptBlock {
+            param($reportUrl, $key, $code, $reason, $vol, $retryS)
+            $body = @{ stage = 'inject'; game = 'evrima'; ok = $false; attempts = 0; skipped = "$code"; reason = "not injected ($code): $reason"; pid = $null; exePath = ''; dll = 'commban.dll'; volume = $vol } | ConvertTo-Json -Compress
+            for ($n = 1; ; $n++) {
+                try {
+                    $resp = Invoke-RestMethod -Method Post -Uri $reportUrl -Headers @{ Authorization = "Bearer $key" } -ContentType 'application/json' -Body $body -TimeoutSec 15
+                    return "reported to the plane on try $n (alert=$($resp.alert), paged=$($resp.paged))"
+                } catch {
+                    $err = $_
+                    $status = 0; try { $status = [int]$err.Exception.Response.StatusCode } catch { }
+                    if ($status -ge 400 -and $status -lt 500 -and $status -ne 408 -and $status -ne 429) { return "REPORT REFUSED by the plane (HTTP $status) on try $n - not retried" }
+                    if ($n -eq 1) { "REPORT FAILED: $($err.Exception.Message) - retrying every $retryS s while the server runs" }
+                    Start-Sleep -Seconds $retryS
+                }
+            }
+        }
+    } else {
+        Add-CommbanHistory 'not reported off-box: no PHSK_KEY on this server'
+        Write-Host '(commban) *** NOT REPORTED off-box: no PHSK_KEY on this server'
+    }
+}
+
 Dbg "launching (server will detach; we supervise the real process)"
 # Launch form matches Hex's proven dedicated command (map URL carries the port; no
 # -QueryPort / -stdout). -MULTIHOME + -MULTIHOMEHTTP (dash flags) via @mhArgs +
@@ -1552,6 +1629,7 @@ function Show-InjectVerdict {
     foreach ($line in @(Receive-Job $script:cbJob -ErrorAction SilentlyContinue)) {
         $v = ('' + $line).Trim()
         if (-not $v) { continue }
+        Add-CommbanHistory $v
         if ($v -like 'VERIFIED*') { Write-Host "(commban) inject $v" }
         elseif ($v -like 'ENDED*') { Write-Host "(commban) verify+heal $v" }
         else {
@@ -1568,10 +1646,28 @@ function Show-InjectVerdict {
         $script:cbJob = $null
     }
 }
+function Show-SkipReport {
+    if (-not $script:cbSkipJob) { return }
+    foreach ($line in @(Receive-Job $script:cbSkipJob -ErrorAction SilentlyContinue)) {
+        $v = ('' + $line).Trim()
+        if (-not $v) { continue }
+        Add-CommbanHistory "skip report: $v"
+        Write-Host "(commban) not-injected report: $v"
+    }
+    if ($script:cbSkipJob.State -ne 'Running' -and $script:cbSkipJob.State -ne 'NotStarted') {
+        if ($script:cbSkipJob.State -ne 'Completed') {
+            Add-CommbanHistory "skip report: the job ended $($script:cbSkipJob.State) - NOT reported"
+            Write-Host "(commban) *** the not-injected report job ended $($script:cbSkipJob.State) - the plane was NOT told"
+        }
+        Remove-Job $script:cbSkipJob -Force -ErrorAction SilentlyContinue
+        $script:cbSkipJob = $null
+    }
+}
 
 $pos = 0
 while (-not $proc.HasExited) {
     Show-InjectVerdict
+    Show-SkipReport
     Sync-PakCarry
     if (Test-Path $isleLog) {
         try {
@@ -1590,6 +1686,8 @@ while (-not $proc.HasExited) {
     $proc.Refresh()
 }
 Show-InjectVerdict
+Show-SkipReport
 if ($script:cbJob) { Stop-Job $script:cbJob -ErrorAction SilentlyContinue; Remove-Job $script:cbJob -Force -ErrorAction SilentlyContinue }
+if ($script:cbSkipJob) { Stop-Job $script:cbSkipJob -ErrorAction SilentlyContinue; Remove-Job $script:cbSkipJob -Force -ErrorAction SilentlyContinue }
 Dbg "server pid $($proc.Id) exited"
 Write-Host "(exit) $(Get-Date -Format HH:mm:ss) server process ended; Ptero will restart per policy."

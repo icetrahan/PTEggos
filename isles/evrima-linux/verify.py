@@ -15,6 +15,7 @@ Gates, each earned elsewhere in this repo:
      RCON fallback stays 'CHANGEME'.
   6. Query-port bake: the wrapper must not read a QUERY_PORT variable and the
      egg must not define one (Ice's rule, 2026-08-04).
+  7. Game.ini.tmpl never writes bSpawnAmbientFauna (#3542).
 """
 import base64
 import hashlib
@@ -154,6 +155,13 @@ def main() -> int:
     check(
         "launch line pins -QueryPort to the game port",
         '-QueryPort="$GAME_PORT" -Port="$GAME_PORT"' in wrapper,
+    )
+
+    # 7. ⛔ #3542: the key turns on the game's ambient bird, which cannot
+    # animate. The game's default is off, and fish have their own key.
+    check(
+        "Game.ini.tmpl never writes bSpawnAmbientFauna",
+        b"bspawnambientfauna" not in (HERE / "Game.ini.tmpl").read_bytes().lower(),
     )
 
     print()
