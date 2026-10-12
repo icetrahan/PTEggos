@@ -127,6 +127,22 @@ only when the egg JSON is re-imported. A new wrapper on the old egg sees the
 variable unset and says `left to the game`. `render_test.sh` section 4 and
 `verify.py` gate 8 cover it.
 
+### The fleet's two timing constants (BUGS #3631)
+
+The wrapper also writes two constants into the same section on every boot, the
+values egg 40 writes: `MassMigrationDisableTime=2700` (a mass migration lasts
+45 min) and `IndividualPatrolTime=300` (a predator is handed a patrol zone every
+5 min; the game's default is 20). They are fleet constants: no variable, no
+owner field, and a line of either key already in the template is replaced.
+
+- `Game.ini: MassMigrationDisableTime=2700 IndividualPatrolTime=300`, read back
+  from the rendered file.
+- `WARN: … NOT WRITTEN (no [/script/theisle.tigamesession] section) - …` when the
+  template has no such section.
+
+They need no egg import: the wrapper alone carries them. `verify.py` gate 9
+holds the two eggs to the same values.
+
 ## Files
 
 | File | What |

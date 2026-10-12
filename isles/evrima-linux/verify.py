@@ -18,6 +18,8 @@ Gates, each earned elsewhere in this repo:
   7. Game.ini.tmpl never writes bSpawnAmbientFauna (#3542).
   8. The mass-check lever (#3604) is ops-only and its panel range is the
      wrapper's.
+  9. The two fleet timing constants (#3631) are the wrapper's, with egg 40's
+     values, and the template carries neither.
 """
 import base64
 import hashlib
@@ -183,6 +185,31 @@ def main() -> int:
     check(
         "Game.ini.tmpl carries no MassMigrationTime of its own",
         b"massmigrationtime=" not in (HERE / "Game.ini.tmpl").read_bytes().lower(),
+    )
+
+    # 9. #3631: one ruling, two eggs. The wrapper writes both constants, and
+    # their values are the ones egg 40 writes (two copies must not drift).
+    loop = re.search(r"^for FLEET_KV in (.+); do$", wrapper, re.MULTILINE)
+    mine = dict(kv.split("=", 1) for kv in loop.group(1).split()) if loop else {}
+    check(
+        "the wrapper writes MassMigrationDisableTime and IndividualPatrolTime",
+        set(mine) == {"MassMigrationDisableTime", "IndividualPatrolTime"},
+        f"found {sorted(mine)}",
+    )
+    egg40 = HERE.parent / "evrima-windows-feathers" / "start-evrima.ps1"
+    theirs = dict(re.findall(
+        r"Set-SessionKey \$gi '(MassMigrationDisableTime|IndividualPatrolTime)' '(\d+)'",
+        egg40.read_text(encoding="utf-8", errors="replace") if egg40.exists() else "",
+    ))
+    check(
+        "their values are egg 40's",
+        len(theirs) == 2 and mine == theirs,
+        f"egg 42 {mine} vs egg 40 {theirs}",
+    )
+    tmpl = (HERE / "Game.ini.tmpl").read_bytes().lower()
+    check(
+        "Game.ini.tmpl carries neither fleet timing key",
+        b"massmigrationdisabletime=" not in tmpl and b"individualpatroltime=" not in tmpl,
     )
 
     print()

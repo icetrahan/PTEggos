@@ -858,10 +858,18 @@ if [ -z "$(echo -n "$CFG_AISpawnInterval" | tr -d '[:space:]')" ]; then
     GI=$(sed '/^[[:space:]]*AISpawnInterval[[:space:]]*=[[:space:]]*$/d' <<<"$GI")
 fi
 
+MASS_HDR='[/script/theisle.tigamesession]'
+
+# Fleet constants, the same on every egg and never an owner's field: a mass
+# migration lasts 45 min, and a predator is handed a patrol zone every 5 min (#3631).
+for FLEET_KV in MassMigrationDisableTime=2700 IndividualPatrolTime=300; do
+    GI=$(sed "/^[[:space:]]*${FLEET_KV%%=*}[[:space:]]*=/d" <<<"$GI")
+    GI=${GI/"$MASS_HDR"/"$MASS_HDR"$'\n'"$FLEET_KV"}
+done
+
 # PRIMAL_MASS_MIGRATION_TIME: seconds from boot to the game's own mass-migration
 # check. No DLL starts a mass on this egg, so a value above the restart gap means
 # no mass at all and every zone stays open. Empty keeps the game's 12 h (#3604).
-MASS_HDR='[/script/theisle.tigamesession]'
 MASS_ASKED=$(echo -n "${PRIMAL_MASS_MIGRATION_TIME:-}" | tr -d '[:space:]')
 MASS_T=""
 if [[ "$MASS_ASKED" =~ ^[1-9][0-9]{4,7}$ ]] && [ "$MASS_ASKED" -gt 86400 ] && [ "$MASS_ASKED" -le 31536000 ]; then
@@ -883,6 +891,12 @@ elif [ -n "$MASS_ASKED" ]; then
     warn "PRIMAL_MASS_MIGRATION_TIME='${MASS_ASKED:0:24}' REFUSED (want a whole number of seconds, 86401 to 31536000) - the game's own 12 h mass-migration check stands"
 else
     log "Game.ini: MassMigrationTime left to the game (12 h) - PRIMAL_MASS_MIGRATION_TIME is empty"
+fi
+if [ "$(grep -cxE 'MassMigrationDisableTime=2700|IndividualPatrolTime=300' "$CONFIG_DIR/Game.ini")" = "2" ] \
+        && [ "$(grep -cE '^[[:space:]]*(MassMigrationDisableTime|IndividualPatrolTime)[[:space:]]*=' "$CONFIG_DIR/Game.ini")" = "2" ]; then
+    log "Game.ini: MassMigrationDisableTime=2700 IndividualPatrolTime=300"
+else
+    warn "Game.ini: MassMigrationDisableTime / IndividualPatrolTime NOT WRITTEN (no $MASS_HDR section) - the game's own 2 h mass and 20 min patrol hand-out stand"
 fi
 
 # ---------------------------------------------------------------------------
