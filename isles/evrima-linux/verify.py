@@ -16,6 +16,8 @@ Gates, each earned elsewhere in this repo:
   6. Query-port bake: the wrapper must not read a QUERY_PORT variable and the
      egg must not define one (Ice's rule, 2026-08-04).
   7. Game.ini.tmpl never writes bSpawnAmbientFauna (#3542).
+  8. The mass-check lever (#3604) is ops-only and its panel range is the
+     wrapper's.
 """
 import base64
 import hashlib
@@ -162,6 +164,25 @@ def main() -> int:
     check(
         "Game.ini.tmpl never writes bSpawnAmbientFauna",
         b"bspawnambientfauna" not in (HERE / "Game.ini.tmpl").read_bytes().lower(),
+    )
+
+    # 8. #3604: the mass-check lever is ops-only, and the panel accepts exactly
+    # the range the wrapper writes (two copies of one range must not drift).
+    mass = next((v for v in egg.get("variables", [])
+                 if v["env_variable"] == "PRIMAL_MASS_MIGRATION_TIME"), None)
+    check(
+        "PRIMAL_MASS_MIGRATION_TIME is an ops-only egg variable",
+        bool(mass) and not mass["user_viewable"] and not mass["user_editable"],
+    )
+    check(
+        "its panel range is the wrapper's (86401 to 31536000)",
+        bool(mass) and mass["rules"] == "nullable|integer|between:86401,31536000"
+        and '[ "$MASS_ASKED" -gt 86400 ]' in wrapper
+        and '[ "$MASS_ASKED" -le 31536000 ]' in wrapper,
+    )
+    check(
+        "Game.ini.tmpl carries no MassMigrationTime of its own",
+        b"massmigrationtime=" not in (HERE / "Game.ini.tmpl").read_bytes().lower(),
     )
 
     print()

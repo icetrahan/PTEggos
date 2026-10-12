@@ -206,8 +206,10 @@ runs the wrapper's real lines through 13 boots and posts to a local listener ove
 ## Mass migration and patrol timing (BUGS #3328, #3362)
 
 Ice's ruling: one mass migration per run, 15 minutes after every boot, started by `commban.dll`'s mass
-rung (1.3.0+). The game's own mass check runs every `MassMigrationTime` from boot and is never saved
-across a restart, so on a 12 h schedule it never fired.
+rung (1.3.0+). The game's own mass check runs `MassMigrationTime` after boot, 12 h by default. On a
+12 h restart schedule it lands on the restart itself: a run that lives a few seconds past 12 h starts a
+mass in its last moment, the save keeps it, and the next run opens inside it (#3600). The Linux egg has
+no DLL and parks the check with an egg variable instead (`isles/evrima-linux`, #3604).
 
 The wrapper writes three `[/script/theisle.tigamesession]` keys into the rendered Game.ini:
 
