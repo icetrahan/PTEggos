@@ -405,5 +405,181 @@ nowant "the template's patrol value is gone" 'IndividualPatrolTime=1200'      "$
 nowant "the template's mass length is gone"  'MassMigrationDisableTime=7200'  "$G"
 
 echo
+echo "== 5. A REFUSED START IS REPORTED, WITH THE SERVER'S OWN KEY (#2353) =="
+# ---------------------------------------------------------------------------
+# The data plane is stubbed the way the lane is: the shim writes down every
+# argument of the request it was handed and answers from the plane-mode. It
+# prints what the wrapper's own `-w '\n%{http_code}'` would: body, newline, code.
+#
+# ⛔ The pre-fix control is the wrapper before `refuse` existed:
+#     git show 863cea0:isles/evrima-linux/start-evrima.sh > /tmp/old.sh
+#     ./render_test.sh /tmp/old.sh        # section 4 must FAIL
+# ---------------------------------------------------------------------------
+# A FAKE key, assembled at runtime (rule 10 / #1064).
+REP_KEY="phsk_$(printf 'b%.0s' $(seq 1 48))"
+
+rep_render() { # $1 tag, $2 lane-mode, $3 plane-mode, $4 binary (ok|missing|short|runs), $5 = extra env words
+    local T="/tmp/rp-$1"
+    rm -rf "$T"; mkdir -p "$T/_primal/binary-cache" "$T/canon/v1" "$T/TheIsle/Binaries/Linux" "$T/shim"
+    cp "$WRAPPER" "$T/_primal/start-evrima.sh"
+    cp "$HERE/Game.ini.tmpl" "$HERE/Engine.ini.tmpl" "$T/_primal/"
+    cp "$JQ_BIN" "$T/_primal/jq"; chmod +x "$T/_primal/jq"
+    cp "$HERE/boot-config.fixture.json" "$T/canon/v1/boot-config"
+
+    local GB="$T/TheIsle/Binaries/Linux/TheIsleServer-Linux-Shipping"
+    case "$4" in
+        missing) : ;;
+        short)   truncate -s 1M "$GB" ;;
+        runs)    printf '#!/bin/bash\necho FAKE-GAME-LAUNCHED\nexit 0\n' > "$GB"; truncate -s 160M "$GB"; chmod +x "$GB" ;;
+        *)       truncate -s 160M "$GB" ;;
+    esac
+    local MH=""; [ -f "$GB" ] && MH=$(md5sum "$GB" | awk '{print $1}')
+
+    case "$2" in
+        unreachable) : ;;
+        up_to_date)  printf '{"status":"up_to_date","modded_hash":"%s","expected_modded_hash":"%s","download_url":null}' "$MH" "$MH" > "$T/lane_check" ;;
+        vanilla_unknown) printf '{"status":"vanilla_unknown","modded_hash":null,"expected_modded_hash":null,"download_url":null}' > "$T/lane_check"
+                         printf '{"platform":"linux","available":true,"vanilla_hash":"%s","modded_hash":"%s"}' "feedfacefeedfacefeedfacefeedface" "deadbeefdeadbeefdeadbeefdeadbeef" > "$T/lane_latest" ;;
+    esac
+    echo "$3" > "$T/plane_mode"
+    echo 0 > "$T/plane_calls"
+
+    cat > "$T/shim/curl" <<SHIM
+#!/bin/bash
+for a in "\$@"; do
+    case "\$a" in
+        *"/commands/binary/check")        [ -f "$T/lane_check" ]  || exit 7; cat "$T/lane_check";  exit 0 ;;
+        *"/api/binary/latest/linux")      [ -f "$T/lane_latest" ] || exit 7; cat "$T/lane_latest"; exit 0 ;;
+        *"/commands/binary/download/"*)   exit 7 ;;
+        *"/v1/boot-report")
+            n=\$(( \$(cat "$T/plane_calls") + 1 )); echo \$n > "$T/plane_calls"
+            printf '%s\n' "\$@" > "$T/plane_req.\$n"
+            case "\$(cat "$T/plane_mode")" in
+                recorded) printf '{"ok":true,"recorded":true,"alert":"event_watch","paged":false}\n200'; exit 0 ;;
+                http503)  printf '{"ok":false,"code":"not_recorded"}\n503'; exit 0 ;;
+                lying200) printf '{"ok":false}\n200'; exit 0 ;;
+                *)        printf '\n000'; exit 7 ;;
+            esac ;;
+    esac
+done
+exec /usr/bin/curl "\$@"
+SHIM
+    chmod +x "$T/shim/curl"
+
+    # shellcheck disable=SC2086
+    env -i PATH="$T/shim:/usr/local/bin:/usr/bin:/bin" HOME=/tmp \
+        PRIMAL_ROOT="$T" PRIMAL_WRAPPER_AUTOUPDATE=0 AUTO_UPDATE=0 PRIMAL_ALLOW_VANILLA=0 \
+        ENABLE_PRIMAL_MOD=0 SERVER_PORT=7777 PRIMAL_DATA_BASE="file://$T/canon" \
+        SERVER_NAME="EGGVAR-NAME" MAX_PLAYERS=99 PHSK_KEY="$REP_KEY" $5 \
+        bash "$T/_primal/start-evrima.sh" > "$T/boot.log" 2>&1
+    echo $? > "$T/exit"
+    echo "$T"
+}
+rcalls() { cat "$1/plane_calls"; }
+rbody()  { awk 'prev == "-d" { print; exit } { prev = $0 }' "$1/plane_req.${2:-1}" 2>/dev/null; }
+rjq()    { rbody "$1" "${3:-1}" | "$JQ_BIN" -e "$2" >/dev/null 2>&1; }
+
+echo "-- 5a. the lane ANSWERS and has no modded binary -> reported, by code, with the server's key --"
+T=$(rep_render a vanilla_unknown recorded ok ""); L="$T/boot.log"
+want "the FATAL line is still printed"     'FATAL: MOD-BINARY-UNAVAILABLE: the lane ANSWERED' "$L"
+want "the log says the plane RECORDED it"  'this refused start is RECORDED by the data plane (mod_binary_unavailable)' "$L"
+[ "$(rcalls "$T")" = "1" ] && ok "exactly one report was sent" || bad "$(rcalls "$T") report(s) sent, want 1"
+want "it went to the boot-report route"    '/v1/boot-report'                       "$T/plane_req.1"
+want "with the server's OWN key"           "Authorization: Bearer $REP_KEY"        "$T/plane_req.1"
+rjq "$T" '.stage == "start" and .ok == false and .game == "evrima" and .platform == "linux" and .code == "mod_binary_unavailable"' \
+    && ok "the body is JSON: stage start, ok false, the code" || bad "the body is not the refused-start report: $(rbody "$T")"
+rjq "$T" '.reason | startswith("MOD-BINARY-UNAVAILABLE: the lane ANSWERED")' \
+    && ok "the reason is the FATAL line" || bad "the reason is not the FATAL line: $(rbody "$T")"
+nowant "the key is NOT in the boot log"    "$REP_KEY"                              "$L"
+[ -f "$T/_primal/boot-refused.pending" ] && ok "a pending marker is left for the next boot" || bad "no pending marker"
+[ "$(bexit "$T")" = "1" ] && ok "exit 1" || bad "exit $(bexit "$T"), want 1"
+
+echo "-- 5b. the lane is UNREACHABLE and nothing is cached -> its own code --"
+T=$(rep_render b unreachable recorded ok "")
+rjq "$T" '.code == "mod_binary_lane_unreachable" and .ok == false' && ok "code mod_binary_lane_unreachable" || bad "wrong body: $(rbody "$T")"
+
+echo "-- 5c. no game binary / a short one -> their own codes --"
+T=$(rep_render c1 up_to_date recorded missing "")
+rjq "$T" '.code == "binary_missing"' && ok "code binary_missing" || bad "wrong body: $(rbody "$T")"
+T=$(rep_render c2 up_to_date recorded short "")
+rjq "$T" '.code == "binary_truncated"' && ok "code binary_truncated" || bad "wrong body: $(rbody "$T")"
+
+echo "-- 5d. the plane answers 503 -> tried twice, and the log says NOBODY was told --"
+T=$(rep_render d vanilla_unknown http503 ok ""); L="$T/boot.log"
+[ "$(rcalls "$T")" = "2" ] && ok "two attempts" || bad "$(rcalls "$T") attempt(s), want 2"
+want "says it was NOT reported, and why"   'was NOT reported to the data plane (HTTP 503) - NOBODY HAS BEEN TOLD' "$L"
+nowant "does NOT claim it was recorded"    'is RECORDED by the data plane'         "$L"
+[ "$(bexit "$T")" = "1" ] && ok "exit 1" || bad "exit $(bexit "$T"), want 1"
+
+echo "-- 5e. a 200 whose body does not say recorded is not a report (rule 13) --"
+T=$(rep_render e vanilla_unknown lying200 ok ""); L="$T/boot.log"
+want "says it was NOT reported"            'was NOT reported to the data plane (HTTP 200 without recorded:true)' "$L"
+nowant "does NOT claim it was recorded"    'is RECORDED by the data plane'         "$L"
+
+echo "-- 5f. the plane does not answer -> said, and the refusal still exits 1 --"
+T=$(rep_render f vanilla_unknown down ok ""); L="$T/boot.log"
+want "names the plane that did not answer" 'was NOT reported to the data plane (no answer from' "$L"
+[ "$(bexit "$T")" = "1" ] && ok "exit 1" || bad "exit $(bexit "$T"), want 1"
+
+echo "-- 5g. no server key -> nothing is sent, and the log says so --"
+T=$(rep_render g vanilla_unknown recorded ok "PHSK_KEY="); L="$T/boot.log"
+[ "$(rcalls "$T")" = "0" ] && ok "no request without a key" || bad "$(rcalls "$T") request(s), want 0"
+want "says why nobody was told"            'was NOT reported to the data plane (no PHSK_KEY)' "$L"
+
+echo "-- 5h. an off-box render-only run reports nothing --"
+T=$(rep_render h vanilla_unknown recorded ok "PRIMAL_RENDER_ONLY=1"); L="$T/boot.log"
+[ "$(rcalls "$T")" = "0" ] && ok "no request from a render-only run" || bad "$(rcalls "$T") request(s), want 0"
+want "and says so"                         '(render-only) an off-box run reports no refused start' "$L"
+
+echo "-- 5i. a reason carrying quotes and backslashes is still valid JSON --"
+T=$(rep_render i unreachable recorded ok 'PRIMAL_BINARY_BASE=https://lane.invalid/a"b\c')
+rjq "$T" '.code == "mod_binary_lane_unreachable" and (.reason | contains("https://lane.invalid/abc"))' \
+    && ok "the body parses and the two characters are gone" || bad "the body does not parse: $(rbody "$T")"
+
+echo "-- 5j. the launch AFTER a refusal says so, and clears the marker --"
+T=$(rep_render j1 vanilla_unknown recorded runs ""); # the refusal
+echo recorded > "$T/plane_mode"; echo 0 > "$T/plane_calls"; rm -f "$T"/plane_req.*
+MH=$(md5sum "$T/TheIsle/Binaries/Linux/TheIsleServer-Linux-Shipping" | awk '{print $1}')
+printf '{"status":"up_to_date","modded_hash":"%s","expected_modded_hash":"%s","download_url":null}' "$MH" "$MH" > "$T/lane_check"
+env -i PATH="$T/shim:/usr/local/bin:/usr/bin:/bin" HOME=/tmp PRIMAL_ROOT="$T" PRIMAL_WRAPPER_AUTOUPDATE=0 AUTO_UPDATE=0 \
+    PRIMAL_ALLOW_VANILLA=0 ENABLE_PRIMAL_MOD=0 SERVER_PORT=7777 PRIMAL_DATA_BASE="file://$T/canon" PHSK_KEY="$REP_KEY" \
+    bash "$T/_primal/start-evrima.sh" > "$T/boot2.log" 2>&1
+echo $? > "$T/exit"; L="$T/boot2.log"
+[ "$(rcalls "$T")" = "1" ] && ok "one report on the launch" || bad "$(rcalls "$T") report(s), want 1"
+rjq "$T" '.stage == "start" and .ok == true and (has("code") | not)' && ok "the body says ok true, with no code" || bad "wrong body: $(rbody "$T")"
+want "with the server's OWN key"           "Authorization: Bearer $REP_KEY"        "$T/plane_req.1"
+want "the log says the plane was told"     'told the data plane this server is launching again after a refused start' "$L"
+[ ! -f "$T/_primal/boot-refused.pending" ] && ok "the marker is gone" || bad "the marker is still there"
+want "⭐ and the game was launched"         'FAKE-GAME-LAUNCHED'                    "$L"
+[ "$(bexit "$T")" = "0" ] && ok "exit 0" || bad "exit $(bexit "$T"), want 0"
+
+echo "-- 5k. the next launch, with no marker, sends nothing --"
+echo 0 > "$T/plane_calls"
+env -i PATH="$T/shim:/usr/local/bin:/usr/bin:/bin" HOME=/tmp PRIMAL_ROOT="$T" PRIMAL_WRAPPER_AUTOUPDATE=0 AUTO_UPDATE=0 \
+    PRIMAL_ALLOW_VANILLA=0 ENABLE_PRIMAL_MOD=0 SERVER_PORT=7777 PRIMAL_DATA_BASE="file://$T/canon" PHSK_KEY="$REP_KEY" \
+    bash "$T/_primal/start-evrima.sh" > "$T/boot3.log" 2>&1
+[ "$(rcalls "$T")" = "0" ] && ok "a server that did not refuse reports nothing" || bad "$(rcalls "$T") report(s), want 0"
+want "and it launched"                     'FAKE-GAME-LAUNCHED'                    "$T/boot3.log"
+
+echo "-- 5l. a launch the plane could not be told about KEEPS the marker, and still launches --"
+T=$(rep_render l1 vanilla_unknown recorded runs "")
+echo down > "$T/plane_mode"
+MH=$(md5sum "$T/TheIsle/Binaries/Linux/TheIsleServer-Linux-Shipping" | awk '{print $1}')
+printf '{"status":"up_to_date","modded_hash":"%s","expected_modded_hash":"%s","download_url":null}' "$MH" "$MH" > "$T/lane_check"
+env -i PATH="$T/shim:/usr/local/bin:/usr/bin:/bin" HOME=/tmp PRIMAL_ROOT="$T" PRIMAL_WRAPPER_AUTOUPDATE=0 AUTO_UPDATE=0 \
+    PRIMAL_ALLOW_VANILLA=0 ENABLE_PRIMAL_MOD=0 SERVER_PORT=7777 PRIMAL_DATA_BASE="file://$T/canon" PHSK_KEY="$REP_KEY" \
+    bash "$T/_primal/start-evrima.sh" > "$T/boot2.log" 2>&1
+want "says the plane could NOT be told"    'could NOT tell the data plane this server is launching again' "$T/boot2.log"
+[ -f "$T/_primal/boot-refused.pending" ] && ok "the marker is kept for the next boot" || bad "the marker was dropped"
+want "the game still launched"             'FAKE-GAME-LAUNCHED'                    "$T/boot2.log"
+
+echo "-- 5m. no exit that leaves the server down bypasses the report --"
+if grep -vE '^\s*#' "$WRAPPER" | grep -qE '(\|\||&&|;|^)\s*die "'; then
+    bad "the wrapper still has a bare die call"
+else
+    ok "every fatal exit goes through refuse"
+fi
+
+echo
 echo "render_test: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1
