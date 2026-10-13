@@ -16,6 +16,10 @@ Gates, each earned elsewhere in this repo:
   6. Query-port bake: the wrapper must not read a QUERY_PORT variable and the
      egg must not define one (Ice's rule, 2026-08-04).
   7. Game.ini.tmpl never writes bSpawnAmbientFauna (#3542).
+  8. The mass-check lever (#3604) is ops-only and its panel range is the
+     wrapper's.
+  9. The two fleet timing constants (#3631) are the wrapper's, with egg 40's
+     values, and the template carries neither.
 """
 import base64
 import hashlib
@@ -162,6 +166,50 @@ def main() -> int:
     check(
         "Game.ini.tmpl never writes bSpawnAmbientFauna",
         b"bspawnambientfauna" not in (HERE / "Game.ini.tmpl").read_bytes().lower(),
+    )
+
+    # 8. #3604: the mass-check lever is ops-only, and the panel accepts exactly
+    # the range the wrapper writes (two copies of one range must not drift).
+    mass = next((v for v in egg.get("variables", [])
+                 if v["env_variable"] == "PRIMAL_MASS_MIGRATION_TIME"), None)
+    check(
+        "PRIMAL_MASS_MIGRATION_TIME is an ops-only egg variable",
+        bool(mass) and not mass["user_viewable"] and not mass["user_editable"],
+    )
+    check(
+        "its panel range is the wrapper's (86401 to 31536000)",
+        bool(mass) and mass["rules"] == "nullable|integer|between:86401,31536000"
+        and '[ "$MASS_ASKED" -gt 86400 ]' in wrapper
+        and '[ "$MASS_ASKED" -le 31536000 ]' in wrapper,
+    )
+    check(
+        "Game.ini.tmpl carries no MassMigrationTime of its own",
+        b"massmigrationtime=" not in (HERE / "Game.ini.tmpl").read_bytes().lower(),
+    )
+
+    # 9. #3631: one ruling, two eggs. The wrapper writes both constants, and
+    # their values are the ones egg 40 writes (two copies must not drift).
+    loop = re.search(r"^for FLEET_KV in (.+); do$", wrapper, re.MULTILINE)
+    mine = dict(kv.split("=", 1) for kv in loop.group(1).split()) if loop else {}
+    check(
+        "the wrapper writes MassMigrationDisableTime and IndividualPatrolTime",
+        set(mine) == {"MassMigrationDisableTime", "IndividualPatrolTime"},
+        f"found {sorted(mine)}",
+    )
+    egg40 = HERE.parent / "evrima-windows-feathers" / "start-evrima.ps1"
+    theirs = dict(re.findall(
+        r"Set-SessionKey \$gi '(MassMigrationDisableTime|IndividualPatrolTime)' '(\d+)'",
+        egg40.read_text(encoding="utf-8", errors="replace") if egg40.exists() else "",
+    ))
+    check(
+        "their values are egg 40's",
+        len(theirs) == 2 and mine == theirs,
+        f"egg 42 {mine} vs egg 40 {theirs}",
+    )
+    tmpl = (HERE / "Game.ini.tmpl").read_bytes().lower()
+    check(
+        "Game.ini.tmpl carries neither fleet timing key",
+        b"massmigrationdisabletime=" not in tmpl and b"individualpatroltime=" not in tmpl,
     )
 
     print()

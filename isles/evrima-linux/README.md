@@ -96,6 +96,53 @@ the platform writes the overlay, and the image has no JSON parser — a homegrow
 half-parser that could misread a field silently is worse than an honest refusal.
 If the file exists the wrapper says so LOUDLY and applies nothing (rule 13).
 
+## The game's own mass check (`PRIMAL_MASS_MIGRATION_TIME`, BUGS #3604)
+
+No comm-ban DLL loads on this egg, so nothing here starts a mass migration of its
+own: the game's own check is the only mass there is. It runs `MassMigrationTime`
+after boot, 12 h by default. On a 12 h restart schedule it lands on the restart
+itself: a run that lives a few seconds past 12 h starts a mass in its last moment,
+the save keeps it, and the next run opens inside it with every sanctuary closed
+for the whole run (#3600).
+
+`PRIMAL_MASS_MIGRATION_TIME` is an ops-only egg variable (the customer can neither
+see nor edit it). The wrapper writes it as the first line of
+`[/script/theisle.tigamesession]`, replacing any other `MassMigrationTime` line:
+
+| Value | Game.ini | Players get |
+|---|---|---|
+| `172800` (the egg default) | `MassMigrationTime=172800` | no mass migration: 48 h is above the longest daily restart gap (24 h), so every migration zone and sanctuary stays open all run |
+| empty | no `MassMigrationTime` line | the game's own check at 12 h |
+| another whole number, 86401 to 31536000 | that number | the game's check that long after boot |
+| anything else | no line, and a `REFUSED` warning naming the value | the game's own check at 12 h |
+
+Every boot says which, read back from the rendered file, never from the variable:
+
+- `Game.ini: MassMigrationTime=172800 (PRIMAL_MASS_MIGRATION_TIME) - the game's own mass-migration check is 172800 s after boot`
+- `Game.ini: MassMigrationTime left to the game (12 h) - PRIMAL_MASS_MIGRATION_TIME is empty`
+- `WARN: PRIMAL_MASS_MIGRATION_TIME='…' REFUSED (want a whole number of seconds, 86401 to 31536000) - …`
+
+The wrapper half ships with `publish_wrapper.py`; the variable reaches a server
+only when the egg JSON is re-imported. A new wrapper on the old egg sees the
+variable unset and says `left to the game`. `render_test.sh` section 4 and
+`verify.py` gate 8 cover it.
+
+### The fleet's two timing constants (BUGS #3631)
+
+The wrapper also writes two constants into the same section on every boot, the
+values egg 40 writes: `MassMigrationDisableTime=2700` (a mass migration lasts
+45 min) and `IndividualPatrolTime=300` (a predator is handed a patrol zone every
+5 min; the game's default is 20). They are fleet constants: no variable, no
+owner field, and a line of either key already in the template is replaced.
+
+- `Game.ini: MassMigrationDisableTime=2700 IndividualPatrolTime=300`, read back
+  from the rendered file.
+- `WARN: … NOT WRITTEN (no [/script/theisle.tigamesession] section) - …` when the
+  template has no such section.
+
+They need no egg import: the wrapper alone carries them. `verify.py` gate 9
+holds the two eggs to the same values.
+
 ## Files
 
 | File | What |

@@ -45,29 +45,40 @@ want() { # $1 label, $2 needle, $3 file
 nowant() { # $1 label, $2 needle, $3 file
     if grep -qF -- "$2" "$3" 2>/dev/null; then bad "$1  (present but must not be: $2)"; else ok "$1"; fi
 }
+session_body() { # the lines of the game-session section of $1
+    awk '/^\[/ { on = ($0 == "[/script/theisle.tigamesession]"); next } on' "$1"
+}
+fleet_lines() { grep -cE '^[[:space:]]*(MassMigrationDisableTime|IndividualPatrolTime)[[:space:]]*=' "$1"; }
+fleet_ok() { # $1 = Game.ini: both fleet constants in the game-session section, and no other line of either key
+    [ "$(session_body "$1" | grep -cxE 'MassMigrationDisableTime=2700|IndividualPatrolTime=300')" = "2" ] \
+        && [ "$(fleet_lines "$1")" = "2" ]
+}
 
 # ── the fixture. Every value is deliberately DIFFERENT from both the wrapper's
 # built-in default AND the egg variable set below, so any of the three possible
 # sources is distinguishable in the output.
-render() { # $1 = tag, $2 = "canon" | "nocanon"
+render() { # $1 = tag, $2 = "canon" | "nocanon", $3.. = extra NAME=VALUE for the wrapper's env
     local T="/tmp/rt-$1"
     rm -rf "$T"; mkdir -p "$T/_primal" "$T/canon/v1" "$T/TheIsle/Binaries/Linux"
     cp "$WRAPPER" "$T/_primal/start-evrima.sh"
     cp "$HERE/Game.ini.tmpl" "$HERE/Engine.ini.tmpl" "$T/_primal/"
     cp "$JQ_BIN" "$T/_primal/jq"; chmod +x "$T/_primal/jq"
     [ "$2" = "canon" ] && cp "$HERE/boot-config.fixture.json" "$T/canon/v1/boot-config"
+    # Section 4's two template states: no game-session header, and a hand-set line.
+    [ "${RT_NO_SESSION:-}" = "1" ] && sed -i 's#^\[/script/theisle\.tigamesession\]#[/script/theisle.somethingelse]#' "$T/_primal/Game.ini.tmpl"
+    [ -n "${RT_TMPL_EXTRA:-}" ] && sed -i "s#^bEnablePatrolZones=.*#&\n${RT_TMPL_EXTRA}#" "$T/_primal/Game.ini.tmpl"
     # The wrapper refuses to boot with no binary, and refuses one under 150 MB.
     # Both refusals are correct; a render-only test still has to get past them.
     truncate -s 160M "$T/TheIsle/Binaries/Linux/TheIsleServer-Linux-Shipping"
     # A FAKE key, assembled at runtime: no phsk_-shaped literal may sit in a
     # file in this PUBLIC repo (rule 10 / #1064).
-    env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/tmp \
+    env -i PATH="${RT_SHIM:+$RT_SHIM:}/usr/local/bin:/usr/bin:/bin" HOME=/tmp \
         PRIMAL_ROOT="$T" PRIMAL_RENDER_ONLY=1 PRIMAL_WRAPPER_AUTOUPDATE=0 \
         AUTO_UPDATE=0 UPDATE_GATE=0 PRIMAL_ALLOW_VANILLA=1 \
         ENABLE_PRIMAL_MOD=1 PHSK_KEY="phsk_$(printf 'a%.0s' $(seq 1 48))" \
         SERVER_PORT=7777 PRIMAL_DATA_BASE="file://$T/canon" \
         SERVER_NAME="EGGVAR-NAME" MAX_PLAYERS=99 AI_DENSITY=1 CORPSE_DECAY=3 \
-        ADMIN_STEAM_IDS="76561199999999999" ALLOWED_CLASSES="Dryosaurus" \
+        ADMIN_STEAM_IDS="76561199999999999" ALLOWED_CLASSES="Dryosaurus" "${@:3}" \
         bash "$T/_primal/start-evrima.sh" > "$T/boot.log" 2>&1
     echo "$T"
 }
@@ -124,6 +135,13 @@ nowant "no log text injected into the ini" '[primal]'                         "$
 want "entitlement clamp is reported"       'CLAMPED BY ENTITLEMENT'           "$L"
 want "roster filter is reported"           'BROKEN SPECIES REMOVED'           "$L"
 want "dead egg variables are named"        'NO LONGER READ'                   "$L"
+# #3604: with the lever unset the game's own mass check is untouched, and the boot says so.
+nowant "no MassMigrationTime unless asked" 'MassMigrationTime='               "$G"
+want "the unset lever is said"             'MassMigrationTime left to the game (12 h) - PRIMAL_MASS_MIGRATION_TIME is empty' "$L"
+# #3631: the two fleet timing constants, once each, in the game-session section, and said.
+if fleet_ok "$G"; then ok "MassMigrationDisableTime=2700 and IndividualPatrolTime=300 are in the game-session section, once each"
+else bad "the fleet timing constants are not both in the game-session section exactly once ($(fleet_lines "$G") line(s))"; fi
+want "the fleet constants are said"        'Game.ini: MassMigrationDisableTime=2700 IndividualPatrolTime=300' "$L"
 
 echo
 echo "── 2. THE DEFAULTS RUNG: no plane, no cache - it must SHOUT, not lie ──"
@@ -146,6 +164,10 @@ want "non-identity keeps the built-in"     'AIDensity=0'                      "$
 nowant "egg AI_DENSITY did NOT win"        'AIDensity=1'                      "$G2"
 nowant "egg CORPSE_DECAY did NOT win"      'CorpseDecayMultiplier=3'          "$G2"
 want "no admins, and it says so"           'AdminsSteamIDs=0'                 "$G2"
+# #3631: the fleet constants do not come from the plane, so this rung has them too.
+if fleet_ok "$G2"; then ok "the fleet timing constants are written with no plane"
+else bad "the fleet timing constants are missing on the defaults rung ($(fleet_lines "$G2") line(s))"; fi
+want "and said"                            'Game.ini: MassMigrationDisableTime=2700 IndividualPatrolTime=300' "$L2"
 # A168 - no plane: no cap, half the pak's rate (Ice 09-21).
 E2="$T2/TheIsle/Saved/Config/LinuxServer/Engine.ini"
 want "no plane => AnimMaxAnimated=999"     'AnimMaxAnimated=999'               "$E2"
@@ -293,6 +315,94 @@ if grep -vE '^\s*#' "$WRAPPER" | grep -qE 'api\.primalheaven\.com|API_BASE_URL|/
 else
     ok "the wrapper has no Heaven reference outside comments"
 fi
+
+echo
+echo "== 4. THE MASS-CHECK LEVER (#3604) - PRIMAL_MASS_MIGRATION_TIME reaches Game.ini or is refused by name =="
+# The pre-fix control: sections 1, 2 and 4 FAIL on the wrapper before the lever,
+#     git show 863cea0:isles/evrima-linux/start-evrima.sh > /tmp/old.sh
+# and the fleet-constant checks alone FAIL on the wrapper with the lever only (283913c).
+mass_lines() { grep -cE '^[[:space:]]*MassMigrationTime[[:space:]]*=' "$1"; }
+# Section 4's boots answer the binary lane at once: the lever is downstream of it, and an
+# unreachable lane costs five 10 s retries per boot.
+RT_SHIM="/tmp/rt-shim"; rm -rf "$RT_SHIM"; mkdir -p "$RT_SHIM"
+cat > "$RT_SHIM/curl" <<'SHIM'
+#!/bin/bash
+for a in "$@"; do
+    case "$a" in
+        *"/commands/binary/check") printf '{"status":"up_to_date","modded_hash":null,"expected_modded_hash":null,"download_url":null}'; exit 0 ;;
+    esac
+done
+exec /usr/bin/curl "$@"
+SHIM
+chmod +x "$RT_SHIM/curl"
+
+echo "-- 4a. a park value, on both config rungs --"
+for RUNG in canon nocanon; do
+    T=$(render "m-$RUNG" "$RUNG" PRIMAL_MASS_MIGRATION_TIME=172800)
+    G="$T/TheIsle/Saved/Config/LinuxServer/Game.ini"; L="$T/boot.log"
+    if session_body "$G" | grep -qx 'MassMigrationTime=172800'; then ok "$RUNG: the key is in the game-session section"
+    else bad "$RUNG: MassMigrationTime=172800 is not in the game-session section"; fi
+    [ "$(mass_lines "$G")" = "1" ] && ok "$RUNG: exactly one MassMigrationTime line" || bad "$RUNG: $(mass_lines "$G") MassMigrationTime lines, want 1"
+    want "$RUNG: the boot says what it wrote"  'Game.ini: MassMigrationTime=172800 (PRIMAL_MASS_MIGRATION_TIME)' "$L"
+    nowant "$RUNG: and does not also say 12 h" 'left to the game'             "$L"
+    if fleet_ok "$G"; then ok "$RUNG: the fleet constants stand beside it"; else bad "$RUNG: the lever disturbed the fleet constants ($(fleet_lines "$G") line(s))"; fi
+    # Nothing else moved: the render with the lever, less its one line, is the render without it.
+    T0=$(render "m0-$RUNG" "$RUNG")
+    if diff <(grep -v '^MassMigrationTime=172800$' "$G") "$T0/TheIsle/Saved/Config/LinuxServer/Game.ini" >/dev/null; then
+        ok "$RUNG: every other line of Game.ini is unchanged"
+    else
+        bad "$RUNG: the lever changed more than its own line"
+    fi
+done
+
+echo "-- 4b. surrounding blanks are trimmed; the edges of the range --"
+T=$(render m-ws canon "PRIMAL_MASS_MIGRATION_TIME= 172800 ")
+want "a padded value is written"           'MassMigrationTime=172800'         "$T/TheIsle/Saved/Config/LinuxServer/Game.ini"
+T=$(render m-lo canon PRIMAL_MASS_MIGRATION_TIME=86401)
+want "86401 is written"                    'MassMigrationTime=86401'          "$T/TheIsle/Saved/Config/LinuxServer/Game.ini"
+T=$(render m-hi canon PRIMAL_MASS_MIGRATION_TIME=31536000)
+want "31536000 is written"                 'MassMigrationTime=31536000'       "$T/TheIsle/Saved/Config/LinuxServer/Game.ini"
+
+echo "-- 4c. anything else is REFUSED by name, and the game's own check stands --"
+N=0
+for BAD in 86400 43200 0 31536001 0172800 172800.5 -172800 1e5 abc '172800;id' '172800 MassMigrationTime=5' '172800x'; do
+    N=$((N+1))
+    T=$(render "m-bad$N" canon "PRIMAL_MASS_MIGRATION_TIME=$BAD")
+    G="$T/TheIsle/Saved/Config/LinuxServer/Game.ini"; L="$T/boot.log"
+    if [ "$(mass_lines "$G")" = "0" ] && grep -qF "PRIMAL_MASS_MIGRATION_TIME='" "$L" \
+            && grep -qF 'REFUSED (want a whole number of seconds, 86401 to 31536000)' "$L" \
+            && ! grep -qF '(PRIMAL_MASS_MIGRATION_TIME) - the game' "$L"; then
+        ok "refused, nothing written: '$BAD'"
+    else
+        bad "'$BAD' was not refused cleanly ($(mass_lines "$G") line(s) in Game.ini)"
+    fi
+done
+
+echo "-- 4d. no game-session section: said, never claimed --"
+T=$(RT_NO_SESSION=1 render m-nosec canon PRIMAL_MASS_MIGRATION_TIME=172800)
+G="$T/TheIsle/Saved/Config/LinuxServer/Game.ini"; L="$T/boot.log"
+want "the miss is said"                    'MassMigrationTime=172800 NOT WRITTEN' "$L"
+nowant "the write is not claimed"          '(PRIMAL_MASS_MIGRATION_TIME) - the game' "$L"
+[ "$(mass_lines "$G")" = "0" ] && ok "and nothing was added" || bad "a MassMigrationTime line was added outside the session section"
+want "the fleet constants' miss is said"   'MassMigrationDisableTime / IndividualPatrolTime NOT WRITTEN' "$L"
+nowant "and their write is not claimed"    'Game.ini: MassMigrationDisableTime=2700 IndividualPatrolTime=300' "$L"
+[ "$(fleet_lines "$G")" = "0" ] && ok "and neither was added" || bad "a fleet timing line was added outside the session section"
+
+echo "-- 4e. a MassMigrationTime line already in the template is replaced, never doubled --"
+T=$(RT_TMPL_EXTRA='MassMigrationTime=43200' render m-dup canon PRIMAL_MASS_MIGRATION_TIME=172800)
+G="$T/TheIsle/Saved/Config/LinuxServer/Game.ini"
+if [ "$(mass_lines "$G")" = "1" ] && grep -qx 'MassMigrationTime=172800' "$G"; then ok "one line, the lever's"
+else bad "$(mass_lines "$G") MassMigrationTime line(s) after a template that already had one"; fi
+# ...and with the lever unset that template line is left exactly as written.
+T=$(RT_TMPL_EXTRA='MassMigrationTime=43200' render m-dup0 canon)
+want "unset leaves a template line alone"  'MassMigrationTime=43200'          "$T/TheIsle/Saved/Config/LinuxServer/Game.ini"
+
+echo "-- 4f. fleet timing lines already in the template are replaced by the constants (#3631) --"
+T=$(RT_TMPL_EXTRA='IndividualPatrolTime=1200\nMassMigrationDisableTime=7200' render m-fleetdup canon)
+G="$T/TheIsle/Saved/Config/LinuxServer/Game.ini"
+if fleet_ok "$G"; then ok "one line each, the constants"; else bad "$(fleet_lines "$G") fleet timing line(s) after a template that already had both"; fi
+nowant "the template's patrol value is gone" 'IndividualPatrolTime=1200'      "$G"
+nowant "the template's mass length is gone"  'MassMigrationDisableTime=7200'  "$G"
 
 echo
 echo "render_test: $PASS passed, $FAIL failed"
