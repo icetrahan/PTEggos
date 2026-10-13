@@ -20,6 +20,9 @@ Gates, each earned elsewhere in this repo:
      wrapper's.
   9. The two fleet timing constants (#3631) are the wrapper's, with egg 40's
      values, and the template carries neither.
+ 10. The no-plane fallbacks of BOTH Evrima wrappers equal the plane's defaults
+     (#3326, #3331). A server renders them only when it boots with no plane and
+     no cached settings, so nothing else notices when one drifts.
 """
 import base64
 import hashlib
@@ -32,6 +35,49 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 FAILS = []
+
+# The data plane's CONFIG_DEFAULTS.server_settings, as each wrapper spells them:
+# plane field -> (egg 40 `$cfg` key and egg 42 `CFG_` name, rendered value).
+# ⛔ A row changes only when the plane's default changes.
+PLANE_DEFAULTS = {
+    "maxPlayers": ("MaxPlayers", "150"),
+    "serverPasswordEnabled": ("ServerPasswordEnabled", "False"),
+    "rconEnabled": ("RconEnabled", "False"),
+    "corpseDecay": ("CorpseDecay", "1"),
+    "enableHumans": ("EnableHumans", "True"),
+    "dayLengthMin": ("DayLength", "45"),
+    "nightLengthMin": ("NightLength", "20"),
+    "growthMultiplier": ("GrowthMultiplier", "1"),
+    "enableGlobalChat": ("EnableGlobalChat", "True"),
+    "enableAi": ("EnableAI", "True"),
+    "aiDensity": ("AIDensity", "0.25"),
+    "aiSpawnInterval": ("AISpawnInterval", ""),
+    "spawnFish": ("SpawnFish", "True"),
+    "enableMutations": ("EnableMutations", "True"),
+    "enableDiets": ("EnableDiets", "True"),
+    "fallDamage": ("FallDamage", "True"),
+    "allowReplay": ("AllowReplay", "True"),
+    "dynamicWeather": ("DynamicWeather", "False"),
+    "whitelistEnabled": ("WhitelistEnabled", "False"),
+    "spawnPlants": ("SpawnPlants", "True"),
+    "plantMultiplier": ("PlantMultiplier", "1"),
+    "enableMigration": ("EnableMigration", "True"),
+    "enableMassMigration": ("EnableMassMigration", "True"),
+    "enablePatrolZones": ("EnablePatrolZones", "True"),
+    "mapName": ("MapName", "Gateway"),
+    "queueEnabled": ("QueueEnabled", "True"),
+}
+
+
+def fallbacks_egg40(text):
+    """The `$cfg = @{ ... }` table of start-evrima.ps1: key -> value."""
+    m = re.search(r"^\$cfg = @\{\n(.*?)^\}", text, re.DOTALL | re.MULTILINE)
+    return dict(re.findall(r"^\s+(\w+)\s+=\s+'([^']*)'", m.group(1), re.MULTILINE)) if m else {}
+
+
+def fallbacks_egg42(text):
+    """The top-level CFG_ assignments of start-evrima.sh: name -> value."""
+    return dict(re.findall(r'^CFG_(\w+)="([^"]*)"', text, re.MULTILINE))
 
 
 def check(name, ok, detail=""):
@@ -211,6 +257,23 @@ def main() -> int:
         "Game.ini.tmpl carries neither fleet timing key",
         b"massmigrationdisabletime=" not in tmpl and b"individualpatroltime=" not in tmpl,
     )
+
+    # 10. the no-plane fallbacks of both wrappers are the plane's defaults
+    for label, path, read in (
+        ("egg 40", egg40, fallbacks_egg40),
+        ("egg 42", HERE / "start-evrima.sh", fallbacks_egg42),
+    ):
+        got = read(path.read_text(encoding="utf-8", errors="replace").replace("\r\n", "\n")) if path.exists() else {}
+        off = [
+            f"{key}={got.get(key)!r} (plane {field}: {want!r})"
+            for field, (key, want) in PLANE_DEFAULTS.items()
+            if got.get(key) != want
+        ]
+        check(
+            f"{label}'s no-plane fallbacks are the plane's defaults ({len(PLANE_DEFAULTS)} values)",
+            bool(got) and not off,
+            "; ".join(off) if got else f"{path.name} not found or its fallback table not read",
+        )
 
     print()
     if FAILS:

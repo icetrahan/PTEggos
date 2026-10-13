@@ -121,21 +121,20 @@ $cfg = @{
     NightLength           = '20'
     GrowthMultiplier      = '1'
     EnableGlobalChat      = 'True'
-    # ⭐ These five are the VENDOR defaults, ruled by Ice 2026-09-10 (#2174) — they used to
-    #    ship 'False'/'0' and Game.ini.tmpl writes them ACTIVELY, so we decided for the owner
-    #    on every boot. ⛔ Must stay byte-identical to the plane's CONFIG_DEFAULTS.server_settings
-    #    — `boot_config_contract_test.mjs` §1 is the gate that fails when they drift.
+    # ⛔ Every value from here to QueueEnabled equals the plane's
+    #    CONFIG_DEFAULTS.server_settings. `isles/evrima-linux/verify.py` gate 10 fails
+    #    when this table or the Linux wrapper's drifts from it (#3326).
     EnableAI              = 'True'
     AIDensity             = '0.25'
-    SpawnFish             = 'False'
+    SpawnFish             = 'True'
     EnableMutations       = 'True'
     EnableDiets           = 'True'
     FallDamage            = 'True'
     AllowReplay           = 'True'
     DynamicWeather        = 'False'
     WhitelistEnabled      = 'False'
-    SpawnPlants           = 'False'
-    PlantMultiplier       = '0'
+    SpawnPlants           = 'True'
+    PlantMultiplier       = '1'
     EnableMigration       = 'True'
     EnableMassMigration   = 'True'
     EnablePatrolZones     = 'True'

@@ -26,7 +26,7 @@ FILES = ['Engine.ini.tmpl', 'Game.ini.tmpl', 'start-evrima.ps1']
 # one line, on purpose -- see README.md "Scrubbed values". Updated for the pak
 # deploy lane (BUILD 39, #411): the DLL lane was replaced by the pak lane, the
 # sig-bypass drop was added, and Engine.ini now carries the mod's session block.
-WRAPPER_SHA = '8b1abc0a2efe9b1d1a73d5c04ab5db2aed875f7b076fe5989b2abf77867a93ce'
+WRAPPER_SHA = 'ebdb0691c162452001c76facd32ad6f52ceb96515d91fc046a4bfd899967ee83'
 
 egg = json.load(open(EGG, encoding='utf-8'))
 install = egg['scripts']['installation']['script']

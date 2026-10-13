@@ -165,8 +165,9 @@ holds the two eggs to the same values.
 | `install.sh` | the install script (also embedded in the JSON), #346 fail-gate ported: exits 1 with a greppable class, never reports a dead install as complete |
 | `start-evrima.sh` | the boot wrapper (also embedded in `install.sh` as base64) |
 | `Game.ini.tmpl` / `Engine.ini.tmpl` | config templates (likewise embedded) |
-| `embed.py` | puts the loose files back into install.sh + the egg JSON (the fixer) |
-| `verify.py` | proves loose files == blobs == egg JSON, parse + LF + secret + query-port gates (the judge) |
+| `embed.py` | puts the loose files back into install.sh + the egg JSON (the fixer). `embed.py --check` reports drift, writes nothing and exits 1 on drift |
+| `embed_test.py` | proves `--check` never writes, on a copy of this folder |
+| `verify.py` | proves loose files == blobs == egg JSON, parse + LF + secret + query-port gates, and that both Evrima wrappers' no-plane fallbacks equal the plane's defaults (gate 10) (the judge) |
 | `publish_wrapper.py` | publishes wrapper+templates to the R2 self-update manifest |
 
 Never hand-edit the blobs. Edit loose files → `embed.py` → `verify.py`.

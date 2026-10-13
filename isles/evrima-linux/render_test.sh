@@ -45,6 +45,9 @@ want() { # $1 label, $2 needle, $3 file
 nowant() { # $1 label, $2 needle, $3 file
     if grep -qF -- "$2" "$3" 2>/dev/null; then bad "$1  (present but must not be: $2)"; else ok "$1"; fi
 }
+wantline() { # $1 label, $2 the whole line, $3 file
+    if tr -d '\r' < "$3" 2>/dev/null | grep -qxF -- "$2"; then ok "$1"; else bad "$1  (no line: $2)"; fi
+}
 session_body() { # the lines of the game-session section of $1
     awk '/^\[/ { on = ($0 == "[/script/theisle.tigamesession]"); next } on' "$1"
 }
@@ -160,8 +163,13 @@ want "slots from the egg env (#2024)"      'MaxPlayerCount=99'                "$
 want "#2024 seed is reported"              'identity seeded from the egg env' "$L2"
 # ...and ONLY those three: a non-identity egg variable must still lose to the
 # built-in default on this rung (#2023 - the panel owns config).
-want "non-identity keeps the built-in"     'AIDensity=0'                      "$G2"
+wantline "non-identity keeps the built-in" 'AIDensity=0.25'                   "$G2"
 nowant "egg AI_DENSITY did NOT win"        'AIDensity=1'                      "$G2"
+# #3326 #3331: with no plane and no cache the server still gets the plane's defaults.
+for line in bSpawnAI=True bSpawnFish=True bSpawnPlants=True PlantSpawnMultiplier=1 \
+            bEnableMigration=True bEnableMassMigration=True bEnablePatrolZones=True; do
+    wantline "no plane: $line" "$line" "$G2"
+done
 nowant "egg CORPSE_DECAY did NOT win"      'CorpseDecayMultiplier=3'          "$G2"
 want "no admins, and it says so"           'AdminsSteamIDs=0'                 "$G2"
 # #3631: the fleet constants do not come from the plane, so this rung has them too.

@@ -703,9 +703,10 @@ DEFAULT_CLASSES="Dryosaurus,Hypsilophodon,Maiasaura,Pachycephalosaurus,Stegosaur
 
 # THESE ARE FIRST-BOOT FALLBACKS, NOT THE SOURCE OF TRUTH. They are byte-matched
 # to egg 40's `$cfg` table AND to the plane's own
-# `CONFIG_DEFAULTS.server_settings` - move all three or none. A server renders
-# them only when the canonical fetch AND the cache both failed, which the ladder
-# above has already shouted about.
+# `CONFIG_DEFAULTS.server_settings` - move all three or none; verify.py gate 10
+# fails when one drifts (#3331). A server renders them only when the canonical
+# fetch AND the cache both failed, which the ladder above has already shouted
+# about.
 CFG_ServerName="Primal Heaven Evrima"
 CFG_MaxPlayers="150"
 CFG_ServerPassword=""
@@ -720,20 +721,20 @@ CFG_DayLength="45"
 CFG_NightLength="20"
 CFG_GrowthMultiplier="1"
 CFG_EnableGlobalChat="True"
-CFG_EnableAI="False"
-CFG_AIDensity="0"
-CFG_SpawnFish="False"
+CFG_EnableAI="True"
+CFG_AIDensity="0.25"
+CFG_SpawnFish="True"
 CFG_EnableMutations="True"
 CFG_EnableDiets="True"
 CFG_FallDamage="True"
 CFG_AllowReplay="True"
 CFG_DynamicWeather="False"
 CFG_WhitelistEnabled="False"
-CFG_SpawnPlants="False"
-CFG_PlantMultiplier="0"
-CFG_EnableMigration="False"
-CFG_EnableMassMigration="False"
-CFG_EnablePatrolZones="False"
+CFG_SpawnPlants="True"
+CFG_PlantMultiplier="1"
+CFG_EnableMigration="True"
+CFG_EnableMassMigration="True"
+CFG_EnablePatrolZones="True"
 CFG_MapName="Gateway"
 CFG_QueueEnabled="True"
 CFG_AISpawnInterval=""
