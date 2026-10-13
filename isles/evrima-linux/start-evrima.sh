@@ -61,6 +61,8 @@ export TZ=${TZ:-UTC}
 
 log()  { echo "[primal] $*"; }
 warn() { echo "[primal] WARN: $*" >&2; }
+# ⛔ An exit that leaves the server down goes through `refuse` (below), which
+# tells the data plane. `die` tells nobody.
 die()  { echo "[primal] FATAL: $*" >&2; exit 1; }
 
 # Normalize 0/1/true/false/yes/on -> True|False (egg 40 renders capitalized).
@@ -386,6 +388,69 @@ PRIMAL_BINARY_BASE="${PRIMAL_BINARY_BASE%/}"
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
+# A REFUSED START IS REPORTED. Every exit below that leaves this server down
+# goes through `refuse`: it prints the FATAL line, then tells the data plane
+# with the server's OWN key (POST /v1/boot-report, stage "start"), and the
+# plane pages from that row. The plane's internal key never sits on a customer
+# volume (#1064).
+#
+# Bounded and best effort: an unreachable plane must not turn a refusal into a
+# hang. The log says which of "RECORDED" / "NOT reported" happened, and a 200
+# is believed only when its body says recorded (rule 13).
+#
+# The marker lets the next boot that DOES launch say so, which clears the
+# page. A server that never refused sends nothing.
+# ---------------------------------------------------------------------------
+REFUSED_MARK="$PRIM/boot-refused.pending"
+START_REPORT=""
+
+report_start() { # $1 = true|false, $2 = code, $3 = reason, $4 = attempts; 0 only when the plane recorded it
+    local ok="$1" code="$2" tries="${4:-1}" reason body resp http n=0
+    if [ -z "$PHSK" ]; then START_REPORT="no PHSK_KEY"; return 1; fi
+    # The reason is prose built from paths and egg variables: keep printable
+    # ASCII and drop the two characters that would end a JSON string.
+    reason=$(printf '%s' "${3:-}" | tr -d '"\\' | tr -c '\40-\176' ' ' | cut -c1-480)
+    if [ "$ok" = "true" ]; then
+        body='{"stage":"start","game":"evrima","platform":"linux","ok":true}'
+    else
+        body="{\"stage\":\"start\",\"game\":\"evrima\",\"platform\":\"linux\",\"ok\":false,\"code\":\"${code}\",\"reason\":\"${reason}\"}"
+    fi
+    while [ "$n" -lt "$tries" ]; do
+        n=$((n + 1))
+        resp=$(curl -sS --max-time 10 -w '\n%{http_code}' -X POST \
+            -H "Authorization: Bearer $PHSK" -H "Content-Type: application/json" \
+            -d "$body" "$DATA_BASE/v1/boot-report" 2>/dev/null)
+        http=$(printf '%s' "$resp" | tail -n1)
+        if [ "$http" = "200" ] && printf '%s' "$resp" | grep -Eq '"recorded"[[:space:]]*:[[:space:]]*true'; then
+            START_REPORT="recorded"; return 0
+        fi
+        case "$http" in
+            ""|000) START_REPORT="no answer from $DATA_BASE" ;;
+            200)    START_REPORT="HTTP 200 without recorded:true" ;;
+            *)      START_REPORT="HTTP $http" ;;
+        esac
+        [ "$n" -lt "$tries" ] && sleep 3
+    done
+    return 1
+}
+
+refuse() { # $1 = code (the plane's vocabulary: [a-z0-9_]), rest = the FATAL line
+    local code="$1"; shift
+    echo "[primal] FATAL: $*" >&2
+    if [ "${PRIMAL_RENDER_ONLY:-0}" = "1" ]; then
+        warn "start: (render-only) an off-box run reports no refused start"
+        exit 1
+    fi
+    printf '%s %s\n' "$code" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$REFUSED_MARK" 2>/dev/null
+    if report_start false "$code" "$*" 2; then
+        log "start: this refused start is RECORDED by the data plane ($code) - its alert names this server"
+    else
+        warn "start: this refused start was NOT reported to the data plane ($START_REPORT) - NOBODY HAS BEEN TOLD. Send support the FATAL line above."
+    fi
+    exit 1
+}
+
+# ---------------------------------------------------------------------------
 # STEAMCMD UPDATE (game content + the vanilla binary the mod build is keyed on)
 # ---------------------------------------------------------------------------
 if [ "${AUTO_UPDATE:-1}" != "0" ] && [ -f ./steamcmd/steamcmd.sh ]; then
@@ -420,9 +485,9 @@ fi
 
 # The gate is the binary this wrapper launches (#346: check the consumer's own
 # path; nothing infers success from the absence of an error).
-[ -f "$GAME_BINARY" ] || die "NO-BOOTABLE-BINARY: $GAME_BINARY missing after update. Reinstall, or read the steamcmd output above."
+[ -f "$GAME_BINARY" ] || refuse binary_missing "NO-BOOTABLE-BINARY: $GAME_BINARY missing after update. Reinstall, or read the steamcmd output above."
 VSIZE=$(stat -c%s "$GAME_BINARY")
-[ "$VSIZE" -gt 157286400 ] || die "TRUNCATED-BINARY: $GAME_BINARY is $VSIZE bytes (<150MB) - the pull is incomplete."
+[ "$VSIZE" -gt 157286400 ] || refuse binary_truncated "TRUNCATED-BINARY: $GAME_BINARY is $VSIZE bytes (<150MB) - the pull is incomplete."
 VANILLA_HASH=$(md5_of "$GAME_BINARY")
 log "binary hash after SteamCMD: ${VANILLA_HASH:0:16}... ($VSIZE bytes)"
 
@@ -625,14 +690,9 @@ if [ "$MOD_READY" != "1" ]; then
         warn "This is a diagnostics-only state - unset the variable after."
         warn "=============================================================="
     elif [ "$LANE_ANSWERED" = "1" ]; then
-        # ⚠️ NO ops event is pushed from here, and that is a GAP, not a choice:
-        # the plane's only ops-event route is /internal/ops/events, guarded by
-        # the plane's INTERNAL key - putting that on a customer volume would be
-        # a worse credential leak than the Heaven key this change removes
-        # (#1064). A phsk_-authed route is owed; see BUGS #2353.
-        die "MOD-BINARY-UNAVAILABLE: the lane ANSWERED and has no verified modded binary for vanilla ${VANILLA_HASH:0:16}. This is a REAL outage of the mod build (it lags a game update), not a network problem - the on-volume cache is deliberately NOT used, because it was built for a different game build. Vanilla is forbidden on this egg. The panel will retry; check ${PRIMAL_BINARY_BASE}/api/binary/status."
+        refuse mod_binary_unavailable "MOD-BINARY-UNAVAILABLE: the lane ANSWERED and has no verified modded binary for vanilla ${VANILLA_HASH:0:16}. This is a REAL outage of the mod build (it lags a game update), not a network problem - the on-volume cache is deliberately NOT used, because it was built for a different game build. Vanilla is forbidden on this egg. The panel will retry; check ${PRIMAL_BINARY_BASE}/api/binary/status."
     else
-        die "MOD-BINARY-UNAVAILABLE: ${PRIMAL_BINARY_BASE} did not answer in 5 attempts AND this volume holds no verified modded binary for vanilla ${VANILLA_HASH:0:16} to fall back on (first boot, or the game updated while the lane was down). Vanilla is forbidden on this egg. The panel will retry."
+        refuse mod_binary_lane_unreachable "MOD-BINARY-UNAVAILABLE: ${PRIMAL_BINARY_BASE} did not answer in 5 attempts AND this volume holds no verified modded binary for vanilla ${VANILLA_HASH:0:16} to fall back on (first boot, or the game updated while the lane was down). Vanilla is forbidden on this egg. The panel will retry."
     fi
 fi
 
@@ -814,7 +874,7 @@ GSB_C=$(render_id_lines "AllowedClasses" "$CLASSES_RAW" "")
 GSB="$GSB_A"$'\n'"$GSB_V"$'\n'"$GSB_C"
 N_CLASSES=$(grep -c '^AllowedClasses=' <<<"$GSB" || true)
 
-GI=$(cat "$PRIM/Game.ini.tmpl") || die "Game.ini.tmpl missing from _primal/ (reinstall the egg)"
+GI=$(cat "$PRIM/Game.ini.tmpl") || refuse template_missing "Game.ini.tmpl missing from _primal/ (reinstall the egg)"
 GI=${GI//'{{ServerName}}'/$CFG_ServerName}
 GI=${GI//'{{MaxPlayers}}'/$CFG_MaxPlayers}
 GI=${GI//'{{ServerPasswordEnabled}}'/$CFG_ServerPasswordEnabled}
@@ -870,7 +930,7 @@ log "rendered Game.ini (players=$CFG_MaxPlayers, classes=$N_CLASSES, port=$GAME_
 # server, #501; config ARRAYS do not load, #572 - every value is one csv
 # string). Written with LF endings: a CR lands inside the token -> 401.
 # ---------------------------------------------------------------------------
-ENG=$(cat "$PRIM/Engine.ini.tmpl") || die "Engine.ini.tmpl missing from _primal/ (reinstall the egg)"
+ENG=$(cat "$PRIM/Engine.ini.tmpl") || refuse template_missing "Engine.ini.tmpl missing from _primal/ (reinstall the egg)"
 
 # ---------------------------------------------------------------------------
 # THE PAK'S CONFIG SECTION - per-server, from the plane's `mod_settings` block.
@@ -1237,6 +1297,18 @@ if [ "${PRIMAL_TOKEN_ARG:-0}" = "1" ] && [ "${ENABLE_PRIMAL_MOD:-0}" = "1" ] && 
     log "start: PrimalToken set (len=${#PHSK}) - launch-flag token path ENABLED"
 elif [ "${ENABLE_PRIMAL_MOD:-0}" = "1" ] && [ -n "$PHSK" ]; then
     log "start: PrimalToken flag omitted - Engine.ini is the single token source (len=${#PHSK})"
+fi
+
+# The launch after a refused start is the report that clears its page.
+if [ -f "$REFUSED_MARK" ]; then
+    if [ -z "$PHSK" ]; then
+        rm -f "$REFUSED_MARK"
+    elif report_start true "" "" 1; then
+        rm -f "$REFUSED_MARK"
+        log "start: told the data plane this server is launching again after a refused start"
+    else
+        warn "start: could NOT tell the data plane this server is launching again ($START_REPORT) - kept for the next boot. The refused-start alert otherwise clears itself after 24 h."
+    fi
 fi
 
 log "start: launching on port $GAME_PORT (query $GAME_PORT, queue $CFG_QueuePort, rcon $CFG_RconPort)..."

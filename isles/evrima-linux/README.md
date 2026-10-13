@@ -59,6 +59,20 @@ for today's vanilla hash the boot **fails loudly** (`MOD-BINARY-UNAVAILABLE`)
 instead of degrading — a vanilla boot would silently ship a server with no mod
 surface at all. `PRIMAL_ALLOW_VANILLA=1` exists for diagnostics only and shouts.
 
+### A refused start is reported
+
+Every exit that leaves the server down (`refuse` in `start-evrima.sh`: no modded
+binary, no or a short game binary, a missing template) prints its `FATAL` line and
+then tells the data plane with the server's own `PHSK_KEY`:
+`POST {PRIMAL_DATA_BASE}/v1/boot-report` with `stage: "start"`, `ok: false`, a
+`code` and the FATAL line as `reason`. The plane pages from that row
+(`boot_refused:<server>`). The report is bounded (two tries, 10 s each) and the
+log says whether it was `RECORDED` or `NOT reported`; a 200 counts only when its
+body says `recorded: true`. The next boot that does launch sends `ok: true`, which
+clears the page; `_primal/boot-refused.pending` is how it knows to. A server that
+never refused sends nothing. `render_test.sh` section 4 is the proof, and its
+pre-fix control is the wrapper before `refuse` existed.
+
 ### The sigbypass verdict (the question the session brief asked)
 
 **No separate sigbypass artifact exists or is needed on Linux — the lane is
