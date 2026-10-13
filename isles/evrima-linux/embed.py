@@ -12,7 +12,11 @@ Two levels of nesting, same as egg 40:
            a string splice).
 
 Run after editing ANY loose file. Then run verify.py.
+
+    python isles/evrima-linux/embed.py            # write
+    python isles/evrima-linux/embed.py --check    # report drift, write nothing; exit 1 on drift
 """
+import argparse
 import base64
 import hashlib
 import json
@@ -37,21 +41,33 @@ def wrap76(s: str) -> str:
 
 
 def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--check", action="store_true", help="report drift, write nothing; exit 1 on drift")
+    check = ap.parse_args().check
+    drift = []
+
     # LF-normalize the shell/tmpl sources first: they execute on Linux, and a
     # CR in Engine.ini.tmpl would end up inside the token (401).
+    loose = {}
     for fname, _ in BLOBS.values():
         p = HERE / fname
         raw = p.read_bytes()
-        if b"\r" in raw:
-            p.write_bytes(raw.replace(b"\r\n", b"\n").replace(b"\r", b"\n"))
+        loose[fname] = raw.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+        if loose[fname] == raw:
+            continue
+        if check:
+            drift.append(f"{fname} has CR line endings")
+        else:
+            p.write_bytes(loose[fname])
             print(f"(embed) normalized CRLF -> LF in {fname}")
 
-    text = INSTALL.read_text(encoding="utf-8")
+    install_was = INSTALL.read_bytes()
+    text = install_was.decode("utf-8")
     if "\r" in text:
         text = text.replace("\r\n", "\n").replace("\r", "\n")
 
     for marker, (fname, sha_token) in BLOBS.items():
-        data = (HERE / fname).read_bytes()
+        data = loose[fname]
         sha = hashlib.sha256(data).hexdigest()
         b64 = wrap76(base64.b64encode(data).decode("ascii"))
 
@@ -81,10 +97,24 @@ def main() -> int:
             )
         print(f"(embed) {fname}: {len(data)} B, sha256 {sha[:16]}...")
 
+    egg = json.loads(EGG_JSON.read_text(encoding="utf-8"))
+    if check:
+        if text.encode("utf-8") != install_was:
+            drift.append("install.sh does not match the loose files")
+        if egg["scripts"]["installation"]["script"] != text:
+            drift.append(f"{EGG_JSON.name} does not carry the install.sh the loose files make")
+        if drift:
+            print("(embed) DRIFT, nothing written:")
+            for d in drift:
+                print(f"  - {d}")
+            print("(embed) run embed.py without --check to write it")
+            return 1
+        print("(embed) check: install.sh and the egg JSON match the loose files; nothing written")
+        return 0
+
     INSTALL.write_bytes(text.encode("utf-8"))
     print(f"(embed) install.sh rewritten ({len(text)} chars)")
 
-    egg = json.loads(EGG_JSON.read_text(encoding="utf-8"))
     egg["scripts"]["installation"]["script"] = text
     EGG_JSON.write_text(
         json.dumps(egg, indent=4, ensure_ascii=False) + "\n", encoding="utf-8"
