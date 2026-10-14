@@ -8,7 +8,7 @@ community list (BUGS #652). Reproduces everything egg 40
 | | |
 |---|---|
 | Startup | `bash _primal/start-evrima.sh` |
-| Image | `ghcr.io/icetrahan/steamcmd:debian` (standard yolk: skips its own steamcmd when `SRCDS_APPID` is unset, then evals the panel STARTUP — that is how the wrapper gets control) |
+| Image | `ghcr.io/icetrahan/steamcmd:debian` (standard yolk: skips its own steamcmd when `SRCDS_APPID` is unset, then evals the panel STARTUP — that is how the wrapper gets control). It carries `python3` for the binary patcher (`steamcmd/debian/Dockerfile`) |
 | Done string | `Session started succesfully!` (the EOS session line — the ingestion trigger) |
 | Install container | `ghcr.io/parkervcp/installers:debian` |
 
@@ -43,7 +43,8 @@ This egg's images are NOT in that matrix — but push deliberately anyway.
    not bring back carried over, the previous build restored if the pull fails
    (A702, `test_cleanupdate.sh`). `FORCE_CLEAN_UPDATE=1` forces one; the
    stale-appmanifest self-heal stays (Steam-reachability-gated, #346).
-4. **Modded Linux binary from the Primal API** — see below. Mandatory.
+4. **The stock binary, patched in place** by our pattern patcher; the Primal
+   binary lane is the fallback — see below. Mandatory.
 5. **Render `Game.ini`** from egg variables (defaults byte-matched to egg 40's;
    regenerated every boot, the customer edits variables, #356 T1(a)).
 6. **Render `Engine.ini`** + the pak session block
@@ -53,15 +54,40 @@ This egg's images are NOT in that matrix — but push deliberately anyway.
    every file → place atomically; never a partial triplet; fail-soft).
 8. Confirm-startup report (best-effort), then `exec` the binary.
 
-## 🔴 The binary: Primal Heaven API ONLY — vanilla is FORBIDDEN
+## 🔴 The binary: patched in place, the lane as fallback — vanilla is FORBIDDEN
 
-**Ice's rule (2026-08-04): we cannot use the vanilla Linux binary.** Every boot
-the wrapper asks `POST /commands/binary/check` (`platform:linux`, keyed on the
-vanilla md5 that SteamCMD just produced) and installs the sha-verified modded
-`TheIsleServer-Linux-Shipping` the backend serves. If the backend has no build
-for today's vanilla hash the boot **fails loudly** (`MOD-BINARY-UNAVAILABLE`)
-instead of degrading — a vanilla boot would silently ship a server with no mod
-surface at all. `PRIMAL_ALLOW_VANILLA=1` exists for diagnostics only and shouts.
+**Ice's rule (2026-08-04): we cannot use the vanilla Linux binary.** The mod
+needs two bytes changed at the engine's pak-signature gate. Every boot:
+
+1. **Local patch (first).** The wrapper reads the Linux voice tool's manifest
+   (`<R2>/primal-voice-linux-tool/latest.json`, the same one the panel's `/voice`
+   Linux download serves), fetches `patch_worker.py` + `patches_linux.json`, checks
+   each against the manifest's sha256 and keeps them in `_primal/patcher/` with
+   that manifest. It runs the patcher on the binary SteamCMD just installed. The
+   patterns find the two sites in any game build, so a game update needs no new
+   binary from us. Exit 0 is not believed alone: the report must say `success`,
+   the output must exist at the binary's size, and the installed file must read
+   back as the patcher's output. A binary already in patched form is left as it
+   is (nothing written). The boot says `binary: PATCHED LOCALLY (tool vN): <stock>
+   -> <modded>` or `binary: already patched`, then asks the lane whether its own
+   build for this vanilla is the same bytes (log only; it cannot stop the boot).
+2. **The binary lane (fallback).** If the local patch cannot run (no `python3` in
+   the image, no manifest and no kept copy, a sha256 mismatch, a build the
+   patterns do not cover), the boot says `LOCAL PATCH NOT APPLIED - <why>` and
+   does what it always did: `POST /commands/binary/check` at
+   `binaries.primalhosted.com` (keyed on the stock md5) and installs the modded
+   binary the lane serves — the same bytes, built upstream by the same patcher,
+   but only for game builds the lane already holds.
+3. **Refused.** If neither path gives a modded binary, the boot **fails loudly**
+   (`MOD-BINARY-UNAVAILABLE`, naming the local reason too) instead of degrading — a
+   vanilla boot would silently ship a server with no mod surface at all.
+   `PRIMAL_ALLOW_VANILLA=1` exists for diagnostics only and shouts.
+
+The kept copy is used only when R2 cannot be read, and only while it still
+matches the manifest it came with. `PRIMAL_PATCHER_MANIFEST` (not an egg
+variable) points the lookup elsewhere for off-box tests. `test_localpatch.sh`
+runs this whole section against a stand-in patcher, R2 and lane (CI:
+`verify-eggs`).
 
 ### A refused start is reported
 
@@ -82,8 +108,8 @@ pre-fix control is the wrapper before `refuse` existed.
 **No separate sigbypass artifact exists or is needed on Linux — the lane is
 deliberately absent from this egg.** On Windows, egg 40 places `dsound.dll` +
 `UniversalSigBypasser.asi` beside the exe or the engine refuses to mount our
-unsigned `pakchunk50`. On Linux the equivalent patch ships **inside the modded
-binary** the Primal API serves. Evidence:
+unsigned `pakchunk50`. On Linux the equivalent is the two patched sites **inside
+the binary**, applied by the wrapper itself (or pre-applied by the lane). Evidence:
 
 - The 2026-08-04 listing-test clone (`fc664bbc`, egg 17 lane on
   `testing:deathmatch`) booted `[PrimalMod] [BOOT] : BUILD 78 ... tokenlen=53`
@@ -171,6 +197,7 @@ holds the two eggs to the same values.
 | `Game.ini.tmpl` / `Engine.ini.tmpl` | config templates (likewise embedded) |
 | `embed.py` | puts the loose files back into install.sh + the egg JSON (the fixer). `embed.py --check` reports drift, writes nothing and exits 1 on drift |
 | `embed_test.py` | proves `--check` never writes, on a copy of this folder |
+| `test_localpatch.sh` | the binary section (local patch, lane fallback, refusals) against a stand-in patcher, R2 and lane |
 | `verify.py` | proves loose files == blobs == egg JSON, parse + LF + secret + query-port gates, and that both Evrima wrappers' no-plane fallbacks equal the plane's defaults (gate 10) (the judge) |
 | `publish_wrapper.py` | publishes wrapper+templates to the R2 self-update manifest |
 

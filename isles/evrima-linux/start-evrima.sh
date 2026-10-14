@@ -3,29 +3,24 @@
 #
 # The Linux sibling of egg 40's start-evrima.ps1 (isles/evrima-windows-feathers).
 # Each boot: self-update -> jq -> CANONICAL CONFIG from the data plane ->
-# SteamCMD -> MODDED BINARY from the PRODUCT's binary lane -> RENDER
+# SteamCMD -> PATCH THE STOCK BINARY (binary lane as fallback) -> RENDER
 # Game.ini/Engine.ini FROM THE PLANE -> pak from R2 -> launch. Game.ini and the
 # pak's Engine.ini section are DERIVED artifacts regenerated every boot; the
 # customer edits the PANEL, never the file and no longer the egg variables.
 #
 # HARD DIFFERENCES FROM THE WINDOWS EGG, each deliberate:
 #
-#   * BINARY: the server binary is the MODDED Linux binary served by the Primal
-#     lane at binaries.primalhosted.com (repo primal_binaries, R2-backed on
-#     the Cloudflare edge) - THE PRODUCT'S OWN, never the game community's
-#     backend (#2337: that box went down 2026-09-14 and boot-looped a paying
-#     customer's only server for nine hours). The vanilla
-#     steamcmd binary is NEVER launched - Ice's rule. SteamCMD still runs first
-#     because the LANE keys the modded build off the vanilla md5 hash, and
-#     because the game CONTENT comes from Steam; only the 200 MB Shipping
-#     binary is replaced.
+#   * BINARY: the stock binary SteamCMD installs is patched in place every boot
+#     by our pattern patcher (`patch_worker.py` + `patches_linux.json`, the
+#     Linux voice tool on R2), so a game update needs no new binary from us.
+#     When that cannot run, the fallback is the modded binary from the
+#     product's lane at binaries.primalhosted.com (the same bytes, made
+#     upstream by the same patcher), never the game community's backend
+#     (#2337). The vanilla binary is NEVER launched - Ice's rule.
 #   * NO SIGBYPASS LANE. On Windows the mod pak needs dsound.dll +
 #     UniversalSigBypasser.asi or the engine refuses unsigned paks. On Linux the
-#     signature bypass ships INSIDE the modded binary, which is the other half
-#     of why vanilla is forbidden: pakchunk50 mounting on the Linux build was
-#     proven 2026-08-04 ([BOOT] BUILD 78 ... tokenlen=53 on the listing-test
-#     clone) while running the API's modded binary. Vanilla + our pak is
-#     untested and stays that way.
+#     two patched sites ARE the signature bypass, which is the other half of why
+#     vanilla is forbidden. Vanilla + our pak is untested and stays that way.
 #   * QUERY PORT == GAME PORT, BAKED. There is no QUERY_PORT variable on this
 #     egg on purpose (Ice, 2026-08-04, from the warphosting listing work). Both
 #     working Linux references run -QueryPort == Port; the one clone that split
@@ -556,7 +551,137 @@ VANILLA_HASH=$(md5_of "$GAME_BINARY")
 log "binary hash after SteamCMD: ${VANILLA_HASH:0:16}... ($VSIZE bytes)"
 
 # ---------------------------------------------------------------------------
-# MODDED BINARY from the PRODUCT's binary lane. MANDATORY.
+# LOCAL PATCH, FIRST: the stock binary is patched in place by our pattern
+# patcher. The patterns find the two signature-gate sites in any game build,
+# so a game update needs nothing new from us. The patcher and its spec come
+# from the Linux voice tool's manifest on R2, each sha256-checked against it,
+# and are kept in _primal/patcher/ with that manifest, so a boot without R2
+# still patches. Any failure is named and falls through to the binary lane
+# below, which still refuses to boot vanilla.
+# ---------------------------------------------------------------------------
+PATCHER_DIR="$PRIM/patcher"
+PATCH_REPORT="$PATCHER_DIR/last-report.json"
+TOOL_MANIFEST_URL=$(env_or "${PRIMAL_PATCHER_MANIFEST:-}" "$R2_BASE/primal-voice-linux-tool/latest.json")
+TOOL_VER=""; LOCAL_WHY=""; LOCAL_DONE=""; MODDED_HASH=""
+
+tool_entry() { # $1 = manifest, $2 = file name -> "<sha256> <url>"; 1 when absent, malformed, or the arrays do not line up
+    local -a n u s; local i sha
+    mapfile -t n < <(m_fields "$1" name)
+    mapfile -t u < <(m_fields "$1" url)
+    mapfile -t s < <(m_fields "$1" sha256)
+    [ "${#n[@]}" -gt 0 ] && [ "${#n[@]}" = "${#u[@]}" ] && [ "${#n[@]}" = "${#s[@]}" ] || return 1
+    for i in "${!n[@]}"; do
+        [ "${n[$i]}" = "$2" ] || continue
+        # An empty sha would equal sha256_of a missing file.
+        sha=$(echo "${s[$i]}" | tr 'A-F' 'a-f')
+        [[ "$sha" =~ ^[0-9a-f]{64}$ ]] && [ -n "${u[$i]}" ] || return 1
+        printf '%s %s\n' "$sha" "${u[$i]}"; return 0
+    done
+    return 1
+}
+
+# The kept copy stands in only when R2 cannot be read, and only while it still
+# matches the manifest it came with.
+get_patcher() {
+    local tm src=r2 f ent stage="$PATCHER_DIR/stage"
+    mkdir -p "$PATCHER_DIR" || { LOCAL_WHY="cannot create $PATCHER_DIR"; return 1; }
+    tm=$(curl -fsS --max-time 20 "$TOOL_MANIFEST_URL" 2>/dev/null)
+    if [ -z "$tm" ]; then
+        tm=$(cat "$PATCHER_DIR/manifest.json" 2>/dev/null)
+        [ -n "$tm" ] || { LOCAL_WHY="the tool manifest is unreachable and no copy is kept ($TOOL_MANIFEST_URL)"; return 1; }
+        src=kept
+    fi
+    TOOL_VER=$(m_field "$tm" version)
+    for f in patch_worker.py patches_linux.json; do
+        tool_entry "$tm" "$f" >/dev/null || { LOCAL_WHY="the tool manifest has no valid entry for $f"; return 1; }
+    done
+    rm -rf "$stage"; mkdir -p "$stage"
+    for f in patch_worker.py patches_linux.json; do
+        ent=$(tool_entry "$tm" "$f")
+        [ "$(sha256_of "$PATCHER_DIR/$f")" = "${ent%% *}" ] && continue
+        [ "$src" = kept ] && { LOCAL_WHY="the kept $f does not match its manifest"; rm -rf "$stage"; return 1; }
+        curl -fsS --max-time 60 -o "$stage/$f" "${ent#* }" 2>/dev/null
+        [ "$(sha256_of "$stage/$f")" = "${ent%% *}" ] || { LOCAL_WHY="$f failed its sha256 check"; rm -rf "$stage"; return 1; }
+    done
+    for f in "$stage"/*; do [ -f "$f" ] && mv -f "$f" "$PATCHER_DIR/"; done
+    rm -rf "$stage"
+    for f in patch_worker.py patches_linux.json; do
+        ent=$(tool_entry "$tm" "$f")
+        [ "$(sha256_of "$PATCHER_DIR/$f")" = "${ent%% *}" ] || { LOCAL_WHY="$f could not be placed"; return 1; }
+    done
+    if [ "$src" = r2 ]; then
+        printf '%s\n' "$tm" > "$PATCHER_DIR/manifest.json"
+    else
+        log "binary: tool manifest unreachable - patching with the copy kept from an earlier boot (tool v${TOOL_VER:-?})"
+    fi
+    return 0
+}
+
+patch_summary() { # one line naming each rule's outcome
+    if [ ! -s "$PATCH_REPORT" ]; then
+        printf 'no report: %s' "$(tail -n1 "$PATCHER_DIR/last-stderr.txt" 2>/dev/null | cut -c1-120)"
+    elif [ "$HAVE_JQ" = "1" ]; then
+        "$JQ" -r '[.patches[]? | "\(.name)=\(.status)\(if .patch_offset then "@" + .patch_offset else "" end)"] | join(" ")' "$PATCH_REPORT" 2>/dev/null
+    else
+        printf 'see %s' "$PATCH_REPORT"
+    fi
+}
+
+local_patch() {
+    command -v python3 >/dev/null 2>&1 || { LOCAL_WHY="python3 is not in this server's image"; return 1; }
+    get_patcher || return 1
+    local out="$ROOT/.primal_patch_out" rc omd5
+    rm -f "$out" "$PATCH_REPORT"
+    python3 "$PATCHER_DIR/patch_worker.py" "$GAME_BINARY" "$out" \
+        --spec "$PATCHER_DIR/patches_linux.json" --report "$PATCH_REPORT" >/dev/null 2>"$PATCHER_DIR/last-stderr.txt"
+    rc=$?
+    # Exit 0 is not the verdict: the report must say success and the output must exist (rule 13).
+    if [ "$rc" != 0 ] || [ ! -f "$out" ] || ! grep -Eq '"success"[[:space:]]*:[[:space:]]*true' "$PATCH_REPORT" 2>/dev/null; then
+        LOCAL_WHY="the patcher (tool v${TOOL_VER:-?}) did not patch this build: exit $rc, $(patch_summary)"
+        rm -f "$out"; return 1
+    fi
+    [ "$(stat -c%s "$out" 2>/dev/null)" = "$VSIZE" ] || { LOCAL_WHY="the patcher's output is not the binary's size"; rm -f "$out"; return 1; }
+    omd5=$(md5_of "$out")
+    if [ "$omd5" = "$VANILLA_HASH" ]; then
+        rm -f "$out"; MODDED_HASH=$omd5; LOCAL_DONE=already; return 0
+    fi
+    chmod --reference="$GAME_BINARY" "$out" 2>/dev/null || chmod +x "$out"
+    mv -f "$out" "$GAME_BINARY" || { LOCAL_WHY="the patched binary could not be moved into place"; rm -f "$out"; return 1; }
+    [ "$(md5_of "$GAME_BINARY")" = "$omd5" ] || { LOCAL_WHY="the installed binary does not read back as the patcher's output"; rm -f "$out"; return 1; }
+    MODDED_HASH=$omd5; LOCAL_DONE=patched; return 0
+}
+
+MOD_READY=0
+LANE_ANSWERED=0
+if local_patch; then
+    MOD_READY=1
+    if [ "$LOCAL_DONE" = "already" ]; then
+        log "binary: already patched (${MODDED_HASH:0:16}): every site is in its patched form, nothing written ($(patch_summary))"
+    else
+        log "binary: PATCHED LOCALLY (tool v${TOOL_VER:-?}): ${VANILLA_HASH:0:16} -> ${MODDED_HASH:0:16} ($(patch_summary))"
+        # Log-only: the lane's own build for this vanilla is the cross-check that
+        # the two paths agree. Nothing here can stop the boot.
+        XCHECK=$(curl -fsS --max-time 15 -X POST -H "Content-Type: application/json" \
+            -d "{\"platform\":\"linux\",\"vanilla_hash\":\"${VANILLA_HASH}\",\"current_modded_hash\":\"${MODDED_HASH}\"}" \
+            "${PRIMAL_BINARY_BASE}/commands/binary/check" 2>/dev/null)
+        XSTATUS=$(m_field "$XCHECK" status)
+        case "$XSTATUS" in
+            up_to_date)       log "binary: the lane's build for this vanilla is the same bytes" ;;
+            update_available) warn "binary: the lane's build for this vanilla is $(m_field "$XCHECK" expected_modded_hash | cut -c1-16), NOT ${MODDED_HASH:0:16} - booting the local patch; the two paths disagree" ;;
+            "")               log "binary: the lane did not answer the cross-check (not needed to boot)" ;;
+            *)                log "binary: the lane holds no build for this vanilla ($XSTATUS) - the local patch does not need one" ;;
+        esac
+    fi
+else
+    warn "=============================================================="
+    warn "binary: LOCAL PATCH NOT APPLIED - $LOCAL_WHY"
+    warn "  Falling back to the binary lane (${PRIMAL_BINARY_BASE}): the same"
+    warn "  bytes, but only for game builds the lane already holds."
+    warn "=============================================================="
+fi
+
+# ---------------------------------------------------------------------------
+# THE BINARY LANE: the fallback when the local patch did not run.
 #
 # There is NO vanilla fallback on this egg - Ice's rule, twice over: the sig
 # bypass our pak needs on Linux lives inside this binary, and running vanilla
@@ -654,86 +779,86 @@ remember_pairing() {
     log "binary: last-known-good cached (${mh:0:16}, ${dsize} bytes) - this server can now boot through a lane outage"
 }
 
-log "binary: pairing lane = ${PRIMAL_BINARY_BASE} (${BINARY_BASE_SOURCE})"
-if cache_ok; then
-    log "binary: on-volume cache HOLDS ${CACHED_MODDED:0:16} for this vanilla (recorded ${CACHED_AT:-unknown})"
-else
-    log "binary: on-volume cache holds nothing usable for vanilla ${VANILLA_HASH:0:16} (first boot, a new game build, or never cached)"
-fi
-
-MOD_READY=0
-LANE_ANSWERED=0
-for ATTEMPT in 1 2 3 4 5; do
-    CURRENT_HASH=$(md5_of "$GAME_BINARY")
-    CHECK=$(curl -fsS --max-time 60 -X POST -H "Content-Type: application/json" \
-        -d "{\"platform\":\"linux\",\"vanilla_hash\":\"${VANILLA_HASH}\",\"current_modded_hash\":\"${CURRENT_HASH}\"}" \
-        "${PRIMAL_BINARY_BASE}/commands/binary/check" 2>/dev/null)
-    if [ -z "$CHECK" ]; then
-        warn "binary check unreachable, attempt ${ATTEMPT}/5"
-        sleep 10; continue
+if [ "$MOD_READY" != "1" ]; then
+    log "binary: pairing lane = ${PRIMAL_BINARY_BASE} (${BINARY_BASE_SOURCE})"
+    if cache_ok; then
+        log "binary: on-volume cache HOLDS ${CACHED_MODDED:0:16} for this vanilla (recorded ${CACHED_AT:-unknown})"
+    else
+        log "binary: on-volume cache holds nothing usable for vanilla ${VANILLA_HASH:0:16} (first boot, a new game build, or never cached)"
     fi
-    LANE_ANSWERED=1
-    STATUS=$(m_field "$CHECK" status)
-    DOWNLOAD_URL=$(m_field "$CHECK" download_url)
-    EXPECTED_MODDED=$(m_field "$CHECK" expected_modded_hash)
-    log "binary distribution status: ${STATUS}"
-    case "$STATUS" in
-        up_to_date)
-            MOD_READY=1; remember_pairing "$CURRENT_HASH"; break ;;
-        update_available)
-            # ⭐ THE CACHE IS TRIED FIRST, and this is the STEADY STATE rather
-            # than an update: SteamCMD put vanilla back a few lines ago, so the
-            # lane offers us the same binary we already installed last boot. If
-            # we hold exactly that file, this is 207 MB we do not pull (#2341).
-            if [ -n "$EXPECTED_MODDED" ] && [ "$CACHED_MODDED" = "$EXPECTED_MODDED" ] && cache_ok; then
-                if install_from_cache; then
-                    log "binary: installed ${EXPECTED_MODDED:0:16} FROM THE ON-VOLUME CACHE (0 bytes fetched)."
-                    MOD_READY=1; break
+
+    for ATTEMPT in 1 2 3 4 5; do
+        CURRENT_HASH=$(md5_of "$GAME_BINARY")
+        CHECK=$(curl -fsS --max-time 60 -X POST -H "Content-Type: application/json" \
+            -d "{\"platform\":\"linux\",\"vanilla_hash\":\"${VANILLA_HASH}\",\"current_modded_hash\":\"${CURRENT_HASH}\"}" \
+            "${PRIMAL_BINARY_BASE}/commands/binary/check" 2>/dev/null)
+        if [ -z "$CHECK" ]; then
+            warn "binary check unreachable, attempt ${ATTEMPT}/5"
+            sleep 10; continue
+        fi
+        LANE_ANSWERED=1
+        STATUS=$(m_field "$CHECK" status)
+        DOWNLOAD_URL=$(m_field "$CHECK" download_url)
+        EXPECTED_MODDED=$(m_field "$CHECK" expected_modded_hash)
+        log "binary distribution status: ${STATUS}"
+        case "$STATUS" in
+            up_to_date)
+                MOD_READY=1; remember_pairing "$CURRENT_HASH"; break ;;
+            update_available)
+                # ⭐ THE CACHE IS TRIED FIRST, and this is the STEADY STATE rather
+                # than an update: SteamCMD put vanilla back a few lines ago, so the
+                # lane offers us the same binary we already installed last boot. If
+                # we hold exactly that file, this is 207 MB we do not pull (#2341).
+                if [ -n "$EXPECTED_MODDED" ] && [ "$CACHED_MODDED" = "$EXPECTED_MODDED" ] && cache_ok; then
+                    if install_from_cache; then
+                        log "binary: installed ${EXPECTED_MODDED:0:16} FROM THE ON-VOLUME CACHE (0 bytes fetched)."
+                        MOD_READY=1; break
+                    fi
+                    warn "binary: the cached copy failed its own check - falling back to the download"
                 fi
-                warn "binary: the cached copy failed its own check - falling back to the download"
-            fi
-            log "downloading modded binary from ${PRIMAL_BINARY_BASE} ..."
-            TMP_BIN="$ROOT/.primal_mod_download"
-            curl -fsS --max-time 900 -o "$TMP_BIN" "${PRIMAL_BINARY_BASE}${DOWNLOAD_URL}" 2>/dev/null
-            DL_SIZE=$(stat -c%s "$TMP_BIN" 2>/dev/null || echo 0)
-            DL_HASH=$(md5_of "$TMP_BIN")
-            if [ "$DL_SIZE" -gt 157286400 ] && { [ -z "$EXPECTED_MODDED" ] || [ "$DL_HASH" = "$EXPECTED_MODDED" ]; }; then
-                mv -f "$TMP_BIN" "$GAME_BINARY"
-                chmod +x "$GAME_BINARY"
-                log "modded binary installed (${DL_SIZE} bytes, hash ${DL_HASH:0:16}...)."
-                MOD_READY=1; remember_pairing "$DL_HASH"; break
-            fi
-            warn "download invalid (size ${DL_SIZE}, hash ${DL_HASH:0:16}) - retrying"
-            rm -f "$TMP_BIN"
-            sleep 10 ;;
-        no_mod_available)
-            warn "the lane has no modded binary for vanilla ${VANILLA_HASH:0:16} yet."
-            break ;;
-        vanilla_unknown)
-            # Two very different states share this answer: (a) the game just
-            # updated and no pairing exists yet, or (b) the binary on disk is
-            # ALREADY the modded one (SteamCMD left it in place, so the "vanilla"
-            # hash we sent is really a modded hash the pairing table does not key
-            # on). Disambiguate against the lane's own latest record.
-            LATEST=$(curl -fsS --max-time 30 "${PRIMAL_BINARY_BASE}/api/binary/latest/linux" 2>/dev/null)
-            LATEST_MODDED=$(m_field "$LATEST" modded_hash)
-            if [ -n "$LATEST_MODDED" ] && [ "$CURRENT_HASH" = "$LATEST_MODDED" ]; then
-                log "on-disk binary IS the current modded binary (${CURRENT_HASH:0:16}) - up to date."
-                MOD_READY=1
-                # Cache it against the vanilla the LANE keys it on, not the
-                # modded hash we mistakenly sent as "vanilla" this pass.
-                LATEST_VANILLA=$(m_field "$LATEST" vanilla_hash)
-                [ -n "$LATEST_VANILLA" ] && VANILLA_HASH="$LATEST_VANILLA"
-                remember_pairing "$CURRENT_HASH"
-            else
-                warn "the lane does not recognize vanilla ${VANILLA_HASH:0:16} and the on-disk binary is not the current modded build."
-            fi
-            break ;;
-        *)
-            warn "unexpected status '${STATUS}' - retrying"
-            sleep 10 ;;
-    esac
-done
+                log "downloading modded binary from ${PRIMAL_BINARY_BASE} ..."
+                TMP_BIN="$ROOT/.primal_mod_download"
+                curl -fsS --max-time 900 -o "$TMP_BIN" "${PRIMAL_BINARY_BASE}${DOWNLOAD_URL}" 2>/dev/null
+                DL_SIZE=$(stat -c%s "$TMP_BIN" 2>/dev/null || echo 0)
+                DL_HASH=$(md5_of "$TMP_BIN")
+                if [ "$DL_SIZE" -gt 157286400 ] && { [ -z "$EXPECTED_MODDED" ] || [ "$DL_HASH" = "$EXPECTED_MODDED" ]; }; then
+                    mv -f "$TMP_BIN" "$GAME_BINARY"
+                    chmod +x "$GAME_BINARY"
+                    log "modded binary installed (${DL_SIZE} bytes, hash ${DL_HASH:0:16}...)."
+                    MOD_READY=1; remember_pairing "$DL_HASH"; break
+                fi
+                warn "download invalid (size ${DL_SIZE}, hash ${DL_HASH:0:16}) - retrying"
+                rm -f "$TMP_BIN"
+                sleep 10 ;;
+            no_mod_available)
+                warn "the lane has no modded binary for vanilla ${VANILLA_HASH:0:16} yet."
+                break ;;
+            vanilla_unknown)
+                # Two very different states share this answer: (a) the game just
+                # updated and no pairing exists yet, or (b) the binary on disk is
+                # ALREADY the modded one (SteamCMD left it in place, so the "vanilla"
+                # hash we sent is really a modded hash the pairing table does not key
+                # on). Disambiguate against the lane's own latest record.
+                LATEST=$(curl -fsS --max-time 30 "${PRIMAL_BINARY_BASE}/api/binary/latest/linux" 2>/dev/null)
+                LATEST_MODDED=$(m_field "$LATEST" modded_hash)
+                if [ -n "$LATEST_MODDED" ] && [ "$CURRENT_HASH" = "$LATEST_MODDED" ]; then
+                    log "on-disk binary IS the current modded binary (${CURRENT_HASH:0:16}) - up to date."
+                    MOD_READY=1
+                    # Cache it against the vanilla the LANE keys it on, not the
+                    # modded hash we mistakenly sent as "vanilla" this pass.
+                    LATEST_VANILLA=$(m_field "$LATEST" vanilla_hash)
+                    [ -n "$LATEST_VANILLA" ] && VANILLA_HASH="$LATEST_VANILLA"
+                    remember_pairing "$CURRENT_HASH"
+                else
+                    warn "the lane does not recognize vanilla ${VANILLA_HASH:0:16} and the on-disk binary is not the current modded build."
+                fi
+                break ;;
+            *)
+                warn "unexpected status '${STATUS}' - retrying"
+                sleep 10 ;;
+        esac
+    done
+fi
 
 if [ "$MOD_READY" != "1" ]; then
     if [ "$LANE_ANSWERED" != "1" ] && cache_ok && install_from_cache; then
@@ -754,9 +879,9 @@ if [ "$MOD_READY" != "1" ]; then
         warn "This is a diagnostics-only state - unset the variable after."
         warn "=============================================================="
     elif [ "$LANE_ANSWERED" = "1" ]; then
-        refuse mod_binary_unavailable "MOD-BINARY-UNAVAILABLE: the lane ANSWERED and has no verified modded binary for vanilla ${VANILLA_HASH:0:16}. This is a REAL outage of the mod build (it lags a game update), not a network problem - the on-volume cache is deliberately NOT used, because it was built for a different game build. Vanilla is forbidden on this egg. The panel will retry; check ${PRIMAL_BINARY_BASE}/api/binary/status."
+        refuse mod_binary_unavailable "MOD-BINARY-UNAVAILABLE: the lane ANSWERED and has no verified modded binary for vanilla ${VANILLA_HASH:0:16}, and the local patch did not run ($LOCAL_WHY). The mod build lags a game update; the on-volume cache is not used, because it was built for a different game build. Vanilla is forbidden on this egg. The panel will retry; check ${PRIMAL_BINARY_BASE}/api/binary/status."
     else
-        refuse mod_binary_lane_unreachable "MOD-BINARY-UNAVAILABLE: ${PRIMAL_BINARY_BASE} did not answer in 5 attempts AND this volume holds no verified modded binary for vanilla ${VANILLA_HASH:0:16} to fall back on (first boot, or the game updated while the lane was down). Vanilla is forbidden on this egg. The panel will retry."
+        refuse mod_binary_lane_unreachable "MOD-BINARY-UNAVAILABLE: ${PRIMAL_BINARY_BASE} did not answer in 5 attempts AND this volume holds no verified modded binary for vanilla ${VANILLA_HASH:0:16} to fall back on (first boot, or the game updated while the lane was down), and the local patch did not run ($LOCAL_WHY). Vanilla is forbidden on this egg. The panel will retry."
     fi
 fi
 
