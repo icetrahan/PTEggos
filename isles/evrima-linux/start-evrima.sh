@@ -453,13 +453,60 @@ refuse() { # $1 = code (the plane's vocabulary: [a-z0-9_]), rest = the FATAL lin
 # ---------------------------------------------------------------------------
 # STEAMCMD UPDATE (game content + the vanilla binary the mod build is keyed on)
 # ---------------------------------------------------------------------------
+# A new Isle build is applied by a CLEAN pull (Binaries set aside, steamapps deleted): an in-place
+# update can keep booting the old code while `validate` says "up to date", because the appmanifest
+# it trusts is stale. So the build last pulled clean is kept in our own file and compared with
+# Steam's current evrima build every boot. FORCE_CLEAN_UPDATE=1 forces one with no new build.
+branch_buildid() {  # stdin: app_info_print output
+    awk -v want="\"$1\"" '
+        /"branches"/ { inb = 1 }
+        inb && $1 == want { inbr = 1; next }
+        inbr && $1 == "\"buildid\"" { gsub(/"/, "", $2); print $2; exit }
+        inbr && $1 == "}" { inbr = 0 }'
+}
+manifest_buildid() { grep -o '"buildid"[[:space:]]*"[0-9]*"' "$1" 2>/dev/null | head -n1 | grep -o '[0-9][0-9]*'; }
+# force | new-build = clean pull · current = plain validate · adopt = first boot with this code on
+# an install that already matches Steam (no fleet-wide re-download) · unknown = Steam unreadable.
+update_plan() {  # force latest clean_bid installed_bid exe_there
+    if [ "$1" = "1" ]; then echo force
+    elif [ -z "$2" ]; then echo unknown
+    elif [ "$3" = "$2" ]; then echo current
+    elif [ -z "$3" ] && [ "$4" = "$2" ] && [ "$5" = "1" ]; then echo adopt
+    else echo new-build; fi
+}
+copy_placed_files() {  # files a fresh pull does not bring back are carried over
+    [ -d "$1" ] || return 0
+    mkdir -p "$2"
+    for f in "$1"/*; do
+        [ -f "$f" ] || continue
+        b=$(basename "$f")
+        [ -e "$2/$b" ] || { cp -p "$f" "$2/$b" && printf '%s ' "$b"; }
+    done
+}
+
 if [ "${AUTO_UPDATE:-1}" != "0" ] && [ -f ./steamcmd/steamcmd.sh ]; then
-    # FORCE_CLEAN_UPDATE: the Isle devs periodically ship an update SteamCMD
-    # refuses to apply cleanly (stale appmanifest) - the server keeps booting the
-    # OLD code while `validate` reports "up to date". Set 1, restart once, set 0.
-    if [ "${FORCE_CLEAN_UPDATE:-0}" = "1" ]; then
-        log "update: FORCE_CLEAN_UPDATE=1 - deleting TheIsle/Binaries + steamapps for a clean re-pull..."
-        rm -rf "$ROOT/TheIsle/Binaries" "$ROOT/steamapps"
+    BIN_DIR="$ROOT/TheIsle/Binaries"
+    BIN_PREV="$ROOT/TheIsle/Binaries.preupdate"
+    APPS="$ROOT/steamapps"
+    MANIFEST="$APPS/appmanifest_412680.acf"
+    CLEAN_MARK="$PRIM/primal-clean-build.txt"
+    LATEST=$(./steamcmd/steamcmd.sh +login anonymous +app_info_update 1 +app_info_print 412680 +quit 2>/dev/null | branch_buildid evrima)
+    CLEAN_BID=$(head -n1 "$CLEAN_MARK" 2>/dev/null | tr -d '[:space:]')
+    EXE_THERE=0; [ -f "$GAME_BINARY" ] && EXE_THERE=1
+    PLAN=$(update_plan "${FORCE_CLEAN_UPDATE:-0}" "$LATEST" "$CLEAN_BID" "$(manifest_buildid "$MANIFEST")" "$EXE_THERE")
+    log "update: Steam evrima build = ${LATEST:-UNKNOWN} | last clean pull = ${CLEAN_BID:-none} -> $PLAN"
+    if [ "$PLAN" = unknown ]; then
+        warn "update: Steam's current build could not be read - plain validate only; a new build is NOT force-applied this boot"
+    fi
+    CLEAN=0; RESTORED=0
+    if [ "$PLAN" = force ] || [ "$PLAN" = new-build ]; then
+        rm -rf "$BIN_PREV"
+        if [ ! -d "$BIN_DIR" ] || mv "$BIN_DIR" "$BIN_PREV"; then
+            rm -rf "$APPS"; CLEAN=1
+            log "update: clean pull: TheIsle/Binaries set aside, steamapps deleted"
+        else
+            warn "update: clean pull NOT done - Binaries could not be set aside; plain validate instead"
+        fi
     fi
     log "update: validating The Isle: Evrima (412680, evrima)..."
     ./steamcmd/steamcmd.sh +force_install_dir "$ROOT" +login anonymous \
@@ -477,8 +524,25 @@ if [ "${AUTO_UPDATE:-1}" != "0" ] && [ -f ./steamcmd/steamcmd.sh ]; then
             log "update: (self-heal) SKIPPED - Steam unreachable, partial is not corrupt (#346)."
         fi
     fi
-    BID=$(grep -o '"buildid"[[:space:]]*"[0-9]*"' "$ROOT/steamapps/appmanifest_412680.acf" 2>/dev/null | grep -o '[0-9]*')
-    [ -n "$BID" ] && log "update: installed buildid = $BID"
+    INSTALLED=$(manifest_buildid "$MANIFEST")
+    if [ "$CLEAN" = 1 ]; then
+        if [ -f "$GAME_BINARY" ]; then
+            KEPT=$(copy_placed_files "$BIN_PREV/Linux" "$BIN_DIR/Linux")
+            log "update: kept across the clean pull: ${KEPT:-nothing}"
+            rm -rf "$BIN_PREV"
+        elif [ -d "$BIN_PREV" ]; then
+            rm -rf "$BIN_DIR"; mv "$BIN_PREV" "$BIN_DIR"; RESTORED=1
+            warn "update: FAILED: the clean pull left no server binary - booting the PREVIOUS build; the next restart tries again"
+        fi
+    elif [ -d "$BIN_PREV" ] && [ -f "$GAME_BINARY" ]; then
+        rm -rf "$BIN_PREV"   # left by a boot stopped mid-pull
+    fi
+    if [ "$PLAN" = adopt ] || { [ "$CLEAN" = 1 ] && [ "$RESTORED" = 0 ] && [ -n "$LATEST" ] && [ "$INSTALLED" = "$LATEST" ] && [ -f "$GAME_BINARY" ]; }; then
+        printf '%s\n' "$LATEST" > "$CLEAN_MARK"
+    elif [ "$CLEAN" = 1 ] && [ "$RESTORED" = 0 ] && [ -n "$LATEST" ]; then
+        warn "update: installed build ${INSTALLED:-none} is not Steam's $LATEST after a clean pull - the next restart pulls clean again"
+    fi
+    [ -n "$INSTALLED" ] && log "update: installed buildid = $INSTALLED"
 else
     log "update: skipped (AUTO_UPDATE=0 or steamcmd missing)"
 fi

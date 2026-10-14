@@ -37,8 +37,12 @@ This egg's images are NOT in that matrix — but push deliberately anyway.
    escape hatches; any failure boots the current version).
 2. **Update gate** — `api.primalheaven.com/api/updates/server-status` (fail-open;
    needs `SERVER_ID` + `API_KEY`).
-3. **SteamCMD** app 412680 `-beta evrima` validate, with `FORCE_CLEAN_UPDATE`
-   and the stale-appmanifest self-heal (Steam-reachability-gated, #346).
+3. **SteamCMD** app 412680 `-beta evrima` validate. When Steam's evrima build
+   differs from `_primal/primal-clean-build.txt` (the build last pulled clean), the
+   boot pulls clean: `Binaries` set aside, `steamapps` deleted, files the pull does
+   not bring back carried over, the previous build restored if the pull fails
+   (A702, `test_cleanupdate.sh`). `FORCE_CLEAN_UPDATE=1` forces one; the
+   stale-appmanifest self-heal stays (Steam-reachability-gated, #346).
 4. **Modded Linux binary from the Primal API** — see below. Mandatory.
 5. **Render `Game.ini`** from egg variables (defaults byte-matched to egg 40's;
    regenerated every boot, the customer edits variables, #356 T1(a)).

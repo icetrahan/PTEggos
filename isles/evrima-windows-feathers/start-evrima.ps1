@@ -314,45 +314,108 @@ if ($stillSet.Count -and $cfgSource -ne 'defaults') {
 # ---------------------------------------------------------------------------
 # 1b) Update (skippable via AUTO_UPDATE=0)
 # ---------------------------------------------------------------------------
+# A new Isle build is applied by a CLEAN pull (Binaries set aside, steamapps deleted): an in-place
+# SteamCMD update can keep booting the old code while `validate` says "up to date", because the
+# appmanifest it trusts is stale. So the build last pulled clean is kept in our own file and compared
+# with Steam's current evrima build every boot. Content stays on disk; only Binaries re-download.
+# FORCE_CLEAN_UPDATE=1 forces one with no new build.
+function Read-BranchBuildId([string]$text, [string]$branch) {
+    $m = [regex]::Match($text, '(?s)"branches"\s*\{.*?"' + [regex]::Escape($branch) + '"\s*\{[^{}]*?"buildid"\s+"(\d+)"')
+    if ($m.Success) { return $m.Groups[1].Value } else { return '' }
+}
+function Read-ManifestBuildId([string]$path) {
+    if (-not (Test-Path $path)) { return '' }
+    $m = Select-String -Path $path -Pattern '"buildid"\s+"(\d+)"' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($m) { return $m.Matches.Groups[1].Value } else { return '' }
+}
+# force | new-build = clean pull · current = plain validate · adopt = first boot with this code, the
+# install already matches Steam (no fleet-wide re-download) · unknown = Steam's build unreadable.
+function Get-UpdatePlan([string]$force, [string]$latest, [string]$cleanBid, [string]$installedBid, [bool]$exeThere) {
+    if ($force -eq '1') { return 'force' }
+    if (-not $latest) { return 'unknown' }
+    if ($cleanBid -eq $latest) { return 'current' }
+    if (-not $cleanBid -and $installedBid -eq $latest -and $exeThere) { return 'adopt' }
+    return 'new-build'
+}
+# Files beside the exe that a fresh pull does not bring back: dsound.dll, the files the mod blocks
+# below place, their logs. Carried over so a boot with R2 unreachable still has its loader.
+function Copy-PlacedFiles([string]$fromWin64, [string]$toWin64) {
+    $kept = @()
+    if (-not (Test-Path $fromWin64)) { return $kept }
+    New-Item -ItemType Directory -Force -Path $toWin64 | Out-Null
+    foreach ($f in @(Get-ChildItem -LiteralPath $fromWin64 -File -ErrorAction SilentlyContinue)) {
+        $dst = Join-Path $toWin64 $f.Name
+        if (-not (Test-Path -LiteralPath $dst)) { Copy-Item -LiteralPath $f.FullName -Destination $dst -Force; $kept += $f.Name }
+    }
+    return $kept
+}
+
 if ($env:AUTO_UPDATE -ne '0' -and (Test-Path $steam)) {
     $binDir    = Join-Path $game 'TheIsle\Binaries'
+    $binPrev   = Join-Path $game 'TheIsle\Binaries.preupdate'
     $steamApps = Join-Path $game 'steamapps'
+    $manifest  = Join-Path $steamApps 'appmanifest_412680.acf'
     $exeChk    = Join-Path $game 'TheIsle\Binaries\Win64\TheIsleServer-Win64-Shipping.exe'
+    $cleanMark = Join-Path $tmpl 'primal-clean-build.txt'
 
-    # FORCE_CLEAN_UPDATE: the Isle devs periodically ship an update SteamCMD refuses to
-    # apply cleanly (stale appmanifest) - the server keeps booting the OLD code while
-    # `validate` reports "up to date". The known manual fix is to delete BOTH
-    # /TheIsle/Binaries and /steamapps so SteamCMD re-pulls from scratch. This flag is
-    # that button as an egg var: set FORCE_CLEAN_UPDATE=1, restart once, set it back to 0.
-    # (Content under /TheIsle/Content stays on disk, so this re-validates - it does NOT
-    # re-download the whole ~70GB, only the wiped Binaries + a full verify pass.)
-    if ($env:FORCE_CLEAN_UPDATE -eq '1') {
-        Write-Host "(update) FORCE_CLEAN_UPDATE=1 - deleting /TheIsle/Binaries + /steamapps for a clean re-pull..."
-        if (Test-Path $binDir)    { Remove-Item -Recurse -Force $binDir    -ErrorAction SilentlyContinue }
-        if (Test-Path $steamApps) { Remove-Item -Recurse -Force $steamApps -ErrorAction SilentlyContinue }
+    $info = ''
+    try { $info = & $steam +login anonymous +app_info_update 1 +app_info_print 412680 +quit | Out-String } catch { $info = '' }
+    $latestBid = Read-BranchBuildId $info 'evrima'
+    $cleanBid = ''
+    if (Test-Path $cleanMark) { $cleanBid = ("" + (Get-Content $cleanMark -TotalCount 1)).Trim() }
+    $plan = Get-UpdatePlan $env:FORCE_CLEAN_UPDATE $latestBid $cleanBid (Read-ManifestBuildId $manifest) (Test-Path $exeChk)
+    Write-Host "(update) Steam evrima build = $(EnvOr $latestBid 'UNKNOWN') | last clean pull = $(EnvOr $cleanBid 'none') -> $plan"
+    if ($plan -eq 'unknown') {
+        Write-Host "(update) WARNING Steam's current build could not be read - plain validate only; a new build is NOT force-applied this boot"
+    }
+
+    $clean = $false; $restored = $false
+    if ($plan -eq 'force' -or $plan -eq 'new-build') {
+        try {
+            if (Test-Path $binPrev) { Remove-Item -Recurse -Force $binPrev }
+            if (Test-Path $binDir)  { Move-Item -Force $binDir $binPrev }
+            if (Test-Path $steamApps) { Remove-Item -Recurse -Force $steamApps -ErrorAction SilentlyContinue }
+            $clean = $true
+            Write-Host "(update) clean pull: TheIsle\Binaries set aside, steamapps deleted"
+        } catch {
+            Write-Host "(update) WARNING clean pull NOT done - Binaries could not be set aside ($($_.Exception.Message)); plain validate instead"
+        }
     }
 
     Write-Host "(update) $(Get-Date -Format HH:mm:ss) validating The Isle: Evrima (412680, evrima)..."
     & $steam +force_install_dir $game +login anonymous +app_update 412680 -beta evrima validate +quit
 
-    # SELF-HEAL: a corrupt appmanifest / half-written 'downloading' (the 2026-07-09
-    # Evrima update outage) wedges the update so the binary never lands. If it's missing
-    # after the update, nuke BOTH /TheIsle/Binaries AND /steamapps and retry once - a
-    # clean re-fetch. (Binaries too, not just steamapps: a partial/stale exe survives a
-    # steamapps-only wipe and keeps `validate` thinking the install is whole.)
+    # A corrupt appmanifest or half-written download can leave no binary: one clean re-fetch.
     if (-not (Test-Path $exeChk)) {
         Write-Host "(update) (self-heal) binary missing after update - deleting /TheIsle/Binaries + /steamapps and retrying once..."
         if (Test-Path $binDir)    { Remove-Item -Recurse -Force $binDir    -ErrorAction SilentlyContinue }
         if (Test-Path $steamApps) { Remove-Item -Recurse -Force $steamApps -ErrorAction SilentlyContinue }
         & $steam +force_install_dir $game +login anonymous +app_update 412680 -beta evrima validate +quit
     }
+    $installedBid = Read-ManifestBuildId $manifest
 
-    # Surface the installed build id so staleness is visible in the console/logs.
-    $manifest = Join-Path $steamApps 'appmanifest_412680.acf'
-    if (Test-Path $manifest) {
-        $bidMatch = Select-String -Path $manifest -Pattern '"buildid"\s+"(\d+)"' -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($bidMatch) { Write-Host "(update) installed buildid = $($bidMatch.Matches.Groups[1].Value)" }
+    if ($clean) {
+        if (Test-Path $exeChk) {
+            $kept = @(Copy-PlacedFiles (Join-Path $binPrev 'Win64') (Join-Path $binDir 'Win64'))
+            Write-Host "(update) kept across the clean pull: $(EnvOr ($kept -join ', ') 'nothing')"
+            Remove-Item -Recurse -Force $binPrev -ErrorAction SilentlyContinue
+        } elseif (Test-Path $binPrev) {
+            if (Test-Path $binDir) { Remove-Item -Recurse -Force $binDir -ErrorAction SilentlyContinue }
+            Move-Item -Force $binPrev $binDir
+            $restored = $true
+            Write-Host "(update) FAILED: the clean pull left no server exe - booting the PREVIOUS build; the next restart tries again"
+        }
+    } elseif ((Test-Path $binPrev) -and (Test-Path $exeChk)) {
+        Remove-Item -Recurse -Force $binPrev -ErrorAction SilentlyContinue   # left by a boot stopped mid-pull
     }
+
+    $pulledLatest = $clean -and -not $restored -and $latestBid -and $installedBid -eq $latestBid -and (Test-Path $exeChk)
+    if ($plan -eq 'adopt' -or $pulledLatest) {
+        Set-Content -Path $cleanMark -Value $latestBid -Encoding ascii
+    } elseif ($clean -and -not $restored -and $latestBid) {
+        Write-Host "(update) WARNING installed build $(EnvOr $installedBid 'none') is not Steam's $latestBid after a clean pull - the next restart pulls clean again"
+    }
+    if ($installedBid) { Write-Host "(update) installed buildid = $installedBid" }
 } else {
     Write-Host "(update) skipped (AUTO_UPDATE=0 or steamcmd missing)"
 }
