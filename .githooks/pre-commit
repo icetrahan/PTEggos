@@ -3,7 +3,12 @@
 # in the ADDED lines of this commit. Scans the staged diff only; prints everything MASKED.
 # Install once per clone:   git config core.hooksPath .githooks
 # The CI twin is .github/workflows/id-scan.yml; the canonical scanner is primal-everything-meta/scripts/idscan.py.
-PY=$(command -v python3 2>/dev/null || command -v python 2>/dev/null)
+# A name on PATH is not an interpreter: Windows' Store alias `python3` resolves and then refuses to run (#3845).
+PY=
+for c in python3 python; do
+    p=$(command -v "$c" 2>/dev/null) || continue
+    if "$p" -c 'import sys' >/dev/null 2>&1; then PY=$p; break; fi
+done
 if [ -z "$PY" ]; then
     echo "idscan: no python on PATH - refusing to commit blind (rule 13: a scan that did not run is not a pass)"
     exit 1
