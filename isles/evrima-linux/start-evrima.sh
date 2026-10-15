@@ -653,6 +653,7 @@ local_patch() {
 
 MOD_READY=0
 LANE_ANSWERED=0
+LANE_WHY=""
 if local_patch; then
     MOD_READY=1
     if [ "$LOCAL_DONE" = "already" ]; then
@@ -822,15 +823,23 @@ if [ "$MOD_READY" != "1" ]; then
                 DL_SIZE=$(stat -c%s "$TMP_BIN" 2>/dev/null || echo 0)
                 DL_HASH=$(md5_of "$TMP_BIN")
                 if [ "$DL_SIZE" -gt 157286400 ] && { [ -z "$EXPECTED_MODDED" ] || [ "$DL_HASH" = "$EXPECTED_MODDED" ]; }; then
-                    mv -f "$TMP_BIN" "$GAME_BINARY"
-                    chmod +x "$GAME_BINARY"
-                    log "modded binary installed (${DL_SIZE} bytes, hash ${DL_HASH:0:16}...)."
-                    MOD_READY=1; remember_pairing "$DL_HASH"; break
+                    # Installed = the binary's own path reads back as the download (#3875).
+                    if mv -f "$TMP_BIN" "$GAME_BINARY" 2>/dev/null && chmod +x "$GAME_BINARY" 2>/dev/null \
+                        && [ "$(md5_of "$GAME_BINARY")" = "$DL_HASH" ]; then
+                        log "modded binary installed (${DL_SIZE} bytes, hash ${DL_HASH:0:16}..., read back from the binary's path)."
+                        MOD_READY=1; remember_pairing "$DL_HASH"; break
+                    fi
+                    GOT=$(md5_of "$GAME_BINARY"); GOT=${GOT:0:16}
+                    LANE_WHY="the download ${DL_HASH:0:16} did not land: the binary reads back as ${GOT:-nothing}"
+                    warn "binary: ${LANE_WHY} - retrying"
+                else
+                    LANE_WHY=""
+                    warn "download invalid (size ${DL_SIZE}, hash ${DL_HASH:0:16}) - retrying"
                 fi
-                warn "download invalid (size ${DL_SIZE}, hash ${DL_HASH:0:16}) - retrying"
                 rm -f "$TMP_BIN"
                 sleep 10 ;;
             no_mod_available)
+                LANE_WHY=""
                 warn "the lane has no modded binary for vanilla ${VANILLA_HASH:0:16} yet."
                 break ;;
             vanilla_unknown)
@@ -850,6 +859,7 @@ if [ "$MOD_READY" != "1" ]; then
                     [ -n "$LATEST_VANILLA" ] && VANILLA_HASH="$LATEST_VANILLA"
                     remember_pairing "$CURRENT_HASH"
                 else
+                    LANE_WHY=""
                     warn "the lane does not recognize vanilla ${VANILLA_HASH:0:16} and the on-disk binary is not the current modded build."
                 fi
                 break ;;
@@ -878,6 +888,8 @@ if [ "$MOD_READY" != "1" ]; then
         warn "The mod pak will NOT mount and no Primal feature will work."
         warn "This is a diagnostics-only state - unset the variable after."
         warn "=============================================================="
+    elif [ "$LANE_ANSWERED" = "1" ] && [ -n "$LANE_WHY" ]; then
+        refuse mod_binary_unavailable "MOD-BINARY-UNAVAILABLE: the lane ANSWERED, but its modded binary for vanilla ${VANILLA_HASH:0:16} could not be installed on this volume (${LANE_WHY}), and the local patch did not run ($LOCAL_WHY). This is the volume, not the mod build: check its free space and permissions. Vanilla is forbidden on this egg. The panel will retry."
     elif [ "$LANE_ANSWERED" = "1" ]; then
         refuse mod_binary_unavailable "MOD-BINARY-UNAVAILABLE: the lane ANSWERED and has no verified modded binary for vanilla ${VANILLA_HASH:0:16}, and the local patch did not run ($LOCAL_WHY). The mod build lags a game update; the on-volume cache is not used, because it was built for a different game build. Vanilla is forbidden on this egg. The panel will retry; check ${PRIMAL_BINARY_BASE}/api/binary/status."
     else

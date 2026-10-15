@@ -7,6 +7,7 @@ LABEL       org.opencontainers.image.licenses=MIT
 
 ENV         DEBIAN_FRONTEND=noninteractive
 
+# python3: the entrypoint runs the pattern patcher on the server binary every boot.
 RUN         dpkg --add-architecture i386 \
             && apt-get update \
             && apt-get upgrade -y \
@@ -20,6 +21,7 @@ RUN         dpkg --add-architecture i386 \
 				net-tools \
 				netcat-traditional \
 				numactl \
+				python3 \
 				tar \
 				telnet \
 				tini \

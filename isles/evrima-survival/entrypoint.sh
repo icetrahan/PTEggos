@@ -5,7 +5,8 @@
 # Boot sequence:
 #   1. Update gate      — ask the Primal backend if this server may start
 #   2. SteamCMD         — update app 412680, branch 'evrima'
-#   3. Modded binary    — fetch/verify from the Primal binary-distribution API
+#   3. Modded binary    — the stock binary patched in place (PRIMAL LOCAL PATCH);
+#                         the Primal binary lane as the fallback
 #                         (Primal infrastructure ONLY — no third-party sources)
 #   4. Game.ini         — regenerated every boot from panel variables
 #   5. Engine.ini       — Primal-managed block only; customer lines preserved
@@ -52,6 +53,167 @@ emit_value_lines() {  # $1 = ini key, $2 = raw list (non-steamid values, e.g. cl
         [ -n "$v" ] && echo "${key}=${v}"
     done
 }
+
+# >>> PRIMAL LOCAL PATCH >>>
+# The same bytes in isles/evrima-survival/entrypoint.sh and
+# testing/deathmatch/entrypoint.sh; .github/scripts/test_image_localpatch.sh
+# fails when they differ. Egg 42's start-evrima.sh runs the same rung.
+#
+# The stock binary SteamCMD installs is patched in place by our pattern patcher
+# (patch_worker.py + patches_linux.json, the Linux voice tool on R2). The
+# patterns find the two signature-gate sites in any game build, so a game
+# update needs nothing new from us. Each file is sha256-checked against the
+# tool's manifest and kept in _primal/patcher/ with it, so a boot without R2
+# still patches. When lp_run returns 1, LP_WHY says why and the caller falls
+# back to the binary lane, which has the same bytes for the builds it holds.
+# Set GAME_BINARY and PRIMAL_BINARY_BASE before calling lp_run / lp_install.
+LP_DIR=/home/container/_primal/patcher
+LP_MANIFEST_URL="${PRIMAL_PATCHER_MANIFEST:-https://pub-fb6fdcc2ce914775ba41c9813f80dc10.r2.dev/primal-voice-linux-tool/latest.json}"
+LP_VER=""; LP_WHY=""; LP_DONE=""; LP_MODDED=""; LP_INSTALL_WHY=""
+
+lp_log()  { echo "[primal] $*"; }
+lp_warn() { echo "[primal] WARN: $*" >&2; }
+lp_md5()  { [ -f "$1" ] && md5sum "$1" | awk '{print $1}' || echo ""; }
+lp_sha256() { [ -f "$1" ] && sha256sum "$1" | awk '{print $1}' || echo ""; }
+lp_field()  { grep -o "\"$2\" *: *\"[^\"]*\"" <<<"$1" | head -1 | sed 's/.*: *"//; s/"$//'; }
+lp_fields() { grep -o "\"$2\" *: *\"[^\"]*\"" <<<"$1" | sed 's/.*: *"//; s/"$//'; }
+
+lp_entry() { # $1 = manifest, $2 = file name -> "<sha256> <url>"; 1 when absent, malformed, or the arrays do not line up
+    local -a n u s; local i sha
+    mapfile -t n < <(lp_fields "$1" name)
+    mapfile -t u < <(lp_fields "$1" url)
+    mapfile -t s < <(lp_fields "$1" sha256)
+    [ "${#n[@]}" -gt 0 ] && [ "${#n[@]}" = "${#u[@]}" ] && [ "${#n[@]}" = "${#s[@]}" ] || return 1
+    for i in "${!n[@]}"; do
+        [ "${n[$i]}" = "$2" ] || continue
+        # An empty sha would equal the sha of a missing file.
+        sha=$(echo "${s[$i]}" | tr 'A-F' 'a-f')
+        [[ "$sha" =~ ^[0-9a-f]{64}$ ]] && [ -n "${u[$i]}" ] || return 1
+        printf '%s %s\n' "$sha" "${u[$i]}"; return 0
+    done
+    return 1
+}
+
+# The kept copy stands in only when R2 cannot be read, and only while it still
+# matches the manifest it came with.
+lp_get() {
+    local tm src=r2 f ent stage="$LP_DIR/stage"
+    mkdir -p "$LP_DIR" || { LP_WHY="cannot create $LP_DIR"; return 1; }
+    tm=$(curl -fsS --max-time 20 "$LP_MANIFEST_URL" 2>/dev/null)
+    if [ -z "$tm" ]; then
+        tm=$(cat "$LP_DIR/manifest.json" 2>/dev/null)
+        [ -n "$tm" ] || { LP_WHY="the tool manifest is unreachable and no copy is kept ($LP_MANIFEST_URL)"; return 1; }
+        src=kept
+    fi
+    LP_VER=$(lp_field "$tm" version)
+    for f in patch_worker.py patches_linux.json; do
+        lp_entry "$tm" "$f" >/dev/null || { LP_WHY="the tool manifest has no valid entry for $f"; return 1; }
+    done
+    rm -rf "$stage"; mkdir -p "$stage"
+    for f in patch_worker.py patches_linux.json; do
+        ent=$(lp_entry "$tm" "$f")
+        [ "$(lp_sha256 "$LP_DIR/$f")" = "${ent%% *}" ] && continue
+        [ "$src" = kept ] && { LP_WHY="the kept $f does not match its manifest"; rm -rf "$stage"; return 1; }
+        curl -fsS --max-time 60 -o "$stage/$f" "${ent#* }" 2>/dev/null
+        [ "$(lp_sha256 "$stage/$f")" = "${ent%% *}" ] || { LP_WHY="$f failed its sha256 check"; rm -rf "$stage"; return 1; }
+    done
+    for f in "$stage"/*; do [ -f "$f" ] && mv -f "$f" "$LP_DIR/"; done
+    rm -rf "$stage"
+    for f in patch_worker.py patches_linux.json; do
+        ent=$(lp_entry "$tm" "$f")
+        [ "$(lp_sha256 "$LP_DIR/$f")" = "${ent%% *}" ] || { LP_WHY="$f could not be placed"; return 1; }
+    done
+    if [ "$src" = r2 ]; then
+        printf '%s\n' "$tm" > "$LP_DIR/manifest.json"
+    else
+        lp_log "binary: tool manifest unreachable - patching with the copy kept from an earlier boot (tool v${LP_VER:-?})"
+    fi
+    return 0
+}
+
+lp_summary() { # one line naming each rule's outcome
+    if [ ! -s "$LP_DIR/last-report.json" ]; then
+        printf 'no report: %s' "$(tail -n1 "$LP_DIR/last-stderr.txt" 2>/dev/null | cut -c1-120)"
+        return
+    fi
+    python3 - "$LP_DIR/last-report.json" 2>/dev/null <<'PY' || printf 'see %s' "$LP_DIR/last-report.json"
+import json, sys
+r = json.load(open(sys.argv[1]))
+print(" ".join("%s=%s%s" % (p.get("name"), p.get("status"), "@%s" % p["patch_offset"] if p.get("patch_offset") else "")
+               for p in r.get("patches") or []), end="")
+PY
+}
+
+lp_patch() { # 0 with LP_DONE=patched|already and LP_MODDED; 1 with LP_WHY
+    command -v python3 >/dev/null 2>&1 || { LP_WHY="python3 is not in this server's image"; return 1; }
+    lp_get || return 1
+    local out="$LP_DIR/patched.bin" rep="$LP_DIR/last-report.json" rc cur size omd5
+    cur=$(lp_md5 "$GAME_BINARY"); size=$(stat -c%s "$GAME_BINARY" 2>/dev/null)
+    [ -n "$cur" ] || { LP_WHY="there is no binary at $GAME_BINARY"; return 1; }
+    rm -f "$out" "$rep"
+    python3 "$LP_DIR/patch_worker.py" "$GAME_BINARY" "$out" \
+        --spec "$LP_DIR/patches_linux.json" --report "$rep" >/dev/null 2>"$LP_DIR/last-stderr.txt"
+    rc=$?
+    # Exit 0 is not the verdict: the report must say success and the output must exist (rule 13).
+    if [ "$rc" != 0 ] || [ ! -f "$out" ] || ! grep -Eq '"success"[[:space:]]*:[[:space:]]*true' "$rep" 2>/dev/null; then
+        LP_WHY="the patcher (tool v${LP_VER:-?}) did not patch this build: exit $rc, $(lp_summary)"
+        rm -f "$out"; return 1
+    fi
+    [ "$(stat -c%s "$out" 2>/dev/null)" = "$size" ] || { LP_WHY="the patcher's output is not the binary's size"; rm -f "$out"; return 1; }
+    omd5=$(lp_md5 "$out")
+    if [ "$omd5" = "$cur" ]; then
+        rm -f "$out"; LP_MODDED=$omd5; LP_DONE=already; return 0
+    fi
+    chmod --reference="$GAME_BINARY" "$out" 2>/dev/null || chmod +x "$out"
+    mv -f "$out" "$GAME_BINARY" || { LP_WHY="the patched binary could not be moved into place"; rm -f "$out"; return 1; }
+    [ "$(lp_md5 "$GAME_BINARY")" = "$omd5" ] || { LP_WHY="the installed binary does not read back as the patcher's output"; rm -f "$out"; return 1; }
+    LP_MODDED=$omd5; LP_DONE=patched; return 0
+}
+
+lp_run() { # 0 = the binary on disk is patched; 1 = it is not, LP_WHY says why
+    LP_WHY=""; LP_DONE=""; LP_MODDED=""
+    local stock xc xs
+    stock=$(lp_md5 "$GAME_BINARY")
+    if ! lp_patch; then
+        lp_warn "=============================================================="
+        lp_warn "binary: LOCAL PATCH NOT APPLIED - $LP_WHY"
+        lp_warn "  Falling back to the binary lane (${PRIMAL_BINARY_BASE}): the same"
+        lp_warn "  bytes, but only for game builds the lane already holds."
+        lp_warn "=============================================================="
+        return 1
+    fi
+    if [ "$LP_DONE" = already ]; then
+        lp_log "binary: already patched (${LP_MODDED:0:16}): every site is in its patched form, nothing written ($(lp_summary))"
+        return 0
+    fi
+    lp_log "binary: PATCHED LOCALLY (tool v${LP_VER:-?}): ${stock:0:16} -> ${LP_MODDED:0:16} ($(lp_summary))"
+    # Log-only: the lane's own build for this stock binary is the cross-check
+    # that the two paths agree. Nothing here can stop the boot.
+    xc=$(curl -fsS --max-time 15 -X POST -H "Content-Type: application/json" \
+        -d "{\"platform\":\"linux\",\"vanilla_hash\":\"${stock}\",\"current_modded_hash\":\"${LP_MODDED}\"}" \
+        "${PRIMAL_BINARY_BASE}/commands/binary/check" 2>/dev/null)
+    xs=$(lp_field "$xc" status)
+    case "$xs" in
+        up_to_date)       lp_log "binary: the lane's build for this vanilla is the same bytes" ;;
+        update_available) lp_warn "binary: the lane's build for this vanilla is $(lp_field "$xc" expected_modded_hash | cut -c1-16), NOT ${LP_MODDED:0:16} - booting the local patch; the two paths disagree" ;;
+        "")               lp_log "binary: the lane did not answer the cross-check (not needed to boot)" ;;
+        *)                lp_log "binary: the lane holds no build for this vanilla ($xs) - the local patch does not need one" ;;
+    esac
+    return 0
+}
+
+lp_install() { # $1 = a downloaded binary, $2 = its md5. Installed = the binary's own path reads back as it (#3875); the caller removes $1.
+    local got
+    LP_INSTALL_WHY=""
+    if mv -f "$1" "$GAME_BINARY" 2>/dev/null && chmod +x "$GAME_BINARY" 2>/dev/null \
+        && [ "$(lp_md5 "$GAME_BINARY")" = "$2" ]; then
+        return 0
+    fi
+    got=$(lp_md5 "$GAME_BINARY"); got=${got:0:16}
+    LP_INSTALL_WHY="the download ${2:0:16} did not land: the binary reads back as ${got:-nothing}"
+    return 1
+}
+# <<< PRIMAL LOCAL PATCH <<<
 
 # ── Settings & defaults ──────────────────────────────────────────────────────
 
@@ -151,78 +313,88 @@ fi
 VANILLA_HASH=$(get_file_hash "$GAME_BINARY")
 log "Binary hash after SteamCMD: ${VANILLA_HASH:0:16}..."
 
-# ── Step 3: Modded binary from Primal binary distribution ───────────────────
-# POST /commands/binary/check  -> up_to_date | update_available | no_mod_available
-# Downloads are served by the same API. There is NO third-party fallback.
+# ── Step 3: Modded binary: patched locally, the binary lane as the fallback ──
+# The lane: POST /commands/binary/check -> up_to_date | update_available |
+# no_mod_available | vanilla_unknown; downloads come from the same lane.
+# There is NO third-party fallback.
 
 if [ "$MODDED_BINARY" == "1" ]; then
-    log "Checking Primal binary distribution for modded binary..."
     MOD_READY=false
+    LANE_WHY=""
+    lp_run && MOD_READY=true
 
-    for ATTEMPT in 1 2 3 4 5; do
-        CURRENT_HASH=$(get_file_hash "$GAME_BINARY")
-        CHECK=$(curl -s -w "\n%{http_code}" --max-time 60 -X POST \
-            -H "Content-Type: application/json" \
-            -H "X-API-Key: ${API_KEY}" \
-            -d "{\"platform\":\"linux\",\"vanilla_hash\":\"${VANILLA_HASH}\",\"current_modded_hash\":\"${CURRENT_HASH}\"}" \
-            "${PRIMAL_BINARY_BASE}/commands/binary/check" 2>/dev/null)
-        HTTP_CODE=$(echo "$CHECK" | tail -n1)
-        BODY=$(echo "$CHECK" | sed '$d')
+    if [ "$MOD_READY" != "true" ]; then
+        log "Checking Primal binary distribution for modded binary..."
+        for ATTEMPT in 1 2 3 4 5; do
+            CURRENT_HASH=$(get_file_hash "$GAME_BINARY")
+            CHECK=$(curl -s -w "\n%{http_code}" --max-time 60 -X POST \
+                -H "Content-Type: application/json" \
+                -H "X-API-Key: ${API_KEY}" \
+                -d "{\"platform\":\"linux\",\"vanilla_hash\":\"${VANILLA_HASH}\",\"current_modded_hash\":\"${CURRENT_HASH}\"}" \
+                "${PRIMAL_BINARY_BASE}/commands/binary/check" 2>/dev/null)
+            HTTP_CODE=$(echo "$CHECK" | tail -n1)
+            BODY=$(echo "$CHECK" | sed '$d')
 
-        if [ "$HTTP_CODE" != "200" ]; then
-            warn "binary check failed (HTTP ${HTTP_CODE:-none}), attempt ${ATTEMPT}/5"
-            sleep 10
-            continue
-        fi
+            if [ "$HTTP_CODE" != "200" ]; then
+                warn "binary check failed (HTTP ${HTTP_CODE:-none}), attempt ${ATTEMPT}/5"
+                sleep 10
+                continue
+            fi
 
-        STATUS=$(echo "$BODY" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
-        DOWNLOAD_URL=$(echo "$BODY" | grep -o '"download_url":"[^"]*"' | cut -d'"' -f4)
-        EXPECTED_MODDED_HASH=$(echo "$BODY" | grep -o '"expected_modded_hash":"[^"]*"' | cut -d'"' -f4)
-        log "Binary distribution status: ${STATUS}"
+            STATUS=$(echo "$BODY" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
+            DOWNLOAD_URL=$(echo "$BODY" | grep -o '"download_url":"[^"]*"' | cut -d'"' -f4)
+            EXPECTED_MODDED_HASH=$(echo "$BODY" | grep -o '"expected_modded_hash":"[^"]*"' | cut -d'"' -f4)
+            log "Binary distribution status: ${STATUS}"
 
-        case "$STATUS" in
-            up_to_date)
-                MOD_READY=true
-                break
-                ;;
-            update_available)
-                log "Downloading modded binary..."
-                TMP_BIN="/home/container/.primal_mod_download"
-                DL_CODE=$(curl -s -w "%{http_code}" --max-time 900 -o "$TMP_BIN" \
-                    -H "X-API-Key: ${API_KEY}" \
-                    "${PRIMAL_BINARY_BASE}${DOWNLOAD_URL}" 2>/dev/null)
-                DL_SIZE=$(stat -c%s "$TMP_BIN" 2>/dev/null || echo 0)
-                DL_HASH=$(get_file_hash "$TMP_BIN")
-
-                if [ "$DL_CODE" == "200" ] && [ "$DL_SIZE" -gt 157286400 ] && \
-                   { [ -z "$EXPECTED_MODDED_HASH" ] || [ "$DL_HASH" == "$EXPECTED_MODDED_HASH" ]; }; then
-                    mv "$TMP_BIN" "$GAME_BINARY"
-                    chmod +x "$GAME_BINARY"
-                    log "Modded binary installed (${DL_SIZE} bytes, hash ${DL_HASH:0:16}...)."
+            case "$STATUS" in
+                up_to_date)
                     MOD_READY=true
                     break
-                fi
-                warn "download invalid (HTTP ${DL_CODE}, size ${DL_SIZE}, hash ${DL_HASH:0:16}) — retrying"
-                rm -f "$TMP_BIN"
-                sleep 10
-                ;;
-            no_mod_available)
-                warn "backend has no mod for this vanilla version yet."
-                break
-                ;;
-            *)
-                warn "unexpected status '${STATUS}' — retrying"
-                sleep 10
-                ;;
-        esac
-    done
+                    ;;
+                update_available)
+                    log "Downloading modded binary..."
+                    TMP_BIN="/home/container/.primal_mod_download"
+                    DL_CODE=$(curl -s -w "%{http_code}" --max-time 900 -o "$TMP_BIN" \
+                        -H "X-API-Key: ${API_KEY}" \
+                        "${PRIMAL_BINARY_BASE}${DOWNLOAD_URL}" 2>/dev/null)
+                    DL_SIZE=$(stat -c%s "$TMP_BIN" 2>/dev/null || echo 0)
+                    DL_HASH=$(get_file_hash "$TMP_BIN")
+
+                    if [ "$DL_CODE" == "200" ] && [ "$DL_SIZE" -gt 157286400 ] && \
+                       { [ -z "$EXPECTED_MODDED_HASH" ] || [ "$DL_HASH" == "$EXPECTED_MODDED_HASH" ]; }; then
+                        if lp_install "$TMP_BIN" "$DL_HASH"; then
+                            log "Modded binary installed (${DL_SIZE} bytes, hash ${DL_HASH:0:16}..., read back from the binary's path)."
+                            MOD_READY=true
+                            break
+                        fi
+                        LANE_WHY=$LP_INSTALL_WHY
+                        warn "binary: ${LANE_WHY} — retrying"
+                    else
+                        LANE_WHY=""
+                        warn "download invalid (HTTP ${DL_CODE}, size ${DL_SIZE}, hash ${DL_HASH:0:16}) — retrying"
+                    fi
+                    rm -f "$TMP_BIN"
+                    sleep 10
+                    ;;
+                no_mod_available|vanilla_unknown)
+                    LANE_WHY=""
+                    warn "the lane has no modded binary for vanilla ${VANILLA_HASH:0:16} (${STATUS})."
+                    break
+                    ;;
+                *)
+                    warn "unexpected status '${STATUS}' — retrying"
+                    sleep 10
+                    ;;
+            esac
+        done
+    fi
 
     if [ "$MOD_READY" != "true" ]; then
         if [ "$MOD_REQUIRED" == "1" ]; then
-            log "Mod is required but not available. Exiting; the panel will retry."
+            log "Mod is required but not available (local patch: ${LP_WHY}${LANE_WHY:+; lane: ${LANE_WHY}}). Exiting; the panel will retry."
             exit 0
         fi
-        warn "continuing WITHOUT verified modded binary (MOD_REQUIRED=0)."
+        warn "continuing WITHOUT verified modded binary (MOD_REQUIRED=0; local patch: ${LP_WHY})."
     fi
 else
     log "Modded binary disabled (MODDED_BINARY=0) — running vanilla."

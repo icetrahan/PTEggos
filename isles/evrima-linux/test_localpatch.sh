@@ -86,7 +86,13 @@ curl() {
         *) return 22 ;;
     esac
 }
-mv() { case "$*" in *.primal_patch_out*) [ "${FAKE_MV:-}" = lie ] && return 0 ;; esac; command mv "$@"; }
+mv() {
+    case "$*" in
+        *.primal_patch_out*) [ "${FAKE_MV:-}" = lie ] && return 0 ;;
+        *.primal_mod_download*) case "${FAKE_LANE_MV:-}" in fail) return 1 ;; lie) return 0 ;; esac ;;
+    esac
+    command mv "$@"
+}
 sleep() { :; }
 log()  { echo "[primal] $*"; }
 warn() { echo "[primal] WARN: $*"; }
@@ -118,7 +124,7 @@ boot() {
         ROOT=$R; PRIM=$R/_primal; GAME_BINARY=$B; R2_BASE=https://r2.test
         PRIMAL_BINARY_BASE=https://lane.test; BINARY_BASE_SOURCE=test; PRIMAL_ALLOW_VANILLA=0
         HAVE_JQ=0; JQ=/nonexistent; PRIMAL_PATCHER_MANIFEST=""
-        FAKE_R2=""; FAKE_LANE=""; FAKE_PATCHER=""; FAKE_MV=""
+        FAKE_R2=""; FAKE_LANE=""; FAKE_PATCHER=""; FAKE_MV=""; FAKE_LANE_MV=""
         for kv in "$@"; do eval "$kv"; done
         export FAKE_PATCHER CALLS
         VSIZE=$(stat -c%s "$GAME_BINARY"); VANILLA_HASH=$(md5_of "$GAME_BINARY")
@@ -176,6 +182,7 @@ fallback() { # $1 = label, $2 = the reason the log must name
     t "$1: not ready on the local patch" 'said "LOCAL PATCH NOT APPLIED"'
     t "$1: names why" 'said "$WHY"' "$(grep 'LOCAL PATCH NOT APPLIED' <<<"$OUT")"
     t "$1: the lane binary installed" 'ready && [ "$BIN_MD5" = "$LANE_MD5" ] && [ $DOWNLOADS = 1 ]' "$(tail -n3 <<<"$OUT")"
+    t "$1: installed = read back" 'said "read back from the binary'"'"'s path"'
 }
 
 echo "E - no python3 in the image: the lane, said by name"
@@ -258,6 +265,25 @@ echo "Q - PRIMAL_PATCHER_MANIFEST points the tool lookup elsewhere"
 new_root 74
 boot PRIMAL_PATCHER_MANIFEST=https://r2.test/alt/latest.json FAKE_LANE=same
 t 'read the override, patched' 'grep -q "^https://r2.test/alt/latest.json" "$CALLS" && ready && [ "$SITE" = eb ]'
+
+lane_no_land() { # $1 = label: the lane's download never lands, so it is never called installed (#3875)
+    t "$1: not ready" '! ready' "$(tail -n3 <<<"$OUT")"
+    t "$1: never said installed" '! said "modded binary installed"'
+    t "$1: said it did not land, each attempt" '[ "$(grep -c "WARN: binary: the download ${LANE_MD5:0:16} did not land: the binary reads back as ${ORIG:0:16} - retrying" <<<"$OUT")" = 5 ] && [ $DOWNLOADS = 5 ]' "$(grep -c "did not land" <<<"$OUT") lines, $DOWNLOADS downloads"
+    t "$1: refused as a volume problem, both reasons named" 'said "REFUSED mod_binary_unavailable :: MOD-BINARY-UNAVAILABLE: the lane ANSWERED, but its modded binary for vanilla" && said "could not be installed on this volume (the download ${LANE_MD5:0:16} did not land" && said "and the local patch did not run (python3 is not in this server"' "$(tail -n1 <<<"$OUT")"
+    t "$1: binary untouched" '[ "$BIN_MD5" = "$ORIG" ]'
+    t "$1: no download left behind" '[ ! -e "$R/.primal_mod_download" ]'
+}
+
+echo "R - the lane's download is not moved into place (mv fails): never called installed, refused"
+new_root 74; ORIG=$(md5_of "$B")
+boot 'PATH=$NOPY' FAKE_LANE_MV=fail
+lane_no_land 'mv fails'
+
+echo "S - mv reports success but the binary never changed: caught by reading it back"
+new_root 74; ORIG=$(md5_of "$B")
+boot 'PATH=$NOPY' FAKE_LANE_MV=lie
+lane_no_land 'mv lies'
 
 echo
 echo "$PASS passed, $FAIL failed"

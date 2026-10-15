@@ -75,6 +75,167 @@ get_file_hash() {
     fi
 }
 
+# >>> PRIMAL LOCAL PATCH >>>
+# The same bytes in isles/evrima-survival/entrypoint.sh and
+# testing/deathmatch/entrypoint.sh; .github/scripts/test_image_localpatch.sh
+# fails when they differ. Egg 42's start-evrima.sh runs the same rung.
+#
+# The stock binary SteamCMD installs is patched in place by our pattern patcher
+# (patch_worker.py + patches_linux.json, the Linux voice tool on R2). The
+# patterns find the two signature-gate sites in any game build, so a game
+# update needs nothing new from us. Each file is sha256-checked against the
+# tool's manifest and kept in _primal/patcher/ with it, so a boot without R2
+# still patches. When lp_run returns 1, LP_WHY says why and the caller falls
+# back to the binary lane, which has the same bytes for the builds it holds.
+# Set GAME_BINARY and PRIMAL_BINARY_BASE before calling lp_run / lp_install.
+LP_DIR=/home/container/_primal/patcher
+LP_MANIFEST_URL="${PRIMAL_PATCHER_MANIFEST:-https://pub-fb6fdcc2ce914775ba41c9813f80dc10.r2.dev/primal-voice-linux-tool/latest.json}"
+LP_VER=""; LP_WHY=""; LP_DONE=""; LP_MODDED=""; LP_INSTALL_WHY=""
+
+lp_log()  { echo "[primal] $*"; }
+lp_warn() { echo "[primal] WARN: $*" >&2; }
+lp_md5()  { [ -f "$1" ] && md5sum "$1" | awk '{print $1}' || echo ""; }
+lp_sha256() { [ -f "$1" ] && sha256sum "$1" | awk '{print $1}' || echo ""; }
+lp_field()  { grep -o "\"$2\" *: *\"[^\"]*\"" <<<"$1" | head -1 | sed 's/.*: *"//; s/"$//'; }
+lp_fields() { grep -o "\"$2\" *: *\"[^\"]*\"" <<<"$1" | sed 's/.*: *"//; s/"$//'; }
+
+lp_entry() { # $1 = manifest, $2 = file name -> "<sha256> <url>"; 1 when absent, malformed, or the arrays do not line up
+    local -a n u s; local i sha
+    mapfile -t n < <(lp_fields "$1" name)
+    mapfile -t u < <(lp_fields "$1" url)
+    mapfile -t s < <(lp_fields "$1" sha256)
+    [ "${#n[@]}" -gt 0 ] && [ "${#n[@]}" = "${#u[@]}" ] && [ "${#n[@]}" = "${#s[@]}" ] || return 1
+    for i in "${!n[@]}"; do
+        [ "${n[$i]}" = "$2" ] || continue
+        # An empty sha would equal the sha of a missing file.
+        sha=$(echo "${s[$i]}" | tr 'A-F' 'a-f')
+        [[ "$sha" =~ ^[0-9a-f]{64}$ ]] && [ -n "${u[$i]}" ] || return 1
+        printf '%s %s\n' "$sha" "${u[$i]}"; return 0
+    done
+    return 1
+}
+
+# The kept copy stands in only when R2 cannot be read, and only while it still
+# matches the manifest it came with.
+lp_get() {
+    local tm src=r2 f ent stage="$LP_DIR/stage"
+    mkdir -p "$LP_DIR" || { LP_WHY="cannot create $LP_DIR"; return 1; }
+    tm=$(curl -fsS --max-time 20 "$LP_MANIFEST_URL" 2>/dev/null)
+    if [ -z "$tm" ]; then
+        tm=$(cat "$LP_DIR/manifest.json" 2>/dev/null)
+        [ -n "$tm" ] || { LP_WHY="the tool manifest is unreachable and no copy is kept ($LP_MANIFEST_URL)"; return 1; }
+        src=kept
+    fi
+    LP_VER=$(lp_field "$tm" version)
+    for f in patch_worker.py patches_linux.json; do
+        lp_entry "$tm" "$f" >/dev/null || { LP_WHY="the tool manifest has no valid entry for $f"; return 1; }
+    done
+    rm -rf "$stage"; mkdir -p "$stage"
+    for f in patch_worker.py patches_linux.json; do
+        ent=$(lp_entry "$tm" "$f")
+        [ "$(lp_sha256 "$LP_DIR/$f")" = "${ent%% *}" ] && continue
+        [ "$src" = kept ] && { LP_WHY="the kept $f does not match its manifest"; rm -rf "$stage"; return 1; }
+        curl -fsS --max-time 60 -o "$stage/$f" "${ent#* }" 2>/dev/null
+        [ "$(lp_sha256 "$stage/$f")" = "${ent%% *}" ] || { LP_WHY="$f failed its sha256 check"; rm -rf "$stage"; return 1; }
+    done
+    for f in "$stage"/*; do [ -f "$f" ] && mv -f "$f" "$LP_DIR/"; done
+    rm -rf "$stage"
+    for f in patch_worker.py patches_linux.json; do
+        ent=$(lp_entry "$tm" "$f")
+        [ "$(lp_sha256 "$LP_DIR/$f")" = "${ent%% *}" ] || { LP_WHY="$f could not be placed"; return 1; }
+    done
+    if [ "$src" = r2 ]; then
+        printf '%s\n' "$tm" > "$LP_DIR/manifest.json"
+    else
+        lp_log "binary: tool manifest unreachable - patching with the copy kept from an earlier boot (tool v${LP_VER:-?})"
+    fi
+    return 0
+}
+
+lp_summary() { # one line naming each rule's outcome
+    if [ ! -s "$LP_DIR/last-report.json" ]; then
+        printf 'no report: %s' "$(tail -n1 "$LP_DIR/last-stderr.txt" 2>/dev/null | cut -c1-120)"
+        return
+    fi
+    python3 - "$LP_DIR/last-report.json" 2>/dev/null <<'PY' || printf 'see %s' "$LP_DIR/last-report.json"
+import json, sys
+r = json.load(open(sys.argv[1]))
+print(" ".join("%s=%s%s" % (p.get("name"), p.get("status"), "@%s" % p["patch_offset"] if p.get("patch_offset") else "")
+               for p in r.get("patches") or []), end="")
+PY
+}
+
+lp_patch() { # 0 with LP_DONE=patched|already and LP_MODDED; 1 with LP_WHY
+    command -v python3 >/dev/null 2>&1 || { LP_WHY="python3 is not in this server's image"; return 1; }
+    lp_get || return 1
+    local out="$LP_DIR/patched.bin" rep="$LP_DIR/last-report.json" rc cur size omd5
+    cur=$(lp_md5 "$GAME_BINARY"); size=$(stat -c%s "$GAME_BINARY" 2>/dev/null)
+    [ -n "$cur" ] || { LP_WHY="there is no binary at $GAME_BINARY"; return 1; }
+    rm -f "$out" "$rep"
+    python3 "$LP_DIR/patch_worker.py" "$GAME_BINARY" "$out" \
+        --spec "$LP_DIR/patches_linux.json" --report "$rep" >/dev/null 2>"$LP_DIR/last-stderr.txt"
+    rc=$?
+    # Exit 0 is not the verdict: the report must say success and the output must exist (rule 13).
+    if [ "$rc" != 0 ] || [ ! -f "$out" ] || ! grep -Eq '"success"[[:space:]]*:[[:space:]]*true' "$rep" 2>/dev/null; then
+        LP_WHY="the patcher (tool v${LP_VER:-?}) did not patch this build: exit $rc, $(lp_summary)"
+        rm -f "$out"; return 1
+    fi
+    [ "$(stat -c%s "$out" 2>/dev/null)" = "$size" ] || { LP_WHY="the patcher's output is not the binary's size"; rm -f "$out"; return 1; }
+    omd5=$(lp_md5 "$out")
+    if [ "$omd5" = "$cur" ]; then
+        rm -f "$out"; LP_MODDED=$omd5; LP_DONE=already; return 0
+    fi
+    chmod --reference="$GAME_BINARY" "$out" 2>/dev/null || chmod +x "$out"
+    mv -f "$out" "$GAME_BINARY" || { LP_WHY="the patched binary could not be moved into place"; rm -f "$out"; return 1; }
+    [ "$(lp_md5 "$GAME_BINARY")" = "$omd5" ] || { LP_WHY="the installed binary does not read back as the patcher's output"; rm -f "$out"; return 1; }
+    LP_MODDED=$omd5; LP_DONE=patched; return 0
+}
+
+lp_run() { # 0 = the binary on disk is patched; 1 = it is not, LP_WHY says why
+    LP_WHY=""; LP_DONE=""; LP_MODDED=""
+    local stock xc xs
+    stock=$(lp_md5 "$GAME_BINARY")
+    if ! lp_patch; then
+        lp_warn "=============================================================="
+        lp_warn "binary: LOCAL PATCH NOT APPLIED - $LP_WHY"
+        lp_warn "  Falling back to the binary lane (${PRIMAL_BINARY_BASE}): the same"
+        lp_warn "  bytes, but only for game builds the lane already holds."
+        lp_warn "=============================================================="
+        return 1
+    fi
+    if [ "$LP_DONE" = already ]; then
+        lp_log "binary: already patched (${LP_MODDED:0:16}): every site is in its patched form, nothing written ($(lp_summary))"
+        return 0
+    fi
+    lp_log "binary: PATCHED LOCALLY (tool v${LP_VER:-?}): ${stock:0:16} -> ${LP_MODDED:0:16} ($(lp_summary))"
+    # Log-only: the lane's own build for this stock binary is the cross-check
+    # that the two paths agree. Nothing here can stop the boot.
+    xc=$(curl -fsS --max-time 15 -X POST -H "Content-Type: application/json" \
+        -d "{\"platform\":\"linux\",\"vanilla_hash\":\"${stock}\",\"current_modded_hash\":\"${LP_MODDED}\"}" \
+        "${PRIMAL_BINARY_BASE}/commands/binary/check" 2>/dev/null)
+    xs=$(lp_field "$xc" status)
+    case "$xs" in
+        up_to_date)       lp_log "binary: the lane's build for this vanilla is the same bytes" ;;
+        update_available) lp_warn "binary: the lane's build for this vanilla is $(lp_field "$xc" expected_modded_hash | cut -c1-16), NOT ${LP_MODDED:0:16} - booting the local patch; the two paths disagree" ;;
+        "")               lp_log "binary: the lane did not answer the cross-check (not needed to boot)" ;;
+        *)                lp_log "binary: the lane holds no build for this vanilla ($xs) - the local patch does not need one" ;;
+    esac
+    return 0
+}
+
+lp_install() { # $1 = a downloaded binary, $2 = its md5. Installed = the binary's own path reads back as it (#3875); the caller removes $1.
+    local got
+    LP_INSTALL_WHY=""
+    if mv -f "$1" "$GAME_BINARY" 2>/dev/null && chmod +x "$GAME_BINARY" 2>/dev/null \
+        && [ "$(lp_md5 "$GAME_BINARY")" = "$2" ]; then
+        return 0
+    fi
+    got=$(lp_md5 "$GAME_BINARY"); got=${got:0:16}
+    LP_INSTALL_WHY="the download ${2:0:16} did not land: the binary reads back as ${got:-nothing}"
+    return 1
+}
+# <<< PRIMAL LOCAL PATCH <<<
+
 # =============================================================================
 # Step 0: Check if server can start (read-only check, no writes)
 # =============================================================================
@@ -211,12 +372,19 @@ else
 fi
 
 MOD_DOWNLOADED=false
+LANE_WHY=""
 NORDEN_API_URL="https://manage.norden.cloud/api/884851/1020410"
 
 # -----------------------------------------------------------------------------
-# Method 1: Try Primal Backend (our own server - more reliable)
+# Method 0: patch the stock binary in place (PRIMAL LOCAL PATCH above)
 # -----------------------------------------------------------------------------
-echo -e "📡 Checking Primal Backend for modded binary..."
+GAME_BINARY="$MOD_FILE_PATH"
+lp_run && MOD_DOWNLOADED=true
+
+# -----------------------------------------------------------------------------
+# Method 1: the Primal binary lane, when the local patch did not run
+# -----------------------------------------------------------------------------
+[ "$MOD_DOWNLOADED" != "true" ] && echo -e "📡 Checking Primal Backend for modded binary..."
 
 BACKEND_RETRY=0
 BACKEND_MAX_RETRIES=3
@@ -226,51 +394,55 @@ while [ $BACKEND_RETRY -lt $BACKEND_MAX_RETRIES ] && [ "$MOD_DOWNLOADED" != "tru
     CHECK_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${PRIMAL_BINARY_BASE}/commands/binary/check" \
         -H "Content-Type: application/json" \
         -d "{\"vanilla_hash\": \"${VANILLA_HASH}\", \"current_modded_hash\": \"${CURRENT_HASH}\"}" 2>/dev/null)
-    
+
     HTTP_CODE=$(echo "$CHECK_RESPONSE" | tail -n1)
     BODY=$(echo "$CHECK_RESPONSE" | sed '$d')
-    
+
     if [ "$HTTP_CODE" == "200" ]; then
         # Parse response
         STATUS=$(echo "$BODY" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
         DOWNLOAD_URL=$(echo "$BODY" | grep -o '"download_url":"[^"]*"' | cut -d'"' -f4)
-        
+        LANE_EXPECTED=$(echo "$BODY" | grep -o '"expected_modded_hash":"[^"]*"' | cut -d'"' -f4)
+
         echo "   Backend status: $STATUS"
-        
+
         if [ "$STATUS" == "up_to_date" ]; then
             echo -e "✅ Mod binary is already up to date (verified by backend)"
             MOD_DOWNLOADED=true
-            
+
         elif [ "$STATUS" == "update_available" ] && [ ! -z "$DOWNLOAD_URL" ]; then
             echo -e "⬇️  Downloading modded binary from backend..."
-            
+
             # Download from backend
             DOWNLOAD_CODE=$(curl -s -w "%{http_code}" -o /home/container/mod_download.bin \
                 "${PRIMAL_BINARY_BASE}${DOWNLOAD_URL}" 2>/dev/null)
-            
+
             if [ "$DOWNLOAD_CODE" == "200" ]; then
-                # Verify download size (should be ~196MB)
-                DOWNLOAD_SIZE=$(stat -c%s "/home/container/mod_download.bin" 2>/dev/null || stat -f%z "/home/container/mod_download.bin" 2>/dev/null)
-                
-                if [ "$DOWNLOAD_SIZE" -gt 157286400 ]; then
+                DOWNLOAD_SIZE=$(stat -c%s "/home/container/mod_download.bin" 2>/dev/null || echo 0)
+                DOWNLOAD_HASH=$(get_file_hash /home/container/mod_download.bin)
+
+                if [ "$DOWNLOAD_SIZE" -gt 157286400 ] && { [ -z "$LANE_EXPECTED" ] || [ "$DOWNLOAD_HASH" == "$LANE_EXPECTED" ]; }; then
                     mkdir -p "$(dirname "$MOD_FILE_PATH")"
-                    mv /home/container/mod_download.bin "$MOD_FILE_PATH"
-                    chmod +x "$MOD_FILE_PATH"
-                    echo -e "✅ Mod binary downloaded from backend (${DOWNLOAD_SIZE} bytes)"
-                    MOD_DOWNLOADED=true
+                    if lp_install /home/container/mod_download.bin "$DOWNLOAD_HASH"; then
+                        echo -e "✅ Mod binary downloaded from backend (${DOWNLOAD_SIZE} bytes, hash ${DOWNLOAD_HASH:0:16}..., read back from the binary's path)"
+                        MOD_DOWNLOADED=true
+                    else
+                        LANE_WHY=$LP_INSTALL_WHY
+                        echo -e "⚠️  Backend binary not installed: ${LANE_WHY}"
+                    fi
                 else
-                    echo -e "⚠️  Downloaded file too small (${DOWNLOAD_SIZE} bytes), trying again..."
+                    echo -e "⚠️  Downloaded file invalid (${DOWNLOAD_SIZE} bytes, hash ${DOWNLOAD_HASH:0:16}), not installed"
                     rm -f /home/container/mod_download.bin
                 fi
             else
                 echo -e "⚠️  Backend download failed (HTTP $DOWNLOAD_CODE)"
             fi
-            
+
         elif [ "$STATUS" == "no_mod_available" ]; then
             echo -e "⚠️  Backend doesn't have mod for this vanilla version yet"
             break  # Don't retry, backend genuinely doesn't have it
         fi
-        
+
         break  # Successful response, exit retry loop
     else
         BACKEND_RETRY=$((BACKEND_RETRY + 1))
@@ -285,41 +457,46 @@ done
 if [ "$MOD_DOWNLOADED" != "true" ]; then
     echo -e ""
     echo -e "📡 Falling back to Norden Cloud API..."
-    
+
     NORDEN_RETRY=0
     NORDEN_MAX_RETRIES=5
-    
+
     while [ $NORDEN_RETRY -lt $NORDEN_MAX_RETRIES ] && [ "$MOD_DOWNLOADED" != "true" ]; do
         RESPONSE_CODE=$(curl -s -w "%{http_code}" -o /home/container/response.bin -X POST "$NORDEN_API_URL" \
             -H "Content-Type: application/json" \
             -d "{\"os\":\"linux\", \"currentHash\":\"$CURRENT_HASH\"}" 2>/dev/null)
-        
+
         if [ "$RESPONSE_CODE" == "200" ]; then
             # Check download size
-            DOWNLOAD_SIZE=$(stat -c%s "/home/container/response.bin" 2>/dev/null || stat -f%z "/home/container/response.bin" 2>/dev/null)
-            
+            DOWNLOAD_SIZE=$(stat -c%s "/home/container/response.bin" 2>/dev/null || echo 0)
+
             if [ "$DOWNLOAD_SIZE" -gt 157286400 ]; then
                 echo -e "⬇️  New mod version downloaded from Norden"
                 mkdir -p "$(dirname "$MOD_FILE_PATH")"
-                mv /home/container/response.bin "$MOD_FILE_PATH"
-                chmod +x "$MOD_FILE_PATH"
-                echo -e "✅ Mod binary downloaded and updated (${DOWNLOAD_SIZE} bytes)"
-                MOD_DOWNLOADED=true
+                NORDEN_HASH=$(get_file_hash /home/container/response.bin)
+                if lp_install /home/container/response.bin "$NORDEN_HASH"; then
+                    echo -e "✅ Mod binary downloaded and updated (${DOWNLOAD_SIZE} bytes, hash ${NORDEN_HASH:0:16}..., read back from the binary's path)"
+                    MOD_DOWNLOADED=true
+                else
+                    NORDEN_RETRY=$((NORDEN_RETRY + 1))
+                    echo -e "⚠️  Norden binary not installed: ${LP_INSTALL_WHY}, retry $NORDEN_RETRY/$NORDEN_MAX_RETRIES..."
+                fi
             else
-                echo -e "⚠️  Downloaded file too small (${DOWNLOAD_SIZE} bytes), retrying..."
+                NORDEN_RETRY=$((NORDEN_RETRY + 1))
+                echo -e "⚠️  Downloaded file too small (${DOWNLOAD_SIZE} bytes), retry $NORDEN_RETRY/$NORDEN_MAX_RETRIES..."
                 rm -f /home/container/response.bin
             fi
-            
+
         elif [ "$RESPONSE_CODE" == "204" ]; then
             echo -e "✅ Mod binary is already up to date (Norden)"
             MOD_DOWNLOADED=true
-            
+
         else
             NORDEN_RETRY=$((NORDEN_RETRY + 1))
             echo -e "⚠️  Norden API failed (HTTP $RESPONSE_CODE), retry $NORDEN_RETRY/$NORDEN_MAX_RETRIES..."
             sleep 10
         fi
-        
+
         rm -f /home/container/response.bin
     done
 fi
@@ -331,10 +508,10 @@ rm -f /home/container/response.bin /home/container/mod_download.bin
 # Final check - do we have a valid mod?
 # -----------------------------------------------------------------------------
 if [ "$MOD_DOWNLOADED" != "true" ]; then
-    # Check if we at least have an existing binary
-    if [ -f "$MOD_FILE_PATH" ] && [ ! -z "$CURRENT_HASH" ]; then
-        echo -e "⚠️  Could not verify mod updates, but existing binary found"
-        echo -e "   Proceeding with existing mod (hash: ${CURRENT_HASH:0:16}...)"
+    ON_DISK_HASH=$(get_file_hash "$MOD_FILE_PATH")
+    if [ -n "$ON_DISK_HASH" ]; then
+        echo -e "⚠️  NO VERIFIED MOD BINARY: the local patch did not run (${LP_WHY}), and neither the backend nor Norden supplied one${LANE_WHY:+ (backend: ${LANE_WHY})}."
+        echo -e "   Booting the binary on disk unverified (hash: ${ON_DISK_HASH:0:16}...): whatever SteamCMD left, stock unless AUTO_UPDATE=0 kept a patched one."
     else
         echo -e "❌ No mod binary available and could not download one"
         echo -e "🚫 Cannot proceed without mod - exiting"
