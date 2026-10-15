@@ -4,7 +4,8 @@
 # PRIMAL LOCAL PATCH block, the same bytes in both) and falls back to the binary lane; a download is
 # installed only when the binary's path reads back as it (#3875). Runs the REAL lines lifted from both
 # entrypoints with a stand-in patcher (patch_worker.py's arguments, exit codes and report shape), a
-# stand-in R2, lane and Norden. The real patcher on real game builds is proven in Docker (see the PR).
+# stand-in R2 and lane, and a stand-in Norden that neither image may call. The real patcher on real game
+# builds is proven in Docker (see the PR).
 #   bash .github/scripts/test_image_localpatch.sh [repo root]
 ROOT=$(cd "${1:-$(dirname "$0")/../..}" && pwd)
 SURV=$ROOT/isles/evrima-survival/entrypoint.sh
@@ -151,7 +152,6 @@ mv() {
     case "$*" in
         *patched.bin*) [ "${FAKE_MV:-}" = lie ] && return 0 ;;
         *primal_mod_download*|*mod_download.bin*) case "${FAKE_LANE_MV:-}" in fail) return 1 ;; lie) return 0 ;; esac ;;
-        *response.bin*) case "${FAKE_NORDEN_MV:-}" in fail) return 1 ;; lie) return 0 ;; esac ;;
     esac
     command mv "$@"
 }
@@ -181,7 +181,7 @@ boot() {
         cd "$R" || exit 1
         PRIMAL_PATCHER_MANIFEST=https://r2.test/primal-voice-linux-tool/latest.json
         PRIMAL_BINARY_BASE=https://lane.test; API_KEY=""; MODDED_BINARY=1; MOD_REQUIRED=1; EXPECTED_MODDED_HASH=""
-        FAKE_R2=""; FAKE_LANE=""; FAKE_PATCHER=""; FAKE_MV=""; FAKE_LANE_MV=""; FAKE_LANE_DL=""; FAKE_NORDEN=""; FAKE_NORDEN_MV=""
+        FAKE_R2=""; FAKE_LANE=""; FAKE_PATCHER=""; FAKE_MV=""; FAKE_LANE_MV=""; FAKE_LANE_DL=""; FAKE_NORDEN=""
         for kv in "$@"; do eval "$kv"; done
         export FAKE_PATCHER CALLS
         eval "$(block_of "$SURV" | sed "s#/home/container#$R#g")"
@@ -290,19 +290,27 @@ t 'surv T: MOD_REQUIRED=0 continues and says why' 'said "continuing WITHOUT veri
 new_root 74; boot surv MODDED_BINARY=0
 t 'surv T: MODDED_BINARY=0 runs neither the patcher nor the lane' '[ "$BIN_MD5" = "$ORIG" ] && [ ! -e "$R/_primal" ] && [ $CHECKS = 0 ]'
 
-echo "deathmatch U - Norden after the lane: read back, and every loop ends"
+echo "deathmatch U - no verified binary: the boot is refused, and no third party is asked (#3903)"
+refused() { # $1 = label, $2 = the reason the FATAL line must name
+    WHY=$2
+    t "$1: refused with exit 1, never ready" '[ "$RC" = 1 ] && ! ready && said "[primal] FATAL: MOD-BINARY-UNAVAILABLE: "' "rc=$RC $(tail -n2 <<<"$OUT")"
+    t "$1: the FATAL line names why" 'grep -F "FATAL: MOD-BINARY-UNAVAILABLE" <<<"$OUT" | grep -qF -- "$WHY"' "$(grep FATAL <<<"$OUT")"
+    t "$1: binary untouched, no third party asked, nothing left behind" '[ "$BIN_MD5" = "$ORIG" ] && [ $NORDEN = 0 ] && leftovers'
+}
 new_root 74; boot dm 'PATH=$NOPY' FAKE_LANE=down FAKE_NORDEN=bin
-t 'dm U: Norden binary installed, read back' 'ready && [ "$BIN_MD5" = "$NORDEN_MD5" ] && said "Mod binary downloaded and updated (167772160 bytes, hash ${NORDEN_MD5:0:16}..., read back from the binary'"'"'s path)" && leftovers'
-new_root 74; boot dm 'PATH=$NOPY' FAKE_LANE=down FAKE_NORDEN=bin FAKE_NORDEN_MV=fail
-t 'dm U: a Norden binary that does not land is retried 5 times, then the loop ends' '[ $NORDEN = 5 ] && [ "$(grep -c "Norden binary not installed: the download ${NORDEN_MD5:0:16} did not land" <<<"$OUT")" = 5 ] && [ "$BIN_MD5" = "$ORIG" ]' "$NORDEN calls"
-new_root 74; boot dm 'PATH=$NOPY' FAKE_LANE=down FAKE_NORDEN=bin FAKE_NORDEN_MV=lie
-t 'dm U: a Norden move that reports success but does not land is never called installed' '! ready && ! said "Mod binary downloaded and updated" && [ "$BIN_MD5" = "$ORIG" ] && leftovers' "$(tail -n3 <<<"$OUT")"
-new_root 74; boot dm 'PATH=$NOPY' FAKE_LANE=down FAKE_NORDEN=small
-t 'dm U: a Norden file too small is retried 5 times, then the loop ends' '[ $NORDEN = 5 ] && [ "$BIN_MD5" = "$ORIG" ]' "$NORDEN calls"
-t 'dm U: the boot says no binary was verified, and why' 'said "NO VERIFIED MOD BINARY: the local patch did not run (python3 is not in this server'"'"'s image)" && said "Booting the binary on disk unverified (hash: ${ORIG:0:16}"' "$(tail -n3 <<<"$OUT")"
-t 'dm U: ...and never claims an existing mod' '! said "Proceeding with existing mod"'
-new_root 74; boot dm 'PATH=$NOPY' FAKE_LANE_MV=fail
-t 'dm U: a lane binary that did not land is named in the last line' 'said "(backend: the download ${LANE_MD5:0:16} did not land: the binary reads back as ${ORIG:0:16})"' "$(tail -n3 <<<"$OUT")"
+refused 'dm U lane down' "the local patch did not run (python3 is not in this server's image) and the binary lane supplied no verified build (https://lane.test did not answer (HTTP 000, 3/3 attempts))"
+t 'dm U lane down: the lane is asked 3 times' '[ $CHECKS = 3 ]'
+for st in no_mod_available vanilla_unknown; do
+    new_root 74; boot dm 'PATH=$NOPY' FAKE_LANE=$st FAKE_NORDEN=bin
+    refused "dm U $st" "the lane has no modded binary for vanilla ${ORIG:0:16} ($st)"
+    t "dm U $st: an answer is not retried" '[ $CHECKS = 1 ]'
+done
+new_root 74; boot dm 'PATH=$NOPY' FAKE_LANE_MV=fail FAKE_NORDEN=bin
+refused 'dm U lane install' "the download ${LANE_MD5:0:16} did not land: the binary reads back as ${ORIG:0:16}"
+new_root 74; boot dm 'PATH=$NOPY' FAKE_LANE_DL=wrong FAKE_NORDEN=bin
+refused 'dm U wrong bytes' "the download is not the lane's build (167772160 bytes"
+t 'dm U: never boots the binary on disk unverified' '! said "Booting the binary on disk unverified" && ! said "Proceeding with existing mod"'
+t 'dm U: the image names no third-party binary source' '! grep -qi "norden" "$DM"'
 
 echo
 echo "$PASS passed, $FAIL failed"

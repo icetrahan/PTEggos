@@ -357,7 +357,8 @@ VANILLA_HASH=$(get_file_hash "$MOD_FILE_PATH")
 echo "Vanilla hash after SteamCMD: ${VANILLA_HASH:0:16}..."
 
 # =============================================================================
-# Mod Update Check - Try backend first, fallback to Norden
+# Mod Update Check - the local patch, then the Primal binary lane. No verified binary, no boot:
+# the Linux signature bypass is in the patch, so a stock boot tests nothing.
 # =============================================================================
 echo -e ""
 echo -e "=========================================="
@@ -373,7 +374,6 @@ fi
 
 MOD_DOWNLOADED=false
 LANE_WHY=""
-NORDEN_API_URL="https://manage.norden.cloud/api/884851/1020410"
 
 # -----------------------------------------------------------------------------
 # Method 0: patch the stock binary in place (PRIMAL LOCAL PATCH above)
@@ -431,92 +431,38 @@ while [ $BACKEND_RETRY -lt $BACKEND_MAX_RETRIES ] && [ "$MOD_DOWNLOADED" != "tru
                         echo -e "⚠️  Backend binary not installed: ${LANE_WHY}"
                     fi
                 else
-                    echo -e "⚠️  Downloaded file invalid (${DOWNLOAD_SIZE} bytes, hash ${DOWNLOAD_HASH:0:16}), not installed"
+                    LANE_WHY="the download is not the lane's build (${DOWNLOAD_SIZE} bytes, hash ${DOWNLOAD_HASH:0:16})"
+                    echo -e "⚠️  ${LANE_WHY}, not installed"
                     rm -f /home/container/mod_download.bin
                 fi
             else
+                LANE_WHY="the download failed (HTTP $DOWNLOAD_CODE)"
                 echo -e "⚠️  Backend download failed (HTTP $DOWNLOAD_CODE)"
             fi
 
-        elif [ "$STATUS" == "no_mod_available" ]; then
-            echo -e "⚠️  Backend doesn't have mod for this vanilla version yet"
-            break  # Don't retry, backend genuinely doesn't have it
+        else
+            LANE_WHY="the lane has no modded binary for vanilla ${VANILLA_HASH:0:16} (${STATUS:-no status})"
+            echo -e "⚠️  ${LANE_WHY}"
         fi
 
-        break  # Successful response, exit retry loop
+        break  # the lane answered: obey it, never retry an answer
     else
         BACKEND_RETRY=$((BACKEND_RETRY + 1))
+        LANE_WHY="${PRIMAL_BINARY_BASE} did not answer (HTTP $HTTP_CODE, $BACKEND_RETRY/$BACKEND_MAX_RETRIES attempts)"
         echo -e "⚠️  Backend check failed (HTTP $HTTP_CODE), retry $BACKEND_RETRY/$BACKEND_MAX_RETRIES..."
         sleep 5
     fi
 done
 
-# -----------------------------------------------------------------------------
-# Method 2: Fallback to Norden Cloud API (if backend didn't have it)
-# -----------------------------------------------------------------------------
-if [ "$MOD_DOWNLOADED" != "true" ]; then
-    echo -e ""
-    echo -e "📡 Falling back to Norden Cloud API..."
-
-    NORDEN_RETRY=0
-    NORDEN_MAX_RETRIES=5
-
-    while [ $NORDEN_RETRY -lt $NORDEN_MAX_RETRIES ] && [ "$MOD_DOWNLOADED" != "true" ]; do
-        RESPONSE_CODE=$(curl -s -w "%{http_code}" -o /home/container/response.bin -X POST "$NORDEN_API_URL" \
-            -H "Content-Type: application/json" \
-            -d "{\"os\":\"linux\", \"currentHash\":\"$CURRENT_HASH\"}" 2>/dev/null)
-
-        if [ "$RESPONSE_CODE" == "200" ]; then
-            # Check download size
-            DOWNLOAD_SIZE=$(stat -c%s "/home/container/response.bin" 2>/dev/null || echo 0)
-
-            if [ "$DOWNLOAD_SIZE" -gt 157286400 ]; then
-                echo -e "⬇️  New mod version downloaded from Norden"
-                mkdir -p "$(dirname "$MOD_FILE_PATH")"
-                NORDEN_HASH=$(get_file_hash /home/container/response.bin)
-                if lp_install /home/container/response.bin "$NORDEN_HASH"; then
-                    echo -e "✅ Mod binary downloaded and updated (${DOWNLOAD_SIZE} bytes, hash ${NORDEN_HASH:0:16}..., read back from the binary's path)"
-                    MOD_DOWNLOADED=true
-                else
-                    NORDEN_RETRY=$((NORDEN_RETRY + 1))
-                    echo -e "⚠️  Norden binary not installed: ${LP_INSTALL_WHY}, retry $NORDEN_RETRY/$NORDEN_MAX_RETRIES..."
-                fi
-            else
-                NORDEN_RETRY=$((NORDEN_RETRY + 1))
-                echo -e "⚠️  Downloaded file too small (${DOWNLOAD_SIZE} bytes), retry $NORDEN_RETRY/$NORDEN_MAX_RETRIES..."
-                rm -f /home/container/response.bin
-            fi
-
-        elif [ "$RESPONSE_CODE" == "204" ]; then
-            echo -e "✅ Mod binary is already up to date (Norden)"
-            MOD_DOWNLOADED=true
-
-        else
-            NORDEN_RETRY=$((NORDEN_RETRY + 1))
-            echo -e "⚠️  Norden API failed (HTTP $RESPONSE_CODE), retry $NORDEN_RETRY/$NORDEN_MAX_RETRIES..."
-            sleep 10
-        fi
-
-        rm -f /home/container/response.bin
-    done
-fi
-
 # Cleanup
-rm -f /home/container/response.bin /home/container/mod_download.bin
+rm -f /home/container/mod_download.bin
 
 # -----------------------------------------------------------------------------
 # Final check - do we have a valid mod?
 # -----------------------------------------------------------------------------
 if [ "$MOD_DOWNLOADED" != "true" ]; then
-    ON_DISK_HASH=$(get_file_hash "$MOD_FILE_PATH")
-    if [ -n "$ON_DISK_HASH" ]; then
-        echo -e "⚠️  NO VERIFIED MOD BINARY: the local patch did not run (${LP_WHY}), and neither the backend nor Norden supplied one${LANE_WHY:+ (backend: ${LANE_WHY})}."
-        echo -e "   Booting the binary on disk unverified (hash: ${ON_DISK_HASH:0:16}...): whatever SteamCMD left, stock unless AUTO_UPDATE=0 kept a patched one."
-    else
-        echo -e "❌ No mod binary available and could not download one"
-        echo -e "🚫 Cannot proceed without mod - exiting"
-        exit 1
-    fi
+    echo "[primal] FATAL: MOD-BINARY-UNAVAILABLE: the local patch did not run (${LP_WHY:-no reason given}) and the binary lane supplied no verified build (${LANE_WHY:-no reason given}). This image does not boot the stock binary. The panel will retry." >&2
+    exit 1
 fi
 
 # Get final modded hash
