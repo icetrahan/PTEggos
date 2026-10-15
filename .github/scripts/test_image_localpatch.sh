@@ -252,6 +252,11 @@ for IMG in surv dm; do
     manifest "$GOOD_PW" ""; new_root 74; boot $IMG
     fallback "$N H2" 'the tool manifest has no valid entry for patches_linux.json'
     manifest "$GOOD_PW" "$GOOD_SPEC"
+    echo "$N I - a manifest entry missing its sha256 misaligns the arrays: refused before any file is read"
+    sed -i '/"patches_linux.json"/ s/"sha256": "[0-9a-f]*", //' "$SRV/manifest.json"
+    new_root 74; boot $IMG
+    fallback "$N I" 'the tool manifest has no valid entry for patch_worker.py'
+    manifest "$GOOD_PW" "$GOOD_SPEC"
     echo "$N J/K/L/M - the patcher's word is not the verdict"
     new_root 74; boot $IMG FAKE_PATCHER=lie;   fallback "$N J exit 0, success false" 'the patcher (tool vT1) did not patch this build: exit 0, gate=patched@0x10'
     new_root 74; boot $IMG FAKE_PATCHER=noout; fallback "$N K no output" 'the patcher (tool vT1) did not patch this build: exit 0'
