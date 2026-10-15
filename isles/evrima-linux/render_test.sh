@@ -36,6 +36,9 @@ WRAPPER="${1:-$(dirname "$0")/start-evrima.sh}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 JQ_BIN="${JQ_BIN:-/work/jq}"
 PASS=0; FAIL=0
+# One folder per run, removed on exit: each case writes a 160 MB binary, which is not sparse on every filesystem.
+RUN_T="$(mktemp -d "${TMPDIR:-/tmp}/render-test.XXXXXX")"
+trap 'rm -rf "$RUN_T"' EXIT
 
 ok()   { PASS=$((PASS+1)); echo "  [PASS] $1"; }
 bad()  { FAIL=$((FAIL+1)); echo "  [FAIL] $1"; }
@@ -61,7 +64,7 @@ fleet_ok() { # $1 = Game.ini: both fleet constants in the game-session section, 
 # built-in default AND the egg variable set below, so any of the three possible
 # sources is distinguishable in the output.
 render() { # $1 = tag, $2 = "canon" | "nocanon", $3.. = extra NAME=VALUE for the wrapper's env
-    local T="/tmp/rt-$1"
+    local T="$RUN_T/rt-$1"
     rm -rf "$T"; mkdir -p "$T/_primal" "$T/canon/v1" "$T/TheIsle/Binaries/Linux"
     cp "$WRAPPER" "$T/_primal/start-evrima.sh"
     cp "$HERE/Game.ini.tmpl" "$HERE/Engine.ini.tmpl" "$T/_primal/"
@@ -200,7 +203,7 @@ echo "== 3. THE BINARY PAIRING LADDER (#2337) - PAIRED / CACHED / DIE =="
 BIN_PASS=0
 
 bin_render() { # $1 tag, $2 lane-mode, $3 cache-mode
-    local T="/tmp/bt-$1"
+    local T="$RUN_T/bt-$1"
     rm -rf "$T"; mkdir -p "$T/_primal/binary-cache" "$T/canon/v1" "$T/TheIsle/Binaries/Linux" "$T/shim"
     cp "$WRAPPER" "$T/_primal/start-evrima.sh"
     cp "$HERE/Game.ini.tmpl" "$HERE/Engine.ini.tmpl" "$T/_primal/"
@@ -332,7 +335,7 @@ echo "== 4. THE MASS-CHECK LEVER (#3604) - PRIMAL_MASS_MIGRATION_TIME reaches Ga
 mass_lines() { grep -cE '^[[:space:]]*MassMigrationTime[[:space:]]*=' "$1"; }
 # Section 4's boots answer the binary lane at once: the lever is downstream of it, and an
 # unreachable lane costs five 10 s retries per boot.
-RT_SHIM="/tmp/rt-shim"; rm -rf "$RT_SHIM"; mkdir -p "$RT_SHIM"
+RT_SHIM="$RUN_T/rt-shim"; rm -rf "$RT_SHIM"; mkdir -p "$RT_SHIM"
 cat > "$RT_SHIM/curl" <<'SHIM'
 #!/bin/bash
 for a in "$@"; do
@@ -427,7 +430,7 @@ echo "== 5. A REFUSED START IS REPORTED, WITH THE SERVER'S OWN KEY (#2353) =="
 REP_KEY="phsk_$(printf 'b%.0s' $(seq 1 48))"
 
 rep_render() { # $1 tag, $2 lane-mode, $3 plane-mode, $4 binary (ok|missing|short|runs), $5 = extra env words
-    local T="/tmp/rp-$1"
+    local T="$RUN_T/rp-$1"
     rm -rf "$T"; mkdir -p "$T/_primal/binary-cache" "$T/canon/v1" "$T/TheIsle/Binaries/Linux" "$T/shim"
     cp "$WRAPPER" "$T/_primal/start-evrima.sh"
     cp "$HERE/Game.ini.tmpl" "$HERE/Engine.ini.tmpl" "$T/_primal/"

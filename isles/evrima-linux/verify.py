@@ -23,6 +23,8 @@ Gates, each earned elsewhere in this repo:
  10. The no-plane fallbacks of BOTH Evrima wrappers equal the plane's defaults
      (#3326, #3331). A server renders them only when it boots with no plane and
      no cached settings, so nothing else notices when one drifts.
+ 11. render_test.sh keeps every fixture under one folder per run and removes
+     it on exit (#3909): each case writes a 160 MB binary.
 """
 import base64
 import hashlib
@@ -274,6 +276,21 @@ def main() -> int:
             bool(got) and not off,
             "; ".join(off) if got else f"{path.name} not found or its fallback table not read",
         )
+
+    # 11. render_test.sh: one fixture folder per run, removed on exit
+    rt = (HERE / "render_test.sh").read_text(encoding="utf-8").replace("\r\n", "\n")
+    code = "\n".join(line for line in rt.split("\n") if not line.lstrip().startswith("#"))
+    check(
+        "render_test.sh makes one fixture folder per run and removes it on exit",
+        'RUN_T="$(mktemp -d "${TMPDIR:-/tmp}/render-test.XXXXXX")"' in code
+        and re.search(r"^trap 'rm -rf \"\$RUN_T\"' EXIT$", code, re.MULTILINE) is not None,
+    )
+    roots = re.findall(r'^\s*(?:local T|RT_SHIM)="([^"]*)"', code, re.MULTILINE)
+    check(
+        "every render_test.sh fixture root is inside it",
+        bool(roots) and all(r.startswith("$RUN_T/") for r in roots) and '"/tmp/' not in code,
+        f"roots {roots}",
+    )
 
     print()
     if FAILS:
