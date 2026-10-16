@@ -759,6 +759,21 @@ if ($speciesCapList) { $pakExtra['SpeciesCapList'] = $speciesCapList }
 $pakForceDino = ''
 if ($ms -and (Has $ms 'forceDinoList')) { $pakForceDino = ModCsvShaped $ms.forceDinoList 'ForceDinoList' $false }
 
+# AnimalRoster (A431): the plane sends one csv, already limited to the animals it offers, only while
+# animals are picked. Rendered byte for byte or not at all, so the pick and the key cannot drift.
+# The shape check refuses a line break (an Engine.ini line injection); \z, never $, catches a trailing one.
+$pakAnimalRoster = ''
+$animalRosterNote = 'not rendered - this boot''s config carries no animal pick, so the game''s own roster stands'
+if ($ms -and (Has $ms 'animalRoster')) {
+    $arRaw = [string]$ms.animalRoster
+    if ($arRaw -match '\A[A-Za-z0-9_]{1,64}(,[A-Za-z0-9_]{1,64}){0,31}\z') {
+        $pakAnimalRoster = $arRaw
+        $animalRosterNote = "$arRaw (the panel's pick)"
+    } elseif ($arRaw -ne '') {
+        $animalRosterNote = "SKIPPED - the plane's value (length $($arRaw.Length)) is not a plain comma-separated list of names, so the line is NOT rendered and the game's own roster stands. Re-save the pick in the panel"
+    }
+}
+
 # ⛔ PRIMAL_MOD_INI IS GONE (#1094). It was documented as the ops escape hatch
 # ("overrides/extends the above with no script edit") and it was NEVER DECLARED
 # IN THE EGG, so Ptero never injected it and the branch could not fire - a hatch
@@ -768,8 +783,9 @@ if ($ms -and (Has $ms 'forceDinoList')) { $pakForceDino = ModCsvShaped $ms.force
 # --- CARRY FORWARD every hand-set pak key this script does not own (#1137) -----
 # The emit below REPLACES the whole section, so a key it does not re-emit is gone
 # on the next boot unless it is carried. The set is "keys this script OWNS", not
-# "keys it emitted this boot": ForceDinoList and SpeciesCapList are omitted when
-# empty, and judging by what was emitted would make clearing them impossible.
+# "keys it emitted this boot": ForceDinoList, SpeciesCapList and AnimalRoster are
+# omitted when empty, and judging by what was emitted would make clearing them
+# impossible.
 #
 # A carried key is operator-writable through the file manager, so the pak must
 # never read a key whose VALUE is a console command - config selects from a closed
@@ -782,7 +798,7 @@ if ($ms -and (Has $ms 'forceDinoList')) { $pakForceDino = ModCsvShaped $ms.force
 # the live file changes while the server runs - and is read only when the live
 # file or its pak section is missing. It never holds an owned key (no ApiToken).
 $pakManaged = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
-foreach ($k in @('ApiToken', 'PollURL', 'ForceDinoList', 'SpeciesCapList')) { [void]$pakManaged.Add($k) }
+foreach ($k in @('ApiToken', 'PollURL', 'ForceDinoList', 'SpeciesCapList', 'AnimalRoster')) { [void]$pakManaged.Add($k) }
 foreach ($k in $pakExtra.Keys) { [void]$pakManaged.Add($k) }
 
 $pakSectionName = '/Game/TheIsle/Core/Session/BP_TIGameSession.BP_TIGameSession_C'
@@ -875,6 +891,7 @@ if ($env:ENABLE_PRIMAL_MOD -eq '1' -and $phsk) {
     $sessLines.Add("PollURL=$dataBase/v1/commands/text")
     if ($pakForceDino) { $sessLines.Add("ForceDinoList=$pakForceDino") }
     foreach ($pk in $pakExtra.Keys) { $sessLines.Add("$pk=$($pakExtra[$pk])") }
+    if ($pakAnimalRoster) { $sessLines.Add("AnimalRoster=$pakAnimalRoster") }
     foreach ($ck in $carried.Keys) { $sessLines.Add("$ck=$($carried[$ck])") }
     Write-Host $carryNote
     try { Save-PakCarry $carried } catch {
@@ -895,6 +912,8 @@ if ($env:ENABLE_PRIMAL_MOD -eq '1' -and $phsk) {
     }
     Write-Host "(config) Engine.ini: Primal session block set (tokenlen=$($phsk.Length), poll=$dataBase/v1/commands/text)"
     Write-Host "(config) Engine.ini: pak keys ForceDinoList=$pakForceDino $(($pakExtra.Keys | ForEach-Object { "$_=$($pakExtra[$_])" }) -join ' ')"
+    # Rule 13: one line every boot, so no pick, the pick and a refused value never share a silence.
+    Write-Host "(config) Engine.ini: AnimalRoster $animalRosterNote. The panel owns this key (A431)"
 } else {
     Write-Host "(config) Engine.ini: no Primal session block (mod disabled or no PHSK_KEY)"
 }

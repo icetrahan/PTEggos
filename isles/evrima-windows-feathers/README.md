@@ -52,6 +52,7 @@ Those four are live images for the Linux eggs. Push deliberately.
 | `gate_test.py` | drives `install.ps1`'s failure gate through 9 real states (#346) |
 | `test_carryforward.ps1` | runs the wrapper's real hand-set pak key lines through 20 states (#1137, #3363) |
 | `test_noinject.ps1` | runs the wrapper's real comm-ban "not injecting" lines and its report job against a local listener (#3499) |
+| `test_animalroster.ps1` | runs the whole wrapper in render-only mode against a local stand-in for the plane and reads the Engine.ini the game would read (A431) |
 
 None of the loose files are read from here by anything — `install.ps1` lives in the
 panel DB, and it writes the other three from base64. They exist so a change is
@@ -64,6 +65,7 @@ python isles/evrima-windows-feathers/embed.py     # after editing any loose file
 python isles/evrima-windows-feathers/verify.py    # the gate
 python isles/evrima-windows-feathers/gate_test.py # the install gate's own test
 powershell -NoProfile -ExecutionPolicy Bypass -File isles/evrima-windows-feathers/test_carryforward.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File isles/evrima-windows-feathers/test_animalroster.ps1
 ```
 
 ## 🔴 The install script must FAIL when there is no bootable binary (#346)
@@ -161,8 +163,8 @@ python isles/evrima-windows-feathers/embed.py    # re-embed + refresh verify.py'
 python isles/evrima-windows-feathers/verify.py   # the gate
 ```
 
-sha256 of the committed wrapper: **`8b1abc0a2efe9b1d1a73d5c04ab5db2aed875f7b076fe5989b2abf77867a93ce`**
-(106,561 B — the not-injecting report, #3499), recorded in `verify.py` as `WRAPPER_SHA` and refreshed by `embed.py`.
+sha256 of the committed wrapper: **`9d484d6eb261d75b25cebb8559f33bbad21148190f5f6d88579fa3f013b46c44`**
+(111,269 B — the `AnimalRoster` line, A431), recorded in `verify.py` as `WRAPPER_SHA` and refreshed by `embed.py`.
 ⚠️ **This line was stale by two wrapper versions when it was corrected on 2026-08-12** (it still
 named 46,224 B while the committed wrapper was 59,366 B). `embed.py` refreshes `verify.py` but
 **not this README**, so the drift is silent and recurs — check the byte count against the file,
@@ -298,6 +300,32 @@ kill never does). So the live file is not the only source:
 object for every stop type except a console command, so a restart is a hard kill and the live file
 survives. The copy covers the exits that are clean: an RCON or console `exit`, the game quitting
 by itself, or a future daemon that sends a real Ctrl+C.
+
+## `AnimalRoster` is the panel's pick (A431)
+
+Play as an animal: the owner picks the animals in the panel. The plane serves the pick as ONE csv
+string, `mod_settings.animalRoster` in `/v1/boot-config`, and only while animals are picked. The
+wrapper writes it into the pak section as `AnimalRoster=<csv>`, byte for byte. The pak reads the
+key at boot, so a change applies at the server's next restart.
+
+- No field, or an empty one: no line, and the game's own roster stands.
+- The wrapper **owns** the key. A hand-set `AnimalRoster` line is not carried forward; the animals
+  are set in the panel.
+- The wrapper holds no list of animals. The plane's write gate decides which animals are offered.
+  The wrapper only refuses a value that is not a plain comma-separated list of names (a line break
+  in it would inject an Engine.ini line), and then it renders no line at all.
+- With the plane unreachable, the boot-config cache renders the last fetched pick.
+
+Every boot with the mod on prints one line:
+
+| Console line starts | Meaning |
+|---|---|
+| `(config) Engine.ini: AnimalRoster Boar,Deer (the panel's pick)` | the line was written |
+| `(config) Engine.ini: AnimalRoster not rendered - this boot's config carries no animal pick` | no line |
+| `(config) Engine.ini: AnimalRoster SKIPPED - the plane's value (length N) is not a plain ...` | the value was refused, no line |
+
+`test_animalroster.ps1` runs the real wrapper through 39 checks of the above.
+⚠️ The Linux egg (`evrima-linux`) does not write this key.
 
 ## `PRIMAL_FORCE_DINO` (id 296)
 
