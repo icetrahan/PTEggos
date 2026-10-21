@@ -70,12 +70,12 @@
         },
         {
             "name": "Primal API Base URL",
-            "description": "Primal backend used for the update gate and modded-binary distribution.",
+            "description": "Heaven's update manager, used only when SERVER_ID is set. Leave EMPTY: the modded binary comes from the product's own lane (PRIMAL_BINARY_BASE), and an empty value skips the update gate and startup confirmation by name.",
             "env_variable": "API_BASE_URL",
-            "default_value": "https://api.primalheaven.com",
+            "default_value": "",
             "user_viewable": false,
             "user_editable": false,
-            "rules": "required|string",
+            "rules": "nullable|string",
             "field_type": "text"
         },
         {

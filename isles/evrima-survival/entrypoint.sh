@@ -217,14 +217,14 @@ lp_install() { # $1 = a downloaded binary, $2 = its md5. Installed = the binary'
 
 # ── Settings & defaults ──────────────────────────────────────────────────────
 
-# Update manager / binary distribution (Primal infrastructure)
-API_BASE_URL=${API_BASE_URL:-"https://api.primalheaven.com"}
+# Heaven's update manager. No default: the host it named is gone, so an unset
+# value skips both calls below by name.
+API_BASE_URL=${API_BASE_URL:-""}
 # ── THE BINARY LANE IS THE PRODUCT'S, NOT THE GAME COMMUNITY'S (#2337) ───────
 # Split from API_BASE_URL on purpose. The modded-binary check/download move to
 # Primal Hosted's own lane (repo primal_binaries, R2-backed on the Cloudflare
-# edge), which speaks the identical wire shapes. api.primalheaven.com went down
-# on 2026-09-14 and boot-looped a paying customer's only server for nine hours;
-# no server's boot should depend on that box again.
+# edge), which speaks the identical wire shapes. No server's boot depends on
+# the game community's backend (#2337).
 #
 # API_BASE_URL below stays ONLY for Heaven's update-manager calls
 # (/api/updates/server-status, /api/updates/confirm-startup). The product lane
@@ -259,7 +259,9 @@ ENGINE_INI="${CONFIG_DIR}/Engine.ini"
 # real enforcement (the backend's patch-signature verifier is authoritative).
 
 EXPECTED_MODDED_HASH=""
-if [ "$UPDATE_GATE" == "1" ] && [ -n "$SERVER_ID" ]; then
+if [ "$UPDATE_GATE" == "1" ] && [ -n "$SERVER_ID" ] && [ -z "$API_BASE_URL" ]; then
+    warn "Update gate SKIPPED: SERVER_ID is set but API_BASE_URL is not."
+elif [ "$UPDATE_GATE" == "1" ] && [ -n "$SERVER_ID" ]; then
     log "Checking update status with backend..."
     for ATTEMPT in 1 2 3; do
         RESPONSE=$(curl -s -w "\n%{http_code}" --max-time 30 \
@@ -502,7 +504,9 @@ fi
 
 # ── Step 6: Confirm startup with backend (best-effort) ───────────────────────
 
-if [ -n "$SERVER_ID" ]; then
+if [ -n "$SERVER_ID" ] && [ -z "$API_BASE_URL" ]; then
+    warn "Startup confirmation SKIPPED: SERVER_ID is set but API_BASE_URL is not."
+elif [ -n "$SERVER_ID" ]; then
     CONFIRM_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 -X POST \
         -H "Content-Type: application/json" \
         -H "X-API-Key: ${API_KEY}" \
