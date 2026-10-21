@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
-# Behaviour test for the binary step of the two images that boot an Evrima Linux server outside egg 42:
-# isles/evrima-survival and testing/deathmatch. Each patches the stock binary in place first (the
-# PRIMAL LOCAL PATCH block, the same bytes in both) and falls back to the binary lane; a download is
-# installed only when the binary's path reads back as it (#3875). Runs the REAL lines lifted from both
-# entrypoints with a stand-in patcher (patch_worker.py's arguments, exit codes and report shape), a
-# stand-in R2 and lane, and a stand-in Norden that neither image may call. The real patcher on real game
+# Behaviour test for the binary step of testing/deathmatch, the image that boots an Evrima Linux server
+# outside egg 42. It patches the stock binary in place first (the PRIMAL LOCAL PATCH block, which says
+# what egg 42 says) and falls back to the binary lane; a download is installed only when the binary's
+# path reads back as it (#3875). Runs the REAL lines lifted from the entrypoint with a stand-in patcher
+# (patch_worker.py's arguments, exit codes and report shape), a stand-in R2 and lane, and a stand-in
+# Norden that the image may not call. The real patcher on real game
 # builds is proven in Docker (see the PR).
 #   bash .github/scripts/test_image_localpatch.sh [repo root]
 ROOT=$(cd "${1:-$(dirname "$0")/../..}" && pwd)
-SURV=$ROOT/isles/evrima-survival/entrypoint.sh
 DM=$ROOT/testing/deathmatch/entrypoint.sh
 EGG42=$ROOT/isles/evrima-linux/start-evrima.sh
 command -v python3 >/dev/null || { echo "python3 is needed to run the stand-in patcher"; exit 1; }
@@ -22,32 +21,27 @@ t() { if eval "$2"; then ok "$1" 0; else ok "$1" 1 "$3"; fi; }
 block_of() { sed -n '/^# >>> PRIMAL LOCAL PATCH >>>$/,/^# <<< PRIMAL LOCAL PATCH <<<$/p' "$1"; }
 step_of() { # the image's binary step, as it ships
     case "$1" in
-        surv) sed -n '/^# ── Step 3: Modded binary/,/^# ── Step 4/p' "$SURV" | head -n -1 ;;
         dm)   sed -n '/^# Mod Update Check/,/^# Get final modded hash/p' "$DM" | head -n -1 ;;
     esac
 }
 
-echo "0 - the block is the same bytes in both images, and it says what egg 42 says"
-BS=$(block_of "$SURV"); BD=$(block_of "$DM")
-t 'block present in evrima-survival' '[ -n "$BS" ]'
+echo "0 - the image has the block, and it says what egg 42 says"
+BD=$(block_of "$DM")
 t 'block present in deathmatch' '[ -n "$BD" ]'
-t 'the two blocks are identical' '[ "$BS" = "$BD" ]' "$(diff <(echo "$BS") <(echo "$BD") | head -5)"
-t 'exactly one block per image' '[ "$(grep -c "^# >>> PRIMAL LOCAL PATCH >>>$" "$SURV")" = 1 ] && [ "$(grep -c "^# >>> PRIMAL LOCAL PATCH >>>$" "$DM")" = 1 ]'
+t 'exactly one block' '[ "$(grep -c "^# >>> PRIMAL LOCAL PATCH >>>$" "$DM")" = 1 ]'
 for s in 'binary: PATCHED LOCALLY (tool v' 'binary: already patched (' 'binary: LOCAL PATCH NOT APPLIED - ' \
          "binary: the lane's build for this vanilla is the same bytes" 'the two paths disagree' \
          "python3 is not in this server's image" 'did not patch this build: exit ' 'failed its sha256 check' \
          'patching with the copy kept from an earlier boot (tool v'; do
-    t "egg 42 and the block both say: $s" 'grep -qF -- "$s" "$EGG42" && grep -qF -- "$s" <<<"$BS"'
+    t "egg 42 and the block both say: $s" 'grep -qF -- "$s" "$EGG42" && grep -qF -- "$s" <<<"$BD"'
 done
 R2_BASE=$(sed -n 's/^R2_BASE="\(.*\)"$/\1/p' "$EGG42")
 t "the block's default manifest is egg 42's (\$R2_BASE/primal-voice-linux-tool/latest.json)" \
-  '[ -n "$R2_BASE" ] && grep -qF -- "\${PRIMAL_PATCHER_MANIFEST:-$R2_BASE/primal-voice-linux-tool/latest.json}" <<<"$BS"'
-for d in isles/evrima-survival testing/deathmatch; do
+  '[ -n "$R2_BASE" ] && grep -qF -- "\${PRIMAL_PATCHER_MANIFEST:-$R2_BASE/primal-voice-linux-tool/latest.json}" <<<"$BD"'
+for d in testing/deathmatch; do
     t "$d/Dockerfile installs python3" 'grep -Eq "^[[:space:]]+python3 \\\\[[:space:]]*$" "$ROOT/$d/Dockerfile"'
 done
 first_line() { grep -n -m1 -- "$2" "$1" | cut -d: -f1; }
-t 'evrima-survival runs the local patch before the lane' \
-  '[ "$(first_line "$SURV" "lp_run && MOD_READY=true")" -lt "$(first_line "$SURV" "CHECK=\$(curl")" ]'
 t 'deathmatch runs the local patch before the lane' \
   '[ "$(first_line "$DM" "lp_run && MOD_DOWNLOADED=true")" -lt "$(first_line "$DM" "CHECK_RESPONSE=\$(curl")" ]'
 
@@ -173,7 +167,7 @@ new_root() {
     { printf '\177ELF'; head -c 12 /dev/zero; printf "\\x$1"; head -c 4079 /dev/zero | tr '\0' 'x'; } > "$B"
     chmod 755 "$B"; ORIG=$(get_file_hash "$B")
 }
-# boot <surv|dm> [NAME=VALUE ...] -> OUT, RC, CALLS, the binary's md5 / byte 16, call counts
+# boot dm [NAME=VALUE ...] -> OUT, RC, CALLS, the binary's md5 / byte 16, call counts
 boot() {
     local img=$1; shift
     CALLS="$R/calls.log"; : > "$CALLS"
@@ -184,7 +178,7 @@ boot() {
         FAKE_R2=""; FAKE_LANE=""; FAKE_PATCHER=""; FAKE_MV=""; FAKE_LANE_MV=""; FAKE_LANE_DL=""; FAKE_NORDEN=""
         for kv in "$@"; do eval "$kv"; done
         export FAKE_PATCHER CALLS
-        eval "$(block_of "$SURV" | sed "s#/home/container#$R#g")"
+        eval "$(block_of "$DM" | sed "s#/home/container#$R#g")"
         GAME_BINARY=$B; MOD_FILE_PATH=$B; VANILLA_HASH=$(get_file_hash "$B")
         eval "$(step_of "$img" | sed "s#/home/container#$R#g")" 2>&1
         echo "MOD_READY=${MOD_READY:-} MOD_DOWNLOADED=${MOD_DOWNLOADED:-}"
@@ -199,8 +193,8 @@ said() { grep -qF -- "$1" <<<"$OUT"; }
 ready() { said "MOD_READY=true" || said "MOD_DOWNLOADED=true"; }
 leftovers() { [ ! -e "$R/.primal_mod_download" ] && [ ! -e "$R/mod_download.bin" ] && [ ! -e "$R/response.bin" ] && [ ! -e "$R/_primal/patcher/patched.bin" ]; }
 
-for IMG in surv dm; do
-    case $IMG in surv) N=evrima-survival ;; dm) N=deathmatch ;; esac
+for IMG in dm; do
+    N=deathmatch
 
     echo "$N A - stock binary: patched in place, the lane only cross-checked"
     new_root 74; boot $IMG FAKE_LANE=same
@@ -278,17 +272,6 @@ for IMG in surv dm; do
     new_root 74; boot $IMG 'PATH=$NOPY' FAKE_LANE_DL=wrong
     t "$N S: not installed, binary untouched" '! ready && [ "$BIN_MD5" = "$ORIG" ] && leftovers' "$(tail -n3 <<<"$OUT")"
 done
-
-echo "evrima-survival T - how it gives up names both reasons"
-new_root 74; boot surv 'PATH=$NOPY' FAKE_LANE_MV=fail
-t 'surv T: five attempts, then exit 0 naming the local patch and the lane' '[ $DOWNLOADS = 5 ] && said "Mod is required but not available (local patch: python3 is not in this server'"'"'s image; lane: the download ${LANE_MD5:0:16} did not land" && ! said "MOD_READY="' "$(tail -n2 <<<"$OUT")"
-new_root 74; boot surv 'PATH=$NOPY' FAKE_LANE=vanilla_unknown
-t 'surv T: vanilla_unknown is the lane having none - asked once, not retried' '[ $CHECKS = 1 ] && said "the lane has no modded binary for vanilla ${ORIG:0:16} (vanilla_unknown)" && ! said "unexpected status"'
-t 'surv T: ...and the exit names the local reason' 'said "Mod is required but not available (local patch: python3 is not in this server'"'"'s image). Exiting"'
-new_root 74; boot surv 'PATH=$NOPY' FAKE_LANE=vanilla_unknown MOD_REQUIRED=0
-t 'surv T: MOD_REQUIRED=0 continues and says why' 'said "continuing WITHOUT verified modded binary (MOD_REQUIRED=0; local patch: python3 is not in this server'"'"'s image)" && [ "$BIN_MD5" = "$ORIG" ]'
-new_root 74; boot surv MODDED_BINARY=0
-t 'surv T: MODDED_BINARY=0 runs neither the patcher nor the lane' '[ "$BIN_MD5" = "$ORIG" ] && [ ! -e "$R/_primal" ] && [ $CHECKS = 0 ]'
 
 echo "deathmatch U - no verified binary: the boot is refused, and no third party is asked (#3903)"
 refused() { # $1 = label, $2 = the reason the FATAL line must name

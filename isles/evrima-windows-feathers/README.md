@@ -36,8 +36,8 @@ fix like #346 protects the next customer, not the servers already installed.
 
 `git push` on this repo does not touch egg 40 — but it **does** trigger
 `.github/workflows/isles.yml` on any `isles/**` change, which rebuilds and pushes
-`ghcr.io/icetrahan/isles:{deathmatch,survival,legacy-survival,evrima-survival}`.
-Those four are live images for the Linux eggs. Push deliberately.
+`ghcr.io/icetrahan/isles:{deathmatch,survival,legacy-survival}`.
+Those three are the images the Linux eggs build from. Push deliberately.
 
 ## Files
 
