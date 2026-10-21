@@ -37,7 +37,7 @@ jobs:
       - name: egg 42 — the binary is patched locally, the lane is the fallback
         if: always()
         run: bash isles/evrima-linux/test_localpatch.sh
-      - name: images evrima-survival + deathmatch — patched locally, the lane is the fallback
+      - name: image deathmatch — patched locally, the lane is the fallback
         if: always()
         run: bash .github/scripts/test_image_localpatch.sh
       - name: egg 41 — Legacy (Windows / feathers)
