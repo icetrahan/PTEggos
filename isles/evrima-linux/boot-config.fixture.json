@@ -34,7 +34,10 @@
       "allowReplay": false,
       "enableMigration": true,
       "enableMassMigration": true,
-      "enablePatrolZones": true
+      "enablePatrolZones": true,
+      "useRegionSpawning": true,
+      "useRegionSpawnCooldown": true,
+      "regionSpawnCooldownSeconds": 300
     },
     "mod_settings": {
       "treeKnockdownOn": true,

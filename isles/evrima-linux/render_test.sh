@@ -110,6 +110,10 @@ want "day/night from the plane"            'ServerDayLengthMinutes=11'        "$
 want "booleans invert from the plane"      'bEnableHumans=False'              "$G"
 want "rconPassword from the plane"         'RconPassword=canon-rcon'          "$G"
 want "aiSpawnInterval renders when set"    'AISpawnInterval=600'              "$G"
+# A836 - region spawning, the three keys the game session reads.
+wantline "useRegionSpawning from the plane"  'bUseRegionSpawning=True'        "$G"
+wantline "useRegionSpawnCooldown from the plane" 'bUseRegionSpawnCooldown=True' "$G"
+wantline "regionSpawnCooldownSeconds from the plane" 'RegionSpawnCooldownTimeSeconds=300' "$G"
 # Lists - the shape that made #1101 invisible for weeks.
 want "admin #1 from the plane"             'AdminsSteamIDs=76561190000000001' "$G"
 want "admin #2 from the plane"             'AdminsSteamIDs=76561190000000002' "$G"
@@ -170,7 +174,8 @@ wantline "non-identity keeps the built-in" 'AIDensity=0.25'                   "$
 nowant "egg AI_DENSITY did NOT win"        'AIDensity=1'                      "$G2"
 # #3326 #3331: with no plane and no cache the server still gets the plane's defaults.
 for line in bSpawnAI=True bSpawnFish=True bSpawnPlants=True PlantSpawnMultiplier=1 \
-            bEnableMigration=True bEnableMassMigration=True bEnablePatrolZones=True; do
+            bEnableMigration=True bEnableMassMigration=True bEnablePatrolZones=True \
+            bUseRegionSpawning=False bUseRegionSpawnCooldown=False RegionSpawnCooldownTimeSeconds=150; do
     wantline "no plane: $line" "$line" "$G2"
 done
 nowant "egg CORPSE_DECAY did NOT win"      'CorpseDecayMultiplier=3'          "$G2"
