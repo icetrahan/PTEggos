@@ -1483,41 +1483,30 @@ EOS_ID=$(env_or "${EOS_CLIENT_ID:-}" "xyza7891gk5PRo3J7G9puCJGFJjmEguW")
 EOS_SECRET=$(env_or "${EOS_CLIENT_SECRET:-}" "pKWl6t5i9NJK8gTpVlAxzENZ65P8hYzodV8Dqe5Rlc8")
 
 EXTRA_ARGS=()
-# ---------------------------------------------------------------------------
-# 🔴 MULTIHOME IS OPT-IN HERE, AND MUST NOT DEFAULT TO $SERVER_IP.
-#
-# Egg 40 defaults it to the allocation IP that feathers injects as SERVER_IP,
-# and that is correct THERE: on the native-Windows node the public IP really is
-# on the box's own interface. In a Docker container it is NOT - the container
-# sees only its bridge address, so `-MULTIHOME=<public ip>` makes UE try to bind
-# an address it does not have:
-#
-#   LogNet: Warning: Could not create socket for bind address 172.93.100.254,
-#           got error BSD IPv4/6: binding to port 25053 failed (21)
-#   LogNet: Error: LoadMap: failed to Listen(...Gateway?Name=Player?listen)
-#
-# The server then never listens, never creates an EOS session, and therefore can
-# NEVER be ingested into the in-game community list - which is the entire reason
-# this egg exists (#652). Measured on the proving server 2026-08-04; carrying the
-# egg-40 line over unchanged is what produced it.
-#
-# The proven-working Linux references (egg 17 / the listing-test clone) pass no
-# -MULTIHOME at all and are listed, so all-interfaces is the right default here.
-# MULTIHOME_IP survives as an ADMIN escape hatch for a future multi-IP node, and
-# only takes effect when someone sets it deliberately.
+# MULTIHOME_IP is opt-in (admin-only egg var), never defaulted to SERVER_IP: a
+# container sees only its bridge address, and -MULTIHOME=<an address it lacks>
+# fails to listen (BSD error 21), so the server never gets an EOS session (#652).
+# On a multi-IP Linux node the host gives the container its allocation's
+# address for egress (primal_hosted_data ops/node-egress-snat.sh, #4223); there
+# the address is advertised (EOS_OVERRIDE_HOST_IP) without being bound, but only
+# once an outside echo shows the container's traffic really leaves from it.
 # ---------------------------------------------------------------------------
 MULTIHOME=$(echo -n "${MULTIHOME_IP:-}" | tr -d '[:space:]')
 if [ -n "$MULTIHOME" ] && [ "$MULTIHOME" != "0.0.0.0" ] && [[ "$MULTIHOME" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
-    # Refuse an address this container cannot actually bind, rather than letting
-    # UE fail to listen and look like a mysterious "server won't start".
     if ip -4 addr show 2>/dev/null | grep -q "inet ${MULTIHOME}/"; then
         EXTRA_ARGS+=("-MULTIHOME=$MULTIHOME")
         export EOS_OVERRIDE_HOST_IP="$MULTIHOME"
         log "start: MULTIHOME=$MULTIHOME + EOS_OVERRIDE_HOST_IP (advertise this IP to the server browser)"
     else
-        warn "MULTIHOME_IP=$MULTIHOME is NOT on any interface in this container - IGNORING it."
-        warn "Binding it would fail (BSD error 21) and the server would never listen or"
-        warn "create an EOS session. Binding all interfaces instead."
+        EGRESS_SEEN=$(curl -fsS --max-time 8 "${PRIMAL_EGRESS_ECHO_URL:-https://api.ipify.org}" 2>/dev/null | tr -d '[:space:]')
+        if [ "$EGRESS_SEEN" = "$MULTIHOME" ]; then
+            export EOS_OVERRIDE_HOST_IP="$MULTIHOME"
+            log "start: MULTIHOME_IP=$MULTIHOME is this server's egress (host SNAT) - advertising it via EOS_OVERRIDE_HOST_IP, binding all interfaces"
+        else
+            warn "MULTIHOME_IP=$MULTIHOME is not on any interface here and egress reads '${EGRESS_SEEN:-unreadable}' - NOT advertising it."
+            warn "On a multi-IP Linux node this means the host's egress SNAT service is not covering this container (ops/node-egress-snat.sh)."
+            warn "Binding all interfaces; the list will show the address the traffic leaves from."
+        fi
     fi
 elif [ -n "${SERVER_IP:-}" ]; then
     log "start: multihome not set - binding all interfaces (SERVER_IP=${SERVER_IP} is deliberately NOT used; a container cannot bind it)"

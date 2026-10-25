@@ -198,6 +198,7 @@ holds the two eggs to the same values.
 | `embed.py` | puts the loose files back into install.sh + the egg JSON (the fixer). `embed.py --check` reports drift, writes nothing and exits 1 on drift |
 | `embed_test.py` | proves `--check` never writes, on a copy of this folder |
 | `test_localpatch.sh` | the binary section (local patch, lane fallback, refusals) against a stand-in patcher, R2 and lane |
+| `test_multihome.sh` | the `MULTIHOME_IP` block: binds an address the container has; on a multi-IP node behind host SNAT (primal_hosted_data `ops/node-egress-snat.sh`) advertises the address only when an outside echo shows it is the egress |
 | `verify.py` | proves loose files == blobs == egg JSON, parse + LF + secret + query-port gates, and that both Evrima wrappers' no-plane fallbacks equal the plane's defaults (gate 10) (the judge) |
 | `publish_wrapper.py` | publishes wrapper+templates to the R2 self-update manifest |
 
@@ -205,6 +206,9 @@ Never hand-edit the blobs. Edit loose files → `embed.py` → `verify.py`.
 
 ## Provisioning notes
 
+- `MULTIHOME_IP` (admin-only): leave empty on a single-IP node. On a multi-IP Linux node (eu1), set it to the
+  server's allocation address only after the node runs `primalhosted-egress-snat`; the wrapper then advertises it
+  (`EOS_OVERRIDE_HOST_IP`) once the container's egress reads that address, and warns otherwise (#4223).
 - `PHSK_KEY`: ⚠️ **two servers on one phsk_ key split the command queue**
   (`/v1/commands/text` resolves the server from the token and the poll DRAINS
   the queue). Migrating an existing server onto this egg is a **stop-first
