@@ -66,6 +66,9 @@ PLANE_DEFAULTS = {
     "enableMigration": ("EnableMigration", "True"),
     "enableMassMigration": ("EnableMassMigration", "True"),
     "enablePatrolZones": ("EnablePatrolZones", "True"),
+    "useRegionSpawning": ("UseRegionSpawning", "False"),
+    "useRegionSpawnCooldown": ("UseRegionSpawnCooldown", "False"),
+    "regionSpawnCooldownSeconds": ("RegionSpawnCooldownSeconds", "150"),
     "mapName": ("MapName", "Gateway"),
     "queueEnabled": ("QueueEnabled", "True"),
 }

@@ -53,6 +53,7 @@ Those three are the images the Linux eggs build from. Push deliberately.
 | `test_carryforward.ps1` | runs the wrapper's real hand-set pak key lines through 20 states (#1137, #3363) |
 | `test_noinject.ps1` | runs the wrapper's real comm-ban "not injecting" lines and its report job against a local listener (#3499) |
 | `test_animalroster.ps1` | runs the whole wrapper in render-only mode against a local stand-in for the plane and reads the Engine.ini the game would read (A431) |
+| `test_regionspawn.ps1` | the same render-only run for the three region spawning keys in Game.ini (A836) |
 
 None of the loose files are read from here by anything — `install.ps1` lives in the
 panel DB, and it writes the other three from base64. They exist so a change is
@@ -163,8 +164,8 @@ python isles/evrima-windows-feathers/embed.py    # re-embed + refresh verify.py'
 python isles/evrima-windows-feathers/verify.py   # the gate
 ```
 
-sha256 of the committed wrapper: **`9d484d6eb261d75b25cebb8559f33bbad21148190f5f6d88579fa3f013b46c44`**
-(111,269 B — the `AnimalRoster` line, A431), recorded in `verify.py` as `WRAPPER_SHA` and refreshed by `embed.py`.
+sha256 of the committed wrapper: **`202bfd238a140e8393df4b66a991423cfd8ba810cbc7aa0b34f9f92e7f387db1`**
+(111,903 B — the region spawning keys, A836), recorded in `verify.py` as `WRAPPER_SHA` and refreshed by `embed.py`.
 ⚠️ **This line was stale by two wrapper versions when it was corrected on 2026-08-12** (it still
 named 46,224 B while the committed wrapper was 59,366 B). `embed.py` refreshes `verify.py` but
 **not this README**, so the drift is silent and recurs — check the byte count against the file,
