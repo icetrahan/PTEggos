@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Egg 41 (Legacy / Windows feathers): prove the wrapper blob embedded in egg-isle-legacy.json is byte-for-byte
-the loose start-legacy.ps1 (BACKLOG A255). Egg 40 and egg 42 have their own verify.py; egg 41 is assembled by
+the ship copy of the loose start-legacy.ps1 (isles/strip_comments.py; BACKLOG A255). Egg 40 and egg 42 have their own verify.py; egg 41 is assembled by
 build_egg.py and had no judge, so a loose-file edit without a rebuild would ship the OLD wrapper to every new
 Legacy server and read green everywhere.
 
@@ -14,12 +14,14 @@ import re
 import sys
 
 HERE = pathlib.Path(__file__).resolve().parents[2] / "isles" / "legacy-windows-feathers"
+sys.path.insert(0, str(HERE.parent))
+from strip_comments import ship_copy  # noqa: E402  the egg ships the wrapper without comments
 
 
 def main():
     try:
         egg = json.loads((HERE / "egg-isle-legacy.json").read_text(encoding="utf-8"))
-        loose = (HERE / "start-legacy.ps1").read_bytes()
+        loose = ship_copy("start-legacy.ps1", (HERE / "start-legacy.ps1").read_bytes())
     except (OSError, ValueError) as e:
         print("CANNOT TELL: %s" % e)
         return 2
@@ -31,7 +33,7 @@ def main():
     blob = base64.b64decode(runs[0])
     b, l = hashlib.sha256(blob).hexdigest(), hashlib.sha256(loose).hexdigest()
     print("embedded start-legacy.ps1 %d B sha256=%s" % (len(blob), b))
-    print("loose    start-legacy.ps1 %d B sha256=%s" % (len(loose), l))
+    print("ship copy of loose start-legacy.ps1 %d B sha256=%s" % (len(loose), l))
     if blob != loose:
         print("VERIFY FAILED: the egg installs a DIFFERENT wrapper than the loose file - run build_egg.py and commit the egg")
         return 1

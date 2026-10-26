@@ -3,7 +3,8 @@
 
 The install script writes start-evrima.ps1 / Game.ini.tmpl / Engine.ini.tmpl from
 embedded base64. The loose copies next to this script exist only so those blobs
-are reviewable -- which is worth nothing if the two drift. Run this after any
+are reviewable -- which is worth nothing if the two drift. A blob is the loose
+file's ship copy (strip_comments.py: the wrapper without comments). Run this after any
 change to either representation.
 
     python isles/evrima-windows-feathers/verify.py
@@ -18,6 +19,8 @@ import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(HERE))
+from strip_comments import ship_copy  # noqa: E402  the egg ships the wrapper without comments
 EGG = os.path.join(HERE, 'egg-evrima-windows-feathers.json')
 INSTALL = os.path.join(HERE, 'install.ps1')
 # order matters: this is the order the install script writes them
@@ -26,7 +29,7 @@ FILES = ['Engine.ini.tmpl', 'Game.ini.tmpl', 'start-evrima.ps1']
 # one line, on purpose -- see README.md "Scrubbed values". Updated for the pak
 # deploy lane (BUILD 39, #411): the DLL lane was replaced by the pak lane, the
 # sig-bypass drop was added, and Engine.ini now carries the mod's session block.
-WRAPPER_SHA = '202bfd238a140e8393df4b66a991423cfd8ba810cbc7aa0b34f9f92e7f387db1'
+WRAPPER_SHA = 'b336fd4e7eb209a635b54feeb247337eb5a8f0194478d50838c2188419a0528f'
 
 egg = json.load(open(EGG, encoding='utf-8'))
 install = egg['scripts']['installation']['script']
@@ -84,13 +87,13 @@ if len(success_lines) != 1:
 
 for name, b64 in zip(FILES, blobs):
     embedded = base64.b64decode(b64)
-    on_disk = open(os.path.join(HERE, name), 'rb').read()
+    on_disk = ship_copy(name, open(os.path.join(HERE, name), 'rb').read())
     sha = hashlib.sha256(on_disk).hexdigest()
     if embedded == on_disk:
         print(f'ok    {name:<18} {len(on_disk):>6} B  sha256={sha}')
     else:
         ok = False
-        print(f'FAIL  {name:<18} embedded blob != file on disk '
+        print(f'FAIL  {name:<18} embedded blob != ship copy of the file '
               f'({len(embedded)} B vs {len(on_disk)} B)')
 
 wrapper_sha = hashlib.sha256(

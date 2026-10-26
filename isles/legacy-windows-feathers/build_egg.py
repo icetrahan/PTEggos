@@ -2,12 +2,15 @@
 """Assemble the importable Pterodactyl egg (PTDL_v2) for The Isle: Legacy.
 Base64-embeds _primal/start-legacy.ps1 into the install script, exactly like the
 Evrima egg embeds start-evrima.ps1."""
-import base64, json, datetime, pathlib
+import base64, json, datetime, pathlib, sys
 
 here = pathlib.Path(__file__).parent
+sys.path.insert(0, str(here.resolve().parent))
+from strip_comments import ship_copy  # noqa: E402  the egg ships the wrapper without comments
+
 # The wrapper lives at the repo dir root (the old _primal/ staging copy is gone —
 # reading a path that doesn't exist would fail loudly, but don't resurrect it).
-wrapper_b64 = base64.b64encode((here / "start-legacy.ps1").read_bytes()).decode()
+wrapper_b64 = base64.b64encode(ship_copy("start-legacy.ps1", (here / "start-legacy.ps1").read_bytes())).decode()
 
 install = r'''$ErrorActionPreference = 'Stop'
 $root = (Get-Location).Path

@@ -24,8 +24,9 @@ echo "=========================================="
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
-API_BASE_URL=${API_BASE_URL:-"https://api.primalheaven.com"}
-API_DIRECT_URL=${API_DIRECT_URL:-"http://172.93.100.254:25022"}
+# No default backend: with either URL empty, the call that needs it logs a skip.
+API_BASE_URL=${API_BASE_URL:-""}
+API_DIRECT_URL=${API_DIRECT_URL:-""}
 API_KEY=${API_KEY:-""}
 SRCDS_APPID=${SRCDS_APPID:-"1020410"}
 STEAM_USER=${STEAM_USER:-"anonymous"}
@@ -78,6 +79,11 @@ report_hash() {
     local hash=$2
     local platform=$3
 
+    if [ -z "$API_BASE_URL" ]; then
+        echo "  Report ${endpoint} (${platform}) skipped: API_BASE_URL is not set."
+        return 1
+    fi
+
     echo "  Reporting ${endpoint} (${platform}): ${hash:0:16}..."
 
     local json="{\"hash\": \"${hash}\", \"platform\": \"${platform}\"}"
@@ -104,6 +110,11 @@ upload_binary() {
     local platform=$1
     local vanilla_hash=$2
     local binary_path=$3
+
+    if [ -z "$API_DIRECT_URL" ]; then
+        echo "  Upload of the ${platform} binary skipped: API_DIRECT_URL is not set."
+        return 1
+    fi
 
     if [ ! -f "$binary_path" ]; then
         echo "  ⚠️ Binary not found: $binary_path"
@@ -133,6 +144,10 @@ upload_binary() {
 }
 
 send_heartbeat() {
+    if [ -z "$API_BASE_URL" ]; then
+        echo "Heartbeat skipped: API_BASE_URL is not set."
+        return 1
+    fi
     echo "Sending heartbeat..."
     response=$(curl -s -w "\n%{http_code}" -X POST \
         "${API_BASE_URL}/api/updates/heartbeat" \

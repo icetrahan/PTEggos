@@ -168,7 +168,7 @@ Set-Live $v $null                                           # clean exit
 $ok = $ok -and ((KeysOf $carried) -eq 'IrisCensusEvery,CmdBudget')
                                                             # crash / hard kill: the file stays
 . Invoke-Boot $v -Render; $trail += "afterCrash=$(KeysOf $carried)"; Set-Live $v (Rendered $carried)
-$ok = $ok -and ((KeysOf $carried) -eq 'IrisCensusEvery,CmdBudget') -and $carryNote -like '*carried forward 2 hand-set pak key(s) (#1137/#1071)*'
+$ok = $ok -and ((KeysOf $carried) -eq 'IrisCensusEvery,CmdBudget') -and $carryNote -like '*carried forward 2 hand-set pak key(s): *'
 Set-Live $v $null                                           # two clean exits in a row
 . Invoke-Boot $v -Render; Set-Live $v (Rendered $carried)
 Set-Live $v $null

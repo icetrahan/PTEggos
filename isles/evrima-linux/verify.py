@@ -2,8 +2,8 @@
 """verify.py - prove every extracted file matches what ships (the judge).
 
 Gates, each earned elsewhere in this repo:
-  1. Every base64 blob in install.sh decodes byte-identically to its loose
-     file, and the sha256 recorded beside the blob matches (the installer
+  1. Every base64 blob in install.sh decodes byte-identically to the ship
+     copy of its loose file (strip_comments.py), and the sha256 recorded beside the blob matches (the installer
      re-checks that sha at decode time - a corrupted blob fails the install).
   2. egg-evrima-linux.json scripts.installation.script == install.sh verbatim.
   3. start-evrima.sh and install.sh parse under `bash -n` (a wrapper that does
@@ -36,6 +36,8 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent))
+from strip_comments import ship_copy  # noqa: E402  the egg ships the wrapper without comments
 FAILS = []
 
 # The data plane's CONFIG_DEFAULTS.server_settings, as each wrapper spells them:
@@ -111,8 +113,8 @@ def main() -> int:
         except Exception as e:  # noqa: BLE001
             check(f"blob {fname} decodes", False, str(e))
             continue
-        loose = (HERE / fname).read_bytes()
-        check(f"blob {fname} == loose file", decoded == loose,
+        loose = ship_copy(fname, (HERE / fname).read_bytes())
+        check(f"blob {fname} == ship copy of the loose file", decoded == loose,
               f"{len(decoded)} B vs {len(loose)} B")
         sha = hashlib.sha256(loose).hexdigest()
         rec = re.search(rf"# BLOB:{re.escape(fname)} sha256=([0-9a-f]{{64}})", install)
