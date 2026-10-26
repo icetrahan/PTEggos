@@ -33,6 +33,8 @@ import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(HERE))
+from strip_comments import ship_copy  # noqa: E402  the egg ships the wrapper without comments
 EGG = os.path.join(HERE, 'egg-evrima-windows-feathers.json')
 VERIFY = os.path.join(HERE, 'verify.py')
 INSTALL = os.path.join(HERE, 'install.ps1')
@@ -58,7 +60,7 @@ if len(found) != len(FILES):
 wanted = []
 for name in FILES:
     with open(os.path.join(HERE, name), 'rb') as fh:
-        raw = fh.read()
+        raw = ship_copy(name, fh.read())
     wanted.append((name, raw, base64.b64encode(raw).decode('ascii')))
 
 drift = [n for (n, _, b64), old in zip(wanted, found) if b64 != old]

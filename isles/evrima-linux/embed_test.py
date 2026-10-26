@@ -33,7 +33,11 @@ def run(d, *args):
 
 
 def copy():
-    d = Path(tempfile.mkdtemp(prefix="embed-test-"))
+    # Same layout as the repo: embed.py imports the stripper from its parent.
+    root = Path(tempfile.mkdtemp(prefix="embed-test-"))
+    d = root / HERE.name
+    d.mkdir()
+    shutil.copyfile(HERE.parent / "strip_comments.py", root / "strip_comments.py")
     for f in FILES:
         shutil.copyfile(HERE / f, d / f)
     return d
@@ -48,7 +52,8 @@ def main() -> int:
         check("...and writes nothing", shas(d) == was)
 
         with open(d / "start-evrima.sh", "ab") as f:
-            f.write(b"# a hand edit\n")
+            # Code, not a comment: the egg ships the wrapper without comments.
+            f.write(b": a hand edit\n")
         edited = shas(d)
         rc, out = run(d, "--check")
         check("a hand-edited loose file: --check exits 1", rc == 1, f"rc {rc}: {out}")
@@ -81,7 +86,7 @@ def main() -> int:
         check("a hand-edited install.sh: --check exits 1", rc == 1 and "install.sh" in out, out)
         check("...and writes nothing", shas(d) == hand)
     finally:
-        shutil.rmtree(d, ignore_errors=True)
+        shutil.rmtree(d.parent, ignore_errors=True)
 
     print()
     if FAILS:
