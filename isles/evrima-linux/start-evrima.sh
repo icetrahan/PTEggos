@@ -344,42 +344,20 @@ if [ -n "$CANON" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# THE BINARY LANE'S BASE URL.
-#
-# #2337: this is the PRODUCT's lane - repo `primal_binaries`, R2-backed, on the
-# Cloudflare edge - and NOT the game community's backend. api.primalheaven.com
-# is not a fallback here and must never become one again: a customer's server
-# has no business depending on Primal Heaven being up. The wire shapes are the
-# same ones this wrapper always spoke (proven byte-identical on 2026-09-15), so
-# this is a repoint, not a new protocol.
-#
-# The host is LOGGED every boot, and says whether it came from an egg variable
-# or from this default - because the way #2337 happened is that nobody could
-# see which host a given server was trusting until it was already down.
+# THE BINARY LANE'S BASE URL: the product's own lane (repo primal_binaries).
+# No other host is a fallback (#2337). The log says every boot which host is
+# used and whether it came from an egg variable or this default.
 # ---------------------------------------------------------------------------
 if [ -n "${PRIMAL_BINARY_BASE:-}" ]; then BINARY_BASE_SOURCE="egg variable"; else BINARY_BASE_SOURCE="built-in default"; fi
 PRIMAL_BINARY_BASE=$(env_or "${PRIMAL_BINARY_BASE:-}" "https://binaries.primalhosted.com")
 PRIMAL_BINARY_BASE="${PRIMAL_BINARY_BASE%/}"
 
 # ---------------------------------------------------------------------------
-# THE HEAVEN UPDATE GATE IS GONE - DELETED, NOT DISABLED (#2337, #2342).
-#
-# It used to sit here: GET {api.primalheaven.com}/api/updates/server-status/
-# {SERVER_ID}, `exit 0` when the answer said "blocked". Both reasons measured
-# against the route's own source on 2026-09-15:
-#
-#   * It is PRIMAL HEAVEN's fleet-management control. A server that is not in
-#     Heaven's registry - which every customer server is - takes a branch that
-#     returns `blocked: <Heaven's own global modPending flag>` verbatim. So
-#     "fixing" the empty SERVER_ID would have handed Heaven a kill switch over
-#     a paying customer's server, for as long as OUR mod build lagged.
-#   * It required a live Heaven service key in _primal/ on a customer volume,
-#     which the customer can read over SFTP (#1064 class).
-#
-# The matching `confirm-startup` POST at the end of this script is gone for the
-# same reasons. ⛔ Do not reintroduce either against Heaven. If the PRODUCT
-# ever needs a "may this server start" gate, it belongs on the product's own
-# registry, keyed by the server's own phsk_ key.
+# NO "MAY THIS SERVER START" GATE AND NO STARTUP REPORT TO ANOTHER BACKEND
+# (#2337, #2342). A customer's boot depends only on the product's own services,
+# and no other service's key sits on a customer volume. A product gate, if one
+# is ever needed, belongs on the product's registry, keyed by the server's
+# own phsk_ key.
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
@@ -516,7 +494,7 @@ if [ "${AUTO_UPDATE:-1}" != "0" ] && [ -f ./steamcmd/steamcmd.sh ]; then
             ./steamcmd/steamcmd.sh +force_install_dir "$ROOT" +login anonymous \
                 +app_update 412680 -beta evrima validate +quit
         else
-            log "update: (self-heal) SKIPPED - Steam unreachable, partial is not corrupt (#346)."
+            log "update: (self-heal) SKIPPED - Steam unreachable, partial is not corrupt."
         fi
     fi
     INSTALLED=$(manifest_buildid "$MANIFEST")
@@ -1009,9 +987,9 @@ if [ -z "$CANON" ]; then
     if [ -n "${MAX_PLAYERS:-}" ];   then CFG_MaxPlayers="$MAX_PLAYERS";     ID_SEEDED="$ID_SEEDED MaxPlayerCount"; fi
     if [ -n "${RCON_PASSWORD:-}" ]; then CFG_RconPassword="$RCON_PASSWORD"; ID_SEEDED="$ID_SEEDED RconPassword"; fi
     if [ -n "$ID_SEEDED" ]; then
-        log "config: defaults rung - identity seeded from the egg env (#2024):$ID_SEEDED"
+        log "config: defaults rung - identity seeded from the egg env:$ID_SEEDED"
     else
-        log "config: defaults rung - egg env carries no identity; rendering the built-in name/slots (#2024)"
+        log "config: defaults rung - egg env carries no identity; rendering the built-in name/slots"
     fi
 fi
 
@@ -1242,7 +1220,7 @@ mod_csv_shaped() { # $1 = newline list, $2 = label, $3 = 1 when <Species>:<N> is
             # list. That is the Engine.ini line injection this guard exists
             # to prevent, caused by the guard itself. The render test caught
             # it on 2026-09-05; it is why that test exists.
-            log "config: SKIPPED malformed $2 entry $idx ('$e') - $bad. BUGS #1593; the line is rendered WITHOUT it. Fix it in the panel." >&2
+            log "config: SKIPPED malformed $2 entry $idx ('$e') - $bad. The line is rendered without it. Fix it in the panel." >&2
             continue
         fi
         [ -n "$kept" ] && kept="$kept,"
@@ -1284,11 +1262,11 @@ fi
 # AnimMaxAnimated <1 into 10, silently. The plane refuses both on write and clamps on
 # read; this only catches a value that reached us anyway - and SAYS so.
 case " 20 10 5 4 2 1 " in *" ${PAK_EXTRA[AnimWriteHz]} "*) ;; *)
-    log "config: SKIPPED AnimWriteHz '${PAK_EXTRA[AnimWriteHz]}' - not one of 20/10/5/4/2/1; rendering the default 10. A168"
+    log "config: SKIPPED AnimWriteHz '${PAK_EXTRA[AnimWriteHz]}' - not one of 20/10/5/4/2/1; rendering the default 10."
     PAK_EXTRA[AnimWriteHz]="10" ;;
 esac
 if ! [[ "${PAK_EXTRA[AnimMaxAnimated]}" =~ ^[0-9]{1,3}$ ]] || [ "${PAK_EXTRA[AnimMaxAnimated]}" -lt 1 ]; then
-    log "config: SKIPPED AnimMaxAnimated '${PAK_EXTRA[AnimMaxAnimated]}' - not a whole number 1..999; rendering the default 999. A168"
+    log "config: SKIPPED AnimMaxAnimated '${PAK_EXTRA[AnimMaxAnimated]}' - not a whole number 1..999; rendering the default 999."
     PAK_EXTRA[AnimMaxAnimated]="999"
 fi
 
@@ -1387,7 +1365,7 @@ if [ "${ENABLE_PRIMAL_MOD:-0}" = "1" ] && [ -n "$PHSK" ]; then
     PAK_KV=""
     for K in "${PAK_EXTRA_ORDER[@]}"; do PAK_KV+="$K=${PAK_EXTRA[$K]} "; done
     log "Engine.ini: pak keys (source=$CFG_SOURCE) ForceDinoList=$PAK_FORCE_DINO $PAK_KV"
-    [ "$CARRIED_N" -gt 0 ] && log "Engine.ini: carried forward $CARRIED_N hand-set pak key(s) this script does not own (#1137)"
+    [ "$CARRIED_N" -gt 0 ] && log "Engine.ini: carried forward $CARRIED_N hand-set pak key(s) this script does not own"
 else
     log "Engine.ini: no Primal session block (mod disabled or no PHSK_KEY)"
 fi
@@ -1467,12 +1445,8 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# CONFIRM-STARTUP IS GONE (#2337). It POSTed this server's identity and hashes
-# to {api.primalheaven.com}/api/updates/confirm-startup with a Heaven service
-# key. It was best-effort monitoring for PRIMAL HEAVEN's fleet, it told the
-# product nothing, and it required a Heaven key on a customer volume. The
-# product already learns this server is up from its own boot-config fetch and
-# its vitals. ⛔ Do not reintroduce it against Heaven.
+# No startup report here: the product learns this server is up from its own
+# boot-config fetch and its vitals (#2337).
 # ---------------------------------------------------------------------------
 
 

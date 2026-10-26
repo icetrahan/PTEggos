@@ -203,7 +203,7 @@ echo "== 3. THE BINARY PAIRING LADDER (#2337) - PAIRED / CACHED / DIE =="
 #     git show bdd15d6:isles/evrima-linux/start-evrima.sh > /tmp/old.sh
 #     ./render_test.sh /tmp/old.sh        # section 3 must FAIL
 # It cannot pass: it has no cache, no pairing record and no degraded rung, and
-# it talks to api.primalheaven.com.
+# it talks to the retired Heaven backend.
 # ---------------------------------------------------------------------------
 BIN_PASS=0
 

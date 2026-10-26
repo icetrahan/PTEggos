@@ -23,8 +23,11 @@ import json
 import pathlib
 import subprocess
 import sys
+import tempfile
 
 HERE = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent))
+from strip_comments import ship_copy  # noqa: E402  servers get the wrapper without comments
 BUCKET = "primal-legacy-mods"
 PREFIX = "primal-wrapper-evrima-linux"
 PUBLIC_BASE = "https://pub-fb6fdcc2ce914775ba41c9813f80dc10.r2.dev"
@@ -58,10 +61,15 @@ def main() -> int:
         print("verify.py FAILED - refusing to publish a wrapper that fails its own gate.")
         return 1
 
+    with tempfile.TemporaryDirectory(prefix="wrapper-ship-") as d:
+        return publish(args, pathlib.Path(d))
+
+
+def publish(args, ship_dir: pathlib.Path) -> int:
     manifest = {"version": str(args.version), "build": f"linux wrapper {args.version}", "files": []}
     for name in FILES:
-        p = HERE / name
-        data = p.read_bytes()
+        data = ship_copy(name, (HERE / name).read_bytes())
+        (ship_dir / name).write_bytes(data)
         if b"\r" in data:
             print(f"REFUSING: {name} contains CR bytes (a CR lands inside the token -> 401).")
             return 1
@@ -79,7 +87,7 @@ def main() -> int:
 
     for f in manifest["files"]:
         print(f"uploading {PREFIX}/{args.version}/{f['name']} ...")
-        r2_put(f"{PREFIX}/{args.version}/{f['name']}", HERE / f["name"], "text/plain")
+        r2_put(f"{PREFIX}/{args.version}/{f['name']}", ship_dir / f["name"], "text/plain")
     mpath = HERE / ".manifest.tmp.json"
     mpath.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     r2_put(f"{PREFIX}/{args.manifest_key}", mpath, "application/json")

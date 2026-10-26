@@ -210,7 +210,7 @@ if ($phsk) {
                 Write-Host "(config) *** DATA PLANE UNREACHABLE - RENDERING FROM CACHE ***"
                 Write-Host "(config)     reason: $why"
                 Write-Host ("(config)     cache written {0:N0} min ago (updatedAt={1})" -f $age.TotalMinutes, $canon.updatedAt)
-                Write-Host "(config)     ⚠ ANY PANEL CHANGE SINCE THEN IS NOT APPLIED ON THIS BOOT."
+                Write-Host "(config)     WARNING: ANY PANEL CHANGE SINCE THEN IS NOT APPLIED ON THIS BOOT."
                 Write-Host ""
             } catch {
                 Write-Host "(config) *** CACHE PRESENT BUT UNREADABLE ($($_.Exception.Message)) - falling through to defaults ***"
@@ -526,13 +526,9 @@ if ($aiOn -match '^(1|true|yes|on)$' -and $aiUpload -and $aiManifest) {
     $aiLines = @(
         '',
         '; ---------------------------------------------------------------------------',
-        '; AI learning -- rendered by start-evrima.ps1 from egg variables (#1099).',
-        '; The Isle ships this subsystem with every gate true and the upload endpoint',
-        '; baked at a third party (#877). Both endpoints below are OURS, and they are',
-        '; egg VARIABLES because their path carries a live token and PTEggos is a',
-        '; PUBLIC repo (#1064). No URLs => this whole section is omitted.',
+        '; AI learning -- rendered by start-evrima.ps1 from the server settings.',
         '; Sentinel MaxTrainingFilesPerUpload=7 (engine default 16) proves it bound.',
-        '; URLs MUST stay quoted -- unquoted they truncate at the // (#878).',
+        '; URLs stay quoted: unquoted they truncate at the //.',
         '; ---------------------------------------------------------------------------',
         '[/Script/TheIsle.TIAILearningWorldSubsystem]',
         'bEnableLearningDataUploads=True',
@@ -702,7 +698,7 @@ function ModCsvShaped($v, $label, $wantCap) {
             if ($e -notmatch '\A[A-Za-z0-9_]{1,64}\z')                   { $bad = 'not a plain species name' }
         }
         if ($bad) {
-            Write-Host "(config) SKIPPED malformed $label entry $idx ('$e') - $bad. BUGS #1593; the line is rendered WITHOUT it. Fix it in the panel."
+            Write-Host "(config) SKIPPED malformed $label entry $idx ('$e') - $bad. The line is rendered without it. Fix it in the panel."
             continue
         }
         [void]$kept.Add($e)
@@ -729,12 +725,12 @@ if ($ms) {
 # AnimMaxAnimated <1 into 10, silently. The plane refuses both on write and clamps on
 # read; this only catches a value that reached us anyway - and SAYS so.
 if (@('20','10','5','4','2','1') -notcontains $pakExtra['AnimWriteHz']) {
-    Write-Host "(config) SKIPPED AnimWriteHz '$($pakExtra['AnimWriteHz'])' - not one of 20/10/5/4/2/1; rendering the default $($modDefaults.AnimWriteHz). A168"
+    Write-Host "(config) SKIPPED AnimWriteHz '$($pakExtra['AnimWriteHz'])' - not one of 20/10/5/4/2/1; rendering the default $($modDefaults.AnimWriteHz)."
     $pakExtra['AnimWriteHz'] = $modDefaults.AnimWriteHz
 }
 $capN = 0
 if (-not [int]::TryParse([string]$pakExtra['AnimMaxAnimated'], [ref]$capN) -or $capN -lt 1 -or $capN -gt 999) {
-    Write-Host "(config) SKIPPED AnimMaxAnimated '$($pakExtra['AnimMaxAnimated'])' - not a whole number 1..999; rendering the default $($modDefaults.AnimMaxAnimated). A168"
+    Write-Host "(config) SKIPPED AnimMaxAnimated '$($pakExtra['AnimMaxAnimated'])' - not a whole number 1..999; rendering the default $($modDefaults.AnimMaxAnimated)."
     $pakExtra['AnimMaxAnimated'] = $modDefaults.AnimMaxAnimated
 }
 
@@ -863,9 +859,9 @@ function Sync-PakCarry {
         $nowText = (@($now.Keys | ForEach-Object { "$_=$($now[$_])" }) -join "`n")
         if ($null -ne $was -and $nowText -eq (@($was.Keys | ForEach-Object { "$_=$($was[$_])" }) -join "`n")) { return }
         Save-PakCarry $now
-        Write-Host "(config) Engine.ini changed while running - saved $($now.Count) hand-set pak key(s) for the next boot (#3363): $(Format-PakKeys $now)"
+        Write-Host "(config) Engine.ini changed while running - saved $($now.Count) hand-set pak key(s) for the next boot: $(Format-PakKeys $now)"
     } catch {
-        Write-Host "(config) WARNING could not save the hand-set pak keys of the live Engine.ini ($($_.Exception.Message)) - a clean exit would lose an edit made since boot (#3363)"
+        Write-Host "(config) WARNING could not save the hand-set pak keys of the live Engine.ini ($($_.Exception.Message)) - a clean exit would lose an edit made since boot"
     }
 }
 
@@ -875,19 +871,19 @@ function Sync-PakCarry {
 $carried = Read-HandSetPakKeys $liveEnginePath
 if ($null -ne $carried) {
     if ($carried.Count) {
-        $carryNote = "(config) Engine.ini: carried forward $($carried.Count) hand-set pak key(s) (#1137/#1071): $(Format-PakKeys $carried)"
+        $carryNote = "(config) Engine.ini: carried forward $($carried.Count) hand-set pak key(s): $(Format-PakKeys $carried)"
     } else {
-        $carryNote = "(config) Engine.ini: carry-forward ran, no hand-set pak keys present (#1137)"
+        $carryNote = "(config) Engine.ini: carry-forward ran, no hand-set pak keys present"
     }
 } else {
     if (Test-Path -LiteralPath $liveEnginePath) { $liveState = 'has no pak section' }
     else { $liveState = 'is MISSING at boot (a clean game exit deletes it)' }
     $carried = Read-HandSetPakKeys $carryPath
     if ($null -ne $carried) {
-        $carryNote = "(config) Engine.ini $liveState - carried forward $($carried.Count) hand-set pak key(s) from _primal/engine-carry.ini (#1137/#3363): $(Format-PakKeys $carried)"
+        $carryNote = "(config) Engine.ini $liveState - carried forward $($carried.Count) hand-set pak key(s) from _primal/engine-carry.ini: $(Format-PakKeys $carried)"
     } else {
         $carried = [ordered]@{}
-        $carryNote = "(config) Engine.ini $liveState and there is no _primal/engine-carry.ini - no hand-set pak key could be carried (#1137/#3363)"
+        $carryNote = "(config) Engine.ini $liveState and there is no _primal/engine-carry.ini - no hand-set pak key could be carried"
     }
 }
 
@@ -904,7 +900,7 @@ if ($env:ENABLE_PRIMAL_MOD -eq '1' -and $phsk) {
     foreach ($ck in $carried.Keys) { $sessLines.Add("$ck=$($carried[$ck])") }
     Write-Host $carryNote
     try { Save-PakCarry $carried } catch {
-        Write-Host "(config) WARNING could not write _primal/engine-carry.ini ($($_.Exception.Message)) - a clean exit before the next boot would lose the hand-set pak keys (#3363)"
+        Write-Host "(config) WARNING could not write _primal/engine-carry.ini ($($_.Exception.Message)) - a clean exit before the next boot would lose the hand-set pak keys"
     }
     $script:carryArmed = $true
     $sessBlock = ($sessLines -join "`r`n")
@@ -922,7 +918,7 @@ if ($env:ENABLE_PRIMAL_MOD -eq '1' -and $phsk) {
     Write-Host "(config) Engine.ini: Primal session block set (tokenlen=$($phsk.Length), poll=$dataBase/v1/commands/text)"
     Write-Host "(config) Engine.ini: pak keys ForceDinoList=$pakForceDino $(($pakExtra.Keys | ForEach-Object { "$_=$($pakExtra[$_])" }) -join ' ')"
     # Rule 13: one line every boot, so no pick, the pick and a refused value never share a silence.
-    Write-Host "(config) Engine.ini: AnimalRoster $animalRosterNote. The panel owns this key (A431)"
+    Write-Host "(config) Engine.ini: AnimalRoster $animalRosterNote. The panel owns this key."
 } else {
     Write-Host "(config) Engine.ini: no Primal session block (mod disabled or no PHSK_KEY)"
 }
@@ -1367,7 +1363,7 @@ if ($multihome -and $multihome -ne '0.0.0.0' -and $multihome -match '^\d{1,3}(\.
     $mhArgs = @("-MULTIHOME=$multihome", "-MULTIHOMEHTTP=$multihome")
     $env:EOS_OVERRIDE_HOST_IP = $multihome   # <-- makes EOS advertise the multihome IP (per-IP isolation)
     Write-Host "(start) EOS_OVERRIDE_HOST_IP=$multihome (advertise this IP to the server browser)"
-    Write-Host "(start) -MULTIHOMEHTTP=$multihome (outbound HTTP egress - warphosting runtime telemetry, #1281)"
+    Write-Host "(start) -MULTIHOMEHTTP=$multihome (outbound HTTP egress)"
 } else {
     $multihome = '(all interfaces)'
 }
@@ -1726,7 +1722,7 @@ function Show-InjectVerdict {
             Write-Host '(commban) ****************************************************************'
             Write-Host "(commban) *** COMM-BAN DLL NOT LOADED: $v"
             Write-Host '(commban) *** Comm-banned players can chat on this server. The wrapper keeps'
-            Write-Host '(commban) *** retrying every 60 s; read _primal/primal-commban-inject.log. (#2700, A230)'
+            Write-Host '(commban) *** retrying every 60 s; read _primal/primal-commban-inject.log.'
             Write-Host '(commban) ****************************************************************'
         }
     }

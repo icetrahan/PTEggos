@@ -29,22 +29,22 @@
     "variables": [
         {
             "name": "API Base URL",
-            "description": "Base URL for the Primal Heaven backend API",
+            "description": "Base URL for the update backend API. Empty = hash reports and the heartbeat are skipped, and the log says so.",
             "env_variable": "API_BASE_URL",
-            "default_value": "https://api.primalheaven.com",
+            "default_value": "",
             "user_viewable": true,
             "user_editable": true,
-            "rules": "required|string",
+            "rules": "nullable|string",
             "field_type": "text"
         },
         {
             "name": "API Direct URL",
-            "description": "Direct backend URL for large binary uploads (bypasses Cloudflare 100MB limit)",
+            "description": "Direct backend URL for large binary uploads (bypasses Cloudflare 100MB limit). Empty = uploads are skipped, and the log says so.",
             "env_variable": "API_DIRECT_URL",
-            "default_value": "http://172.93.100.254:25022",
+            "default_value": "",
             "user_viewable": true,
             "user_editable": true,
-            "rules": "required|string",
+            "rules": "nullable|string",
             "field_type": "text"
         },
         {
