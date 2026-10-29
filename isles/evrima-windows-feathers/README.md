@@ -52,6 +52,7 @@ Those three are the images the Linux eggs build from. Push deliberately.
 | `gate_test.py` | drives `install.ps1`'s failure gate through 9 real states (#346) |
 | `test_carryforward.ps1` | runs the wrapper's real hand-set pak key lines through 20 states (#1137, #3363) |
 | `test_noinject.ps1` | runs the wrapper's real comm-ban "not injecting" lines and its report job against a local listener (#3499) |
+| `test_bootreport.ps1` | runs the wrapper's real signature-bypass and server-binary lines; each failure reaches a local listener as a boot report (#4288) |
 | `test_animalroster.ps1` | runs the whole wrapper in render-only mode against a local stand-in for the plane and reads the Engine.ini the game would read (A431) |
 | `test_regionspawn.ps1` | the same render-only run for the three region spawning keys in Game.ini (A836) |
 
@@ -205,6 +206,33 @@ plane answers: a 2xx, or a 4xx no retry can change.
 
 `powershell -NoProfile -ExecutionPolicy Bypass -File isles/evrima-windows-feathers/test_noinject.ps1`
 runs the wrapper's real lines through 13 boots and posts to a local listener over real HTTP (32 checks).
+
+## A boot without the signature bypass, or without the server binary, reports it (BUGS #4288)
+
+The pak mounts only with the bypass (`dsound.dll` + `UniversalSigBypasser.asi`) in place. A boot
+that cannot place it still launches, unmodded, and now says so: a console banner and
+`POST /v1/boot-report` with the server's own key, as the inject verdict the plane already reads:
+
+| What happened | Body | Plane |
+|---|---|---|
+| manifest read or a download failed | `stage:"inject"`, `dll:"UniversalSigBypasser.asi"`, `ok:false`, `skipped:"prepare_failed"` | pages; one automatic restart re-fetches |
+| a downloaded file failed its sha256 | same, `skipped:"sha_mismatch"`, the file named | pages at once (a restart reads the same file) |
+| the next boot places it | same `dll`, `ok:true` | resolves |
+| `TheIsleServer-Win64-Shipping.exe` missing | `stage:"start"`, `platform:"windows"`, `ok:false`, `code:"binary_missing"`, sent before the stop | `boot_refused` page |
+| the next boot that launches | `stage:"start"`, `ok:true` | clears `boot_refused` |
+
+- `primal-sigbypass.version` is written only when every file passed its sha256, and removed on any
+  failure, so it never claims a version that is not on disk.
+- The clearing reports are sent only after a failure (`_primal/primal-sigbypass-report.pending`,
+  `_primal/boot-refused.pending`); a healthy boot sends nothing.
+- The bypass report runs in a job like the comm-ban one (never holds the launch, repeats until the
+  plane records it, stops on a 4xx). The refusal is sent in line, 3 tries, before the wrapper stops.
+- Not covered: a bypass that is in place but no longer hooks a new game exe. That boot is
+  unmodded with the files sha-verified; the off-box witness is the plane's `mod_absent_after_boot`
+  with `OPS_MOD_ABSENT_SCOPE=all`.
+
+`powershell -NoProfile -ExecutionPolicy Bypass -File isles/evrima-windows-feathers/test_bootreport.ps1`
+(34 checks).
 
 ## Mass migration and patrol timing (BUGS #3328, #3362)
 
