@@ -972,6 +972,50 @@ $paksDir    = Join-Path $game 'TheIsle\Content\Paks'
 $pakVerFile = Join-Path $tmpl 'primal-pak.version'
 $pakUcas    = Join-Path $paksDir 'pakchunk50-Windows_P.ucas'
 
+# Every file download in this wrapper goes through Save-Download, so one stuck request cannot
+# hold the boot (#4275). It gives up when no byte arrives for PRIMAL_DL_STALL_S (default 30) or
+# the file is not finished in PRIMAL_DL_MAX_S (default 120), throws a message starting
+# "timed out", and leaves no partial $OutFile behind.
+$script:dlStallMs = 1000 * [int](EnvOr $env:PRIMAL_DL_STALL_S '30')
+$script:dlMaxMs   = 1000 * [int](EnvOr $env:PRIMAL_DL_MAX_S '120')
+function Save-Download([string]$Uri, [string]$OutFile) {
+    Add-Type -AssemblyName System.Net.Http
+    $client = New-Object System.Net.Http.HttpClient
+    $client.Timeout = [System.Threading.Timeout]::InfiniteTimeSpan
+    $resp = $null; $fs = $null; $ok = $false
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    try {
+        $t = $client.GetAsync($Uri, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead)
+        if (-not $t.Wait($script:dlStallMs)) { throw "timed out: no response in $($script:dlStallMs / 1000) s" }
+        $resp = $t.Result
+        if (-not $resp.IsSuccessStatusCode) { throw "HTTP $([int]$resp.StatusCode) $($resp.ReasonPhrase)" }
+        $st = $resp.Content.ReadAsStreamAsync().Result
+        $fs = [IO.File]::Create($OutFile)
+        $buf = New-Object byte[] 1048576
+        while ($true) {
+            $left = $script:dlMaxMs - $sw.ElapsedMilliseconds
+            if ($left -le 0) { throw "timed out: not finished in $($script:dlMaxMs / 1000) s" }
+            $r = $st.ReadAsync($buf, 0, $buf.Length)
+            if (-not $r.Wait([Math]::Min($script:dlStallMs, $left))) {
+                if ($left -le $script:dlStallMs) { throw "timed out: not finished in $($script:dlMaxMs / 1000) s" }
+                throw "timed out: no data for $($script:dlStallMs / 1000) s after $($fs.Length) bytes"
+            }
+            if ($r.Result -le 0) { break }
+            $fs.Write($buf, 0, $r.Result)
+        }
+        $ok = $true
+    } catch {
+        $e = $_.Exception; while ($e.InnerException) { $e = $e.InnerException }
+        throw $e.Message
+    } finally {
+        # Disposing the client aborts a request still pending, so nothing keeps reading after we leave.
+        if ($fs) { $fs.Dispose() }
+        if ($resp) { $resp.Dispose() }
+        $client.Dispose()
+        if (-not $ok) { Remove-Item $OutFile -Force -ErrorAction SilentlyContinue }
+    }
+}
+
 # ---------------------------------------------------------------------------
 # SIGNATURE BYPASS (UniversalSigBypasser) - REQUIRED for the mod pak to mount.
 #
@@ -989,8 +1033,58 @@ $pakUcas    = Join-Path $paksDir 'pakchunk50-Windows_P.ucas'
 # Source: github.com/rm-NoobInCoding/UniversalSigBypasser (v1.2), mirrored to our
 # R2 with pinned sha256s so a boot never pulls an unreviewed third-party binary.
 # ---------------------------------------------------------------------------
+# BOOT REPORTS for a boot that leaves the bypass out or stops before launch (#4288).
+# POST /v1/boot-report with this server's own key, in the bodies the plane already
+# reads: a skipped inject verdict for the bypass, a stage "start" refusal for the exe.
+# A pending marker lets the next good boot send the verdict that clears the page.
+# A 200 counts only when its body says recorded (rule 13).
+$bootReportUrl = (EnvOr $env:PRIMAL_DATA_BASE 'https://data.primalhosted.com').TrimEnd('/') + '/v1/boot-report'
+$sbMark      = Join-Path $tmpl 'primal-sigbypass-report.pending'
+$refusedMark = Join-Path $tmpl 'boot-refused.pending'
+$script:bootReports = @()
+
+# Tries until the plane records it, refuses it (a 4xx no retry can change) or $tries run out.
+function Send-BootReport([string]$url, [string]$key, [string]$json, [int]$tries, [int]$gapS) {
+    $why = ''
+    for ($n = 1; $n -le $tries; $n++) {
+        try {
+            $resp = Invoke-RestMethod -Method Post -Uri $url -Headers @{ Authorization = "Bearer $key" } -ContentType 'application/json' -Body $json -TimeoutSec 10
+            if ($resp.recorded -eq $true) { return "recorded on try $n" }
+            $why = 'HTTP 200 without recorded:true'
+        } catch {
+            $status = 0; try { $status = [int]$_.Exception.Response.StatusCode } catch { }
+            if ($status -ge 400 -and $status -lt 500 -and $status -ne 408 -and $status -ne 429) { return "REFUSED by the plane (HTTP $status) on try $n - not retried" }
+            if ($status) { $why = "HTTP $status" } else { $why = $_.Exception.Message }
+        }
+        if ($n -lt $tries) { Start-Sleep -Seconds $gapS }
+    }
+    return "NOT recorded after $tries tries: $why"
+}
+
+# In a job, so a slow plane never holds the launch; repeats while the server runs (rule 12).
+# $clearMark is removed once the plane records the report.
+function Start-BootReport([string]$label, [hashtable]$body, [string]$clearMark) {
+    if (-not $phsk) {
+        Write-Host "($label) *** NOT reported off-box: no PHSK_KEY on this server"
+        return
+    }
+    $retryS = 60; try { if ($env:PRIMAL_INJECT_WATCH_S) { $retryS = [Math]::Max(1, [int]$env:PRIMAL_INJECT_WATCH_S) } } catch { }
+    $json = $body | ConvertTo-Json -Compress
+    $job = Start-Job -Name "primal-report-$label" -ArgumentList ${function:Send-BootReport}.ToString(), $bootReportUrl, $phsk, $json, $clearMark, $retryS -ScriptBlock {
+        param($sendSrc, $url, $key, $json, $clearMark, $retryS)
+        Set-Item -Path function:Send-BootReport -Value ([scriptblock]::Create($sendSrc))
+        $r = Send-BootReport $url $key $json ([int]::MaxValue) $retryS
+        if ($clearMark -and $r -like 'recorded*') { Remove-Item $clearMark -Force -ErrorAction SilentlyContinue }
+        $r
+    }
+    $script:bootReports += @{ label = $label; job = $job }
+}
+
 $binDirWin  = Join-Path $game 'TheIsle\Binaries\Win64'
 $sbVerFile  = Join-Path $tmpl 'primal-sigbypass.version'
+$sbDll      = 'UniversalSigBypasser.asi'
+$sbSkip     = $null
+
 if ($env:ENABLE_PRIMAL_MOD -eq '1') {
     $sbManifestUrl = EnvOr $env:PRIMAL_SIGBYPASS_MANIFEST 'https://pub-fb6fdcc2ce914775ba41c9813f80dc10.r2.dev/primal-sigbypass/latest.json'
     try {
@@ -1012,26 +1106,56 @@ if ($env:ENABLE_PRIMAL_MOD -eq '1') {
 
         if ($sbNeed.Count) {
             Write-Host "(sigbypass) placing $($sbNeed.Count)/$($sbFiles.Count) file(s) (v$($sm.version)) into TheIsle\Binaries\Win64 ..."
+            $sbBad = @(); $sbDlFail = @(); $sbMissing = @()
             foreach ($fi in $sbNeed) {
                 $dst = Join-Path $binDirWin $fi.name
                 $tmpf = "$dst.download"
-                Invoke-WebRequest -Uri $fi.url -OutFile $tmpf -UseBasicParsing
+                try { Save-Download $fi.url $tmpf }
+                catch {
+                    $keep = if (Test-Path $dst) { 'the previous copy stays in use' } else { 'there is no previous copy, so the mod pak will NOT mount this boot' }
+                    Dbg "sigbypass download of $($fi.name) failed ($($_.Exception.Message)) - $keep"
+                    Write-Host "(sigbypass) download of $($fi.name) failed: $($_.Exception.Message) - $keep"
+                    $sbDlFail += $fi.name
+                    if (-not (Test-Path $dst)) { $sbMissing += "$($fi.name) ($($_.Exception.Message))" }
+                    continue
+                }
                 $sha = (Get-FileHash $tmpf -Algorithm SHA256).Hash.ToLower()
                 if ($sha -ne ("" + $fi.sha256).ToLower()) {
                     Write-Host "(sigbypass) sha256 MISMATCH on $($fi.name) (got $sha) - discarding"
                     Remove-Item $tmpf -Force -ErrorAction SilentlyContinue
+                    $sbBad += $fi.name
                 } else {
                     Move-Item -Force $tmpf $dst
                     Write-Host "(sigbypass) placed $($fi.name) ($($fi.size) bytes)"
                 }
             }
-            Set-Content -Path $sbVerFile -Value $sm.version -Encoding ascii
+            # A failed download with a previous copy in place keeps the bypass; one with none leaves it out.
+            if ($sbBad.Count) {
+                $sbSkip = @{ code = 'sha_mismatch'; reason = "sigbypass: $($sbBad.Count) of $($sbNeed.Count) downloaded file(s) failed sha256 against manifest v$($sm.version): $($sbBad -join ', ')" }
+            } elseif ($sbMissing.Count) {
+                $sbSkip = @{ code = 'prepare_failed'; reason = "sigbypass: download failed with no previous copy: $($sbMissing -join ', ')" }
+            } elseif ($sbDlFail.Count) {
+                Remove-Item $sbVerFile -Force -ErrorAction SilentlyContinue
+            } else {
+                Set-Content -Path $sbVerFile -Value $sm.version -Encoding ascii
+            }
         } else {
             Write-Host "(sigbypass) up to date (v$($sm.version), all files sha-verified in place)"
         }
     } catch {
-        # Fail-soft: the server still boots. The pak just will not mount.
-        Write-Host "(sigbypass) manifest/download failed: $_ - the mod pak will NOT mount this boot"
+        $sbSkip = @{ code = 'prepare_failed'; reason = "sigbypass: the manifest read or a download failed: $_" }
+    }
+    # Fail-soft: the server still boots, unmodded, and says so off-box.
+    if ($sbSkip) {
+        Remove-Item $sbVerFile -Force -ErrorAction SilentlyContinue
+        Write-Host '(sigbypass) ****************************************************************'
+        Write-Host "(sigbypass) *** BYPASS NOT IN PLACE ($($sbSkip.code)): $($sbSkip.reason)"
+        Write-Host '(sigbypass) *** THE MOD PAK WILL NOT MOUNT this boot: no telemetry, admin or storage.'
+        Write-Host '(sigbypass) ****************************************************************'
+        try { Set-Content -Path $sbMark -Value $sbSkip.code -Encoding ascii } catch { }
+        Start-BootReport 'sigbypass' @{ stage = 'inject'; game = 'evrima'; ok = $false; attempts = 0; skipped = $sbSkip.code; reason = $sbSkip.reason; pid = $null; exePath = ''; dll = $sbDll; volume = $root } ''
+    } elseif (Test-Path $sbMark) {
+        Start-BootReport 'sigbypass' @{ stage = 'inject'; game = 'evrima'; ok = $true; attempts = 0; reason = "sigbypass v$($sm.version) in place, sha-verified"; pid = $null; exePath = ''; dll = $sbDll; volume = $root } $sbMark
     }
 } else {
     Write-Host "(sigbypass) disabled (ENABLE_PRIMAL_MOD != 1)"
@@ -1069,7 +1193,13 @@ if ($env:ENABLE_PRIMAL_MOD -eq '1') {
             $allOk = $true
             foreach ($fi in $pakFiles) {
                 $tmp = Join-Path $stage $fi.name
-                Invoke-WebRequest -Uri $fi.url -OutFile $tmp -UseBasicParsing
+                try { Save-Download $fi.url $tmp }
+                catch {
+                    $keep = if ($haveVer -and (Test-Path $pakUcas)) { "previous pak $haveVer stays in use" } else { 'no previous pak on disk, so this boot runs without the mod pak' }
+                    Dbg "pak download of $($fi.name) failed ($($_.Exception.Message)) - $keep"
+                    Write-Host "(primal-pak) download of $($fi.name) failed: $($_.Exception.Message) - $keep"
+                    $allOk = $false; break
+                }
                 $sha = (Get-FileHash $tmp -Algorithm SHA256).Hash.ToLower()
                 if ($sha -ne ("" + $fi.sha256).ToLower()) {
                     Write-Host "(primal-pak) sha256 MISMATCH on $($fi.name) (got $sha) - discarding this update"
@@ -1086,7 +1216,7 @@ if ($env:ENABLE_PRIMAL_MOD -eq '1') {
                 Set-Content -Path $pakVerFile -Value $pm.version -Encoding ascii
                 Write-Host "(primal-pak) pak $($pm.version) ready ($($pm.build)) -> $paksDir"
             } else {
-                Write-Host "(primal-pak) update discarded on verify failure - keeping the existing pak (if any)"
+                Write-Host "(primal-pak) update discarded (a download or sha check failed) - keeping the existing pak (if any)"
             }
             Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
         } else {
@@ -1179,7 +1309,7 @@ if ($cbOn) {
                 $dst = Join-Path $binDirWin $fi.name
                 $tmpf = "$dst.download"
                 $cbStep = "the download of $($fi.name)"
-                Invoke-Retried { Invoke-WebRequest -Uri $fi.url -OutFile $tmpf -UseBasicParsing } "download of $($fi.name)" | Out-Null
+                Invoke-Retried { Save-Download $fi.url $tmpf } "download of $($fi.name)" | Out-Null
                 $sha = (Get-FileHash $tmpf -Algorithm SHA256).Hash.ToLower()
                 if ($sha -ne ("" + $fi.sha256).ToLower()) {
                     Write-Host "(commban) sha256 MISMATCH on $($fi.name) (got $sha) - discarding; NOT injecting this boot"
@@ -1279,7 +1409,12 @@ if ($cbReady -and ((EnvOr $env:PRIMAL_LOADER '1').Trim() -ne '0')) {
             $h = if (Test-Path $dst) { (Get-FileHash $dst -Algorithm SHA256).Hash.ToLower() } else { '' }
             if ($h -eq ("" + $fi.sha256).ToLower()) { continue }
             $tmpf = "$dst.download"
-            Invoke-WebRequest -Uri $fi.url -OutFile $tmpf -UseBasicParsing
+            try { Save-Download $fi.url $tmpf }
+            catch {
+                Dbg "loader download of $($fi.name) failed ($($_.Exception.Message)) - the injector watchdog carries this boot"
+                Write-Host "(primal-loader) download of $($fi.name) failed: $($_.Exception.Message)"
+                $lBad++; continue
+            }
             $sha = (Get-FileHash $tmpf -Algorithm SHA256).Hash.ToLower()
             if ($sha -ne ("" + $fi.sha256).ToLower()) {
                 Write-Host "(primal-loader) sha256 MISMATCH on $($fi.name) (got $sha) - discarding"
@@ -1322,7 +1457,21 @@ if ($cbReady -and ((EnvOr $env:PRIMAL_LOADER '1').Trim() -ne '0')) {
 # (bareword) is passed literally by PS; `"-Port=$env:X"` expands correctly.
 # ---------------------------------------------------------------------------
 $exe = Join-Path $game 'TheIsle\Binaries\Win64\TheIsleServer-Win64-Shipping.exe'
-if (-not (Test-Path $exe)) { throw "server binary missing: $exe (did SteamCMD finish?)" }
+if (-not (Test-Path $exe)) {
+    # Said off-box before the stop: a server that never launches has no other witness.
+    $refuse = "server binary missing: $exe (did SteamCMD finish?)"
+    try { Set-Content -Path $refusedMark -Value 'binary_missing' -Encoding ascii } catch { }
+    if ($phsk) {
+        $json = @{ stage = 'start'; game = 'evrima'; platform = 'windows'; ok = $false; code = 'binary_missing'; reason = $refuse } | ConvertTo-Json -Compress
+        Write-Host "(start) refused start report: $(Send-BootReport $bootReportUrl $phsk $json 3 3)"
+    } else {
+        Write-Host '(start) refused start NOT reported off-box: no PHSK_KEY on this server'
+    }
+    throw $refuse
+}
+if (Test-Path $refusedMark) {
+    Start-BootReport 'start' @{ stage = 'start'; game = 'evrima'; platform = 'windows'; ok = $true } $refusedMark
+}
 
 # Multihome: bind/advertise ONE specific public IP so a box with several IPs gives
 # each server its own address - the key to per-server DDoS isolation (one null-routed
@@ -1754,10 +1903,25 @@ function Show-SkipReport {
     }
 }
 
+function Show-BootReports {
+    $left = @()
+    foreach ($r in @($script:bootReports)) {
+        foreach ($line in @(Receive-Job $r.job -ErrorAction SilentlyContinue)) {
+            $v = ('' + $line).Trim()
+            if ($v) { Write-Host "($($r.label)) boot report: $v" }
+        }
+        if ($r.job.State -eq 'Running' -or $r.job.State -eq 'NotStarted') { $left += $r; continue }
+        if ($r.job.State -ne 'Completed') { Write-Host "($($r.label)) *** the boot report job ended $($r.job.State) - the plane was NOT told" }
+        Remove-Job $r.job -Force -ErrorAction SilentlyContinue
+    }
+    $script:bootReports = $left
+}
+
 $pos = 0
 while (-not $proc.HasExited) {
     Show-InjectVerdict
     Show-SkipReport
+    Show-BootReports
     Sync-PakCarry
     if (Test-Path $isleLog) {
         try {
@@ -1777,6 +1941,8 @@ while (-not $proc.HasExited) {
 }
 Show-InjectVerdict
 Show-SkipReport
+Show-BootReports
+foreach ($r in @($script:bootReports)) { Stop-Job $r.job -ErrorAction SilentlyContinue; Remove-Job $r.job -Force -ErrorAction SilentlyContinue }
 if ($script:cbJob) { Stop-Job $script:cbJob -ErrorAction SilentlyContinue; Remove-Job $script:cbJob -Force -ErrorAction SilentlyContinue }
 if ($script:cbSkipJob) { Stop-Job $script:cbSkipJob -ErrorAction SilentlyContinue; Remove-Job $script:cbSkipJob -Force -ErrorAction SilentlyContinue }
 Dbg "server pid $($proc.Id) exited"

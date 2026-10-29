@@ -26,6 +26,11 @@ rep = sys.argv[sys.argv.index("--report") + 1]
 mode = os.environ.get("FAKE_PATCHER", "")
 if mode == "crash":
     raise SystemExit("Traceback (most recent call last): TypeError: unsupported operand")
+if mode == "platform":
+    json.dump({"kind": "linux", "patches": [], "success": False, "code": "platform_mismatch",
+               "reason": "spec platform 'windows' does not match binary kind 'linux'"}, open(rep, "w"), indent=2)
+    print("platform_mismatch: spec platform 'windows' does not match binary kind 'linux'", file=sys.stderr)
+    sys.exit(2)
 data = bytearray(open(src, "rb").read())
 site = data[16] if len(data) > 16 else None
 item = {"name": "gate", "match_count": 1, "patch_offset": "0x10"}
@@ -240,6 +245,18 @@ new_root 74
 boot FAKE_PATCHER=crash
 fallback 'crash' 'no report: Traceback (most recent call last): TypeError: unsupported operand'
 
+echo "M2 - the patcher refuses by name (a spec for the other platform): the name is in the reason"
+new_root 74
+boot FAKE_PATCHER=platform
+fallback 'platform refusal' "exit 2, platform_mismatch: spec platform 'windows' does not match binary kind 'linux'"
+new_root 74
+boot FAKE_PATCHER=platform HAVE_JQ=1 'JQ=$(type -P jq || echo /nonexistent)'
+if [ "$JQ" != /nonexistent ] || type -P jq >/dev/null; then
+    fallback 'platform refusal, with jq' "exit 2, platform_mismatch: spec platform 'windows' does not match binary kind 'linux'"
+else
+    echo "  SKIP platform refusal, with jq: no jq on this machine"
+fi
+
 echo "N - a move that does not land is caught by reading the binary back"
 new_root 74
 boot FAKE_MV=lie
@@ -249,9 +266,21 @@ echo "O - a build the patterns do not cover, and the lane has none: refused, van
 new_root 00
 ORIG=$(md5_of "$B")
 boot FAKE_LANE=no_mod_available
-t 'refused as mod_binary_unavailable' 'said "REFUSED mod_binary_unavailable"' "$(tail -n2 <<<"$OUT")"
-t 'the refusal names the local reason' 'said "the local patch did not run (the patcher (tool vT1) did not patch this build: exit 2"'
+t 'refused as binary_signature_unrecognised, not as the lane' 'said "REFUSED binary_signature_unrecognised :: BINARY-SIGNATURE-UNRECOGNISED"' "$(tail -n2 <<<"$OUT")"
+t 'the refusal names the patcher and its report' 'said "the signature patch (tool vT1) does not recognise this game build" && said "see $R/_primal/patcher/last-report.json"'
 t 'binary untouched' '[ "$BIN_MD5" = "$ORIG" ]'
+
+echo "O2 - the same new build with the lane down and no cache: still the signature, not the lane"
+new_root 00
+ORIG=$(md5_of "$B")
+boot FAKE_LANE=down
+t 'refused as binary_signature_unrecognised' 'said "REFUSED binary_signature_unrecognised"' "$(tail -n2 <<<"$OUT")"
+t 'binary untouched' '[ "$BIN_MD5" = "$ORIG" ]'
+
+echo "O3 - a patcher that crashed is not called a signature miss"
+new_root 74
+boot FAKE_PATCHER=crash FAKE_LANE=no_mod_available
+t 'refused as mod_binary_unavailable' 'said "REFUSED mod_binary_unavailable"' "$(tail -n2 <<<"$OUT")"
 
 echo "P - local patch impossible and the lane unreachable with no cache: refused, said why"
 new_root 74

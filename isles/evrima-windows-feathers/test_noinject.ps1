@@ -42,13 +42,13 @@ function Sha([string]$text) {
 function Manifest([string]$name = 'commban.dll', [string]$content = 'GOOD-DLL') {
     return [pscustomobject]@{ version = '1.2.0'; files = @([pscustomobject]@{ name = $name; url = "https://r2.test/$name"; sha256 = (Sha $content); size = $content.Length }) }
 }
-# The two network cmdlets and the back-off, replaced for the decide block only (functions win over cmdlets).
+# The manifest read, the download and the back-off, replaced for the decide block only (functions win over cmdlets).
 function Invoke-RestMethod { param([string]$Uri, [int]$TimeoutSec)
     $script:net.manifestCalls++
     if ($script:net.manifestCalls -le $script:net.manifestFails) { throw "The operation has timed out. ($Uri)" }
     return $script:net.manifest
 }
-function Invoke-WebRequest { param([string]$Uri, [string]$OutFile, [switch]$UseBasicParsing)
+function Save-Download { param([string]$Uri, [string]$OutFile)
     $script:net.downloadCalls++
     if ($script:net.downloadCalls -le $script:net.downloadFails) { throw "The remote name could not be resolved: 'r2.test'" }
     [IO.File]::WriteAllText($OutFile, $script:net.bytes, [Text.Encoding]::ASCII)
@@ -106,7 +106,7 @@ $null = Invoke-Expression $decide 6>&1 | Out-String
 $net.manifestCalls = 0; $net.manifestFails = 3; $cbSkip = $null
 $out = Invoke-Expression $decide 6>&1 | Out-String
 Ok 'a DLL left in place by the last boot is NOT injected when this boot cannot read the manifest' (-not $cbReady -and $cbSkip.code -eq 'prepare_failed')
-Remove-Item Function:\Invoke-RestMethod, Function:\Invoke-WebRequest, Function:\Start-Sleep
+Remove-Item Function:\Invoke-RestMethod, Function:\Save-Download, Function:\Start-Sleep
 
 # ---- B: the report, over real HTTP ----
 Write-Host "`nB - the plane is told, by name, and the post is never ack-once"
