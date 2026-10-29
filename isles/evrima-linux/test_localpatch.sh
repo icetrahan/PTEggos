@@ -249,9 +249,21 @@ echo "O - a build the patterns do not cover, and the lane has none: refused, van
 new_root 00
 ORIG=$(md5_of "$B")
 boot FAKE_LANE=no_mod_available
-t 'refused as mod_binary_unavailable' 'said "REFUSED mod_binary_unavailable"' "$(tail -n2 <<<"$OUT")"
-t 'the refusal names the local reason' 'said "the local patch did not run (the patcher (tool vT1) did not patch this build: exit 2"'
+t 'refused as binary_signature_unrecognised, not as the lane' 'said "REFUSED binary_signature_unrecognised :: BINARY-SIGNATURE-UNRECOGNISED"' "$(tail -n2 <<<"$OUT")"
+t 'the refusal names the patcher and its report' 'said "the signature patch (tool vT1) does not recognise this game build" && said "see $R/_primal/patcher/last-report.json"'
 t 'binary untouched' '[ "$BIN_MD5" = "$ORIG" ]'
+
+echo "O2 - the same new build with the lane down and no cache: still the signature, not the lane"
+new_root 00
+ORIG=$(md5_of "$B")
+boot FAKE_LANE=down
+t 'refused as binary_signature_unrecognised' 'said "REFUSED binary_signature_unrecognised"' "$(tail -n2 <<<"$OUT")"
+t 'binary untouched' '[ "$BIN_MD5" = "$ORIG" ]'
+
+echo "O3 - a patcher that crashed is not called a signature miss"
+new_root 74
+boot FAKE_PATCHER=crash FAKE_LANE=no_mod_available
+t 'refused as mod_binary_unavailable' 'said "REFUSED mod_binary_unavailable"' "$(tail -n2 <<<"$OUT")"
 
 echo "P - local patch impossible and the lane unreachable with no cache: refused, said why"
 new_root 74
