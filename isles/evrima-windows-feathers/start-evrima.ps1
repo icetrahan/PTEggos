@@ -1036,6 +1036,15 @@ function Start-BootReport([string]$label, [hashtable]$body, [string]$clearMark) 
     $script:bootReports += @{ label = $label; job = $job }
 }
 
+# In line, before the stop: a server that never runs has no other witness. The marker
+# lets the next boot whose process appears send the launch that clears the page.
+function Send-StartRefusal([string]$code, [string]$reason) {
+    try { Set-Content -Path $refusedMark -Value $code -Encoding ascii } catch { }
+    if (-not $phsk) { Write-Host '(start) refused start NOT reported off-box: no PHSK_KEY on this server'; return }
+    $json = @{ stage = 'start'; game = 'evrima'; platform = 'windows'; ok = $false; code = $code; reason = $reason } | ConvertTo-Json -Compress
+    Write-Host "(start) refused start report: $(Send-BootReport $bootReportUrl $phsk $json 3 3)"
+}
+
 $binDirWin  = Join-Path $game 'TheIsle\Binaries\Win64'
 $sbVerFile  = Join-Path $tmpl 'primal-sigbypass.version'
 $sbDll      = 'UniversalSigBypasser.asi'
@@ -1389,19 +1398,9 @@ if ($cbReady -and ((EnvOr $env:PRIMAL_LOADER '1').Trim() -ne '0')) {
 # ---------------------------------------------------------------------------
 $exe = Join-Path $game 'TheIsle\Binaries\Win64\TheIsleServer-Win64-Shipping.exe'
 if (-not (Test-Path $exe)) {
-    # Said off-box before the stop: a server that never launches has no other witness.
     $refuse = "server binary missing: $exe (did SteamCMD finish?)"
-    try { Set-Content -Path $refusedMark -Value 'binary_missing' -Encoding ascii } catch { }
-    if ($phsk) {
-        $json = @{ stage = 'start'; game = 'evrima'; platform = 'windows'; ok = $false; code = 'binary_missing'; reason = $refuse } | ConvertTo-Json -Compress
-        Write-Host "(start) refused start report: $(Send-BootReport $bootReportUrl $phsk $json 3 3)"
-    } else {
-        Write-Host '(start) refused start NOT reported off-box: no PHSK_KEY on this server'
-    }
+    Send-StartRefusal 'binary_missing' $refuse
     throw $refuse
-}
-if (Test-Path $refusedMark) {
-    Start-BootReport 'start' @{ stage = 'start'; game = 'evrima'; platform = 'windows'; ok = $true } $refusedMark
 }
 
 # Multihome: bind/advertise ONE specific public IP so a box with several IPs gives
@@ -1783,7 +1782,16 @@ for ($i = 0; $i -lt 30 -and $own.Count -ne 1; $i++) {
     Start-Sleep -Milliseconds 500
     $own = @(Find-OwnServer $volRoot $before $launchedAt)
 }
-if ($own.Count -eq 0) { Dbg "ERROR: no server process under $volRoot appeared after launch"; exit 1 }
+if ($own.Count -eq 0) {
+    $refuse = "no server process under $volRoot appeared after launch ($exe)"
+    Dbg "ERROR: $refuse"
+    Send-StartRefusal 'no_server_process' $refuse
+    exit 1
+}
+# A launch is a process that appeared, so only now does it clear a refused start.
+if (Test-Path $refusedMark) {
+    Start-BootReport 'start' @{ stage = 'start'; game = 'evrima'; platform = 'windows'; ok = $true } $refusedMark
+}
 # Both are OURS (same volume), so supervising the newest is safe - the injector, which
 # must not guess, refuses instead. Said loudly: a second live copy of this server is a fault.
 $proc = $own | Sort-Object { try { $_.StartTime } catch { [datetime]::MinValue } } | Select-Object -Last 1

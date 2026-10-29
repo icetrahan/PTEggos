@@ -52,7 +52,7 @@ Those three are the images the Linux eggs build from. Push deliberately.
 | `gate_test.py` | drives `install.ps1`'s failure gate through 9 real states (#346) |
 | `test_carryforward.ps1` | runs the wrapper's real hand-set pak key lines through 20 states (#1137, #3363) |
 | `test_noinject.ps1` | runs the wrapper's real comm-ban "not injecting" lines and its report job against a local listener (#3499) |
-| `test_bootreport.ps1` | runs the wrapper's real signature-bypass and server-binary lines; each failure reaches a local listener as a boot report (#4288) |
+| `test_bootreport.ps1` | runs the wrapper's real signature-bypass and server-binary lines; each failure reaches a local listener as a boot report (#4288, #4305) |
 | `test_animalroster.ps1` | runs the whole wrapper in render-only mode against a local stand-in for the plane and reads the Engine.ini the game would read (A431) |
 | `test_regionspawn.ps1` | the same render-only run for the three region spawning keys in Game.ini (A836) |
 
@@ -207,7 +207,7 @@ plane answers: a 2xx, or a 4xx no retry can change.
 `powershell -NoProfile -ExecutionPolicy Bypass -File isles/evrima-windows-feathers/test_noinject.ps1`
 runs the wrapper's real lines through 13 boots and posts to a local listener over real HTTP (32 checks).
 
-## A boot without the signature bypass, or without the server binary, reports it (BUGS #4288)
+## A boot without the signature bypass, the server binary or a server process reports it (BUGS #4288, #4305)
 
 The pak mounts only with the bypass (`dsound.dll` + `UniversalSigBypasser.asi`) in place. A boot
 that cannot place it still launches, unmodded, and now says so: a console banner and
@@ -219,7 +219,8 @@ that cannot place it still launches, unmodded, and now says so: a console banner
 | a downloaded file failed its sha256 | same, `skipped:"sha_mismatch"`, the file named | pages at once (a restart reads the same file) |
 | the next boot places it | same `dll`, `ok:true` | resolves |
 | `TheIsleServer-Win64-Shipping.exe` missing | `stage:"start"`, `platform:"windows"`, `ok:false`, `code:"binary_missing"`, sent before the stop | `boot_refused` page |
-| the next boot that launches | `stage:"start"`, `ok:true` | clears `boot_refused` |
+| no server process under the volume appears after launch | same, `code:"no_server_process"`, sent before `exit 1` | `boot_refused` page (generic action text) |
+| the next boot whose server process appears | `stage:"start"`, `ok:true` | clears `boot_refused` |
 
 - `primal-sigbypass.version` is written only when every file passed its sha256, and removed on any
   failure, so it never claims a version that is not on disk.
