@@ -26,6 +26,11 @@ rep = sys.argv[sys.argv.index("--report") + 1]
 mode = os.environ.get("FAKE_PATCHER", "")
 if mode == "crash":
     raise SystemExit("Traceback (most recent call last): TypeError: unsupported operand")
+if mode == "platform":
+    json.dump({"kind": "linux", "patches": [], "success": False, "code": "platform_mismatch",
+               "reason": "spec platform 'windows' does not match binary kind 'linux'"}, open(rep, "w"), indent=2)
+    print("platform_mismatch: spec platform 'windows' does not match binary kind 'linux'", file=sys.stderr)
+    sys.exit(2)
 data = bytearray(open(src, "rb").read())
 site = data[16] if len(data) > 16 else None
 item = {"name": "gate", "match_count": 1, "patch_offset": "0x10"}
@@ -239,6 +244,18 @@ echo "M - the patcher crashes: its last line is in the reason"
 new_root 74
 boot FAKE_PATCHER=crash
 fallback 'crash' 'no report: Traceback (most recent call last): TypeError: unsupported operand'
+
+echo "M2 - the patcher refuses by name (a spec for the other platform): the name is in the reason"
+new_root 74
+boot FAKE_PATCHER=platform
+fallback 'platform refusal' "exit 2, platform_mismatch: spec platform 'windows' does not match binary kind 'linux'"
+new_root 74
+boot FAKE_PATCHER=platform HAVE_JQ=1 'JQ=$(type -P jq || echo /nonexistent)'
+if [ "$JQ" != /nonexistent ] || type -P jq >/dev/null; then
+    fallback 'platform refusal, with jq' "exit 2, platform_mismatch: spec platform 'windows' does not match binary kind 'linux'"
+else
+    echo "  SKIP platform refusal, with jq: no jq on this machine"
+fi
 
 echo "N - a move that does not land is caught by reading the binary back"
 new_root 74
