@@ -638,6 +638,8 @@ local_patch() {
     # Exit 0 is not the verdict: the report must say success and the output must exist (rule 13).
     if [ "$rc" != 0 ] || [ ! -f "$out" ] || ! grep -Eq '"success"[[:space:]]*:[[:space:]]*true' "$PATCH_REPORT" 2>/dev/null; then
         LOCAL_WHY="the patcher (tool v${TOOL_VER:-?}) did not patch this build: exit $rc, $(patch_summary)"
+        # Exit 2 with a report saying false = the patterns do not fit this game build.
+        [ "$rc" = 2 ] && grep -Eq '"success"[[:space:]]*:[[:space:]]*false' "$PATCH_REPORT" 2>/dev/null && LOCAL_SIG=1
         rm -f "$out"; return 1
     fi
     [ "$(stat -c%s "$out" 2>/dev/null)" = "$VSIZE" ] || { LOCAL_WHY="the patcher's output is not the binary's size"; rm -f "$out"; return 1; }
@@ -652,6 +654,7 @@ local_patch() {
 }
 
 MOD_READY=0
+LOCAL_SIG=0
 LANE_ANSWERED=0
 LANE_WHY=""
 if local_patch; then
@@ -890,6 +893,8 @@ if [ "$MOD_READY" != "1" ]; then
         warn "=============================================================="
     elif [ "$LANE_ANSWERED" = "1" ] && [ -n "$LANE_WHY" ]; then
         refuse mod_binary_unavailable "MOD-BINARY-UNAVAILABLE: the lane ANSWERED, but its modded binary for vanilla ${VANILLA_HASH:0:16} could not be installed on this volume (${LANE_WHY}), and the local patch did not run ($LOCAL_WHY). This is the volume, not the mod build: check its free space and permissions. Vanilla is forbidden on this egg. The panel will retry."
+    elif [ "$LOCAL_SIG" = "1" ]; then
+        refuse binary_signature_unrecognised "BINARY-SIGNATURE-UNRECOGNISED: the signature patch (tool v${TOOL_VER:-?}) does not recognise this game build (vanilla ${VANILLA_HASH:0:16}): $(patch_summary). The game updated under the patch; its spec needs this build. No other source holds a modded binary for it. Vanilla is forbidden on this egg. The panel will retry."
     elif [ "$LANE_ANSWERED" = "1" ]; then
         refuse mod_binary_unavailable "MOD-BINARY-UNAVAILABLE: the lane ANSWERED and has no verified modded binary for vanilla ${VANILLA_HASH:0:16}, and the local patch did not run ($LOCAL_WHY). The mod build lags a game update; the on-volume cache is not used, because it was built for a different game build. Vanilla is forbidden on this egg. The panel will retry; check ${PRIMAL_BINARY_BASE}/api/binary/status."
     else
