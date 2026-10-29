@@ -617,11 +617,13 @@ get_patcher() {
     return 0
 }
 
-patch_summary() { # one line naming each rule's outcome
+patch_summary() { # one line naming each rule's outcome, or the patcher's own named refusal
     if [ ! -s "$PATCH_REPORT" ]; then
         printf 'no report: %s' "$(tail -n1 "$PATCHER_DIR/last-stderr.txt" 2>/dev/null | cut -c1-120)"
     elif [ "$HAVE_JQ" = "1" ]; then
-        "$JQ" -r '[.patches[]? | "\(.name)=\(.status)\(if .patch_offset then "@" + .patch_offset else "" end)"] | join(" ")' "$PATCH_REPORT" 2>/dev/null
+        "$JQ" -r 'if .code then "\(.code): \(.reason // "")" else [.patches[]? | "\(.name)=\(.status)\(if .patch_offset then "@" + .patch_offset else "" end)"] | join(" ") end' "$PATCH_REPORT" 2>/dev/null
+    elif grep -q '^  "code": "' "$PATCH_REPORT"; then
+        printf '%s: %s' "$(sed -n 's/^  "code": "\([^"]*\)".*/\1/p' "$PATCH_REPORT")" "$(sed -n 's/^  "reason": "\([^"]*\)".*/\1/p' "$PATCH_REPORT")"
     else
         printf 'see %s' "$PATCH_REPORT"
     fi

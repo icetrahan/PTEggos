@@ -105,6 +105,7 @@ function Run-Boot([string]$label, [hashtable]$have) {
         "`$game = '$game'; `$tmpl = '$tmpl'",
         "`$script:dbg = Join-Path `$tmpl 'wrapper-debug.log'",
         "`$env:ENABLE_PRIMAL_MOD = '1'; `$env:PHSK_KEY = 'x'",
+        "`$env:PRIMAL_DATA_BASE = '$base'",
         "`$env:PRIMAL_SIGBYPASS_MANIFEST = '$base/sb.json'; `$env:PRIMAL_MOD_MANIFEST = '$base/pak.json'",
         "`$env:PRIMAL_DL_STALL_S = '$STALL'; `$env:PRIMAL_DL_MAX_S = '$MAX'"
     ) -join "`n"
