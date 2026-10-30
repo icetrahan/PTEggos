@@ -972,6 +972,50 @@ $paksDir    = Join-Path $game 'TheIsle\Content\Paks'
 $pakVerFile = Join-Path $tmpl 'primal-pak.version'
 $pakUcas    = Join-Path $paksDir 'pakchunk50-Windows_P.ucas'
 
+# Every file download in this wrapper goes through Save-Download, so one stuck request cannot
+# hold the boot (#4275). It gives up when no byte arrives for PRIMAL_DL_STALL_S (default 30) or
+# the file is not finished in PRIMAL_DL_MAX_S (default 120), throws a message starting
+# "timed out", and leaves no partial $OutFile behind.
+$script:dlStallMs = 1000 * [int](EnvOr $env:PRIMAL_DL_STALL_S '30')
+$script:dlMaxMs   = 1000 * [int](EnvOr $env:PRIMAL_DL_MAX_S '120')
+function Save-Download([string]$Uri, [string]$OutFile) {
+    Add-Type -AssemblyName System.Net.Http
+    $client = New-Object System.Net.Http.HttpClient
+    $client.Timeout = [System.Threading.Timeout]::InfiniteTimeSpan
+    $resp = $null; $fs = $null; $ok = $false
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    try {
+        $t = $client.GetAsync($Uri, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead)
+        if (-not $t.Wait($script:dlStallMs)) { throw "timed out: no response in $($script:dlStallMs / 1000) s" }
+        $resp = $t.Result
+        if (-not $resp.IsSuccessStatusCode) { throw "HTTP $([int]$resp.StatusCode) $($resp.ReasonPhrase)" }
+        $st = $resp.Content.ReadAsStreamAsync().Result
+        $fs = [IO.File]::Create($OutFile)
+        $buf = New-Object byte[] 1048576
+        while ($true) {
+            $left = $script:dlMaxMs - $sw.ElapsedMilliseconds
+            if ($left -le 0) { throw "timed out: not finished in $($script:dlMaxMs / 1000) s" }
+            $r = $st.ReadAsync($buf, 0, $buf.Length)
+            if (-not $r.Wait([Math]::Min($script:dlStallMs, $left))) {
+                if ($left -le $script:dlStallMs) { throw "timed out: not finished in $($script:dlMaxMs / 1000) s" }
+                throw "timed out: no data for $($script:dlStallMs / 1000) s after $($fs.Length) bytes"
+            }
+            if ($r.Result -le 0) { break }
+            $fs.Write($buf, 0, $r.Result)
+        }
+        $ok = $true
+    } catch {
+        $e = $_.Exception; while ($e.InnerException) { $e = $e.InnerException }
+        throw $e.Message
+    } finally {
+        # Disposing the client aborts a request still pending, so nothing keeps reading after we leave.
+        if ($fs) { $fs.Dispose() }
+        if ($resp) { $resp.Dispose() }
+        $client.Dispose()
+        if (-not $ok) { Remove-Item $OutFile -Force -ErrorAction SilentlyContinue }
+    }
+}
+
 # ---------------------------------------------------------------------------
 # SIGNATURE BYPASS (UniversalSigBypasser) - REQUIRED for the mod pak to mount.
 #
@@ -1049,6 +1093,7 @@ $binDirWin  = Join-Path $game 'TheIsle\Binaries\Win64'
 $sbVerFile  = Join-Path $tmpl 'primal-sigbypass.version'
 $sbDll      = 'UniversalSigBypasser.asi'
 $sbSkip     = $null
+
 if ($env:ENABLE_PRIMAL_MOD -eq '1') {
     $sbManifestUrl = EnvOr $env:PRIMAL_SIGBYPASS_MANIFEST 'https://pub-fb6fdcc2ce914775ba41c9813f80dc10.r2.dev/primal-sigbypass/latest.json'
     try {
@@ -1070,11 +1115,19 @@ if ($env:ENABLE_PRIMAL_MOD -eq '1') {
 
         if ($sbNeed.Count) {
             Write-Host "(sigbypass) placing $($sbNeed.Count)/$($sbFiles.Count) file(s) (v$($sm.version)) into TheIsle\Binaries\Win64 ..."
-            $sbBad = @()
+            $sbBad = @(); $sbDlFail = @(); $sbMissing = @()
             foreach ($fi in $sbNeed) {
                 $dst = Join-Path $binDirWin $fi.name
                 $tmpf = "$dst.download"
-                Invoke-WebRequest -Uri $fi.url -OutFile $tmpf -UseBasicParsing
+                try { Save-Download $fi.url $tmpf }
+                catch {
+                    $keep = if (Test-Path $dst) { 'the previous copy stays in use' } else { 'there is no previous copy, so the mod pak will NOT mount this boot' }
+                    Dbg "sigbypass download of $($fi.name) failed ($($_.Exception.Message)) - $keep"
+                    Write-Host "(sigbypass) download of $($fi.name) failed: $($_.Exception.Message) - $keep"
+                    $sbDlFail += $fi.name
+                    if (-not (Test-Path $dst)) { $sbMissing += "$($fi.name) ($($_.Exception.Message))" }
+                    continue
+                }
                 $sha = (Get-FileHash $tmpf -Algorithm SHA256).Hash.ToLower()
                 if ($sha -ne ("" + $fi.sha256).ToLower()) {
                     Write-Host "(sigbypass) sha256 MISMATCH on $($fi.name) (got $sha) - discarding"
@@ -1085,8 +1138,13 @@ if ($env:ENABLE_PRIMAL_MOD -eq '1') {
                     Write-Host "(sigbypass) placed $($fi.name) ($($fi.size) bytes)"
                 }
             }
+            # A failed download with a previous copy in place keeps the bypass; one with none leaves it out.
             if ($sbBad.Count) {
                 $sbSkip = @{ code = 'sha_mismatch'; reason = "sigbypass: $($sbBad.Count) of $($sbNeed.Count) downloaded file(s) failed sha256 against manifest v$($sm.version): $($sbBad -join ', ')" }
+            } elseif ($sbMissing.Count) {
+                $sbSkip = @{ code = 'prepare_failed'; reason = "sigbypass: download failed with no previous copy: $($sbMissing -join ', ')" }
+            } elseif ($sbDlFail.Count) {
+                Remove-Item $sbVerFile -Force -ErrorAction SilentlyContinue
             } else {
                 Set-Content -Path $sbVerFile -Value $sm.version -Encoding ascii
             }
@@ -1144,7 +1202,13 @@ if ($env:ENABLE_PRIMAL_MOD -eq '1') {
             $allOk = $true
             foreach ($fi in $pakFiles) {
                 $tmp = Join-Path $stage $fi.name
-                Invoke-WebRequest -Uri $fi.url -OutFile $tmp -UseBasicParsing
+                try { Save-Download $fi.url $tmp }
+                catch {
+                    $keep = if ($haveVer -and (Test-Path $pakUcas)) { "previous pak $haveVer stays in use" } else { 'no previous pak on disk, so this boot runs without the mod pak' }
+                    Dbg "pak download of $($fi.name) failed ($($_.Exception.Message)) - $keep"
+                    Write-Host "(primal-pak) download of $($fi.name) failed: $($_.Exception.Message) - $keep"
+                    $allOk = $false; break
+                }
                 $sha = (Get-FileHash $tmp -Algorithm SHA256).Hash.ToLower()
                 if ($sha -ne ("" + $fi.sha256).ToLower()) {
                     Write-Host "(primal-pak) sha256 MISMATCH on $($fi.name) (got $sha) - discarding this update"
@@ -1161,7 +1225,7 @@ if ($env:ENABLE_PRIMAL_MOD -eq '1') {
                 Set-Content -Path $pakVerFile -Value $pm.version -Encoding ascii
                 Write-Host "(primal-pak) pak $($pm.version) ready ($($pm.build)) -> $paksDir"
             } else {
-                Write-Host "(primal-pak) update discarded on verify failure - keeping the existing pak (if any)"
+                Write-Host "(primal-pak) update discarded (a download or sha check failed) - keeping the existing pak (if any)"
             }
             Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
         } else {
@@ -1254,7 +1318,7 @@ if ($cbOn) {
                 $dst = Join-Path $binDirWin $fi.name
                 $tmpf = "$dst.download"
                 $cbStep = "the download of $($fi.name)"
-                Invoke-Retried { Invoke-WebRequest -Uri $fi.url -OutFile $tmpf -UseBasicParsing } "download of $($fi.name)" | Out-Null
+                Invoke-Retried { Save-Download $fi.url $tmpf } "download of $($fi.name)" | Out-Null
                 $sha = (Get-FileHash $tmpf -Algorithm SHA256).Hash.ToLower()
                 if ($sha -ne ("" + $fi.sha256).ToLower()) {
                     Write-Host "(commban) sha256 MISMATCH on $($fi.name) (got $sha) - discarding; NOT injecting this boot"
@@ -1354,7 +1418,12 @@ if ($cbReady -and ((EnvOr $env:PRIMAL_LOADER '1').Trim() -ne '0')) {
             $h = if (Test-Path $dst) { (Get-FileHash $dst -Algorithm SHA256).Hash.ToLower() } else { '' }
             if ($h -eq ("" + $fi.sha256).ToLower()) { continue }
             $tmpf = "$dst.download"
-            Invoke-WebRequest -Uri $fi.url -OutFile $tmpf -UseBasicParsing
+            try { Save-Download $fi.url $tmpf }
+            catch {
+                Dbg "loader download of $($fi.name) failed ($($_.Exception.Message)) - the injector watchdog carries this boot"
+                Write-Host "(primal-loader) download of $($fi.name) failed: $($_.Exception.Message)"
+                $lBad++; continue
+            }
             $sha = (Get-FileHash $tmpf -Algorithm SHA256).Hash.ToLower()
             if ($sha -ne ("" + $fi.sha256).ToLower()) {
                 Write-Host "(primal-loader) sha256 MISMATCH on $($fi.name) (got $sha) - discarding"

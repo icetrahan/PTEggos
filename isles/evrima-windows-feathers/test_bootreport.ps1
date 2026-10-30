@@ -18,6 +18,7 @@ function Lift([string]$from, [string]$to, [int]$dropLast) {
     return (($lines[($a-1)..($a+$b-2)] | Select-Object -SkipLast $dropLast) -join "`n")
 }
 $envOr     = Lift 'function EnvOr(' 'function EnvOr(' 0
+$dbgFn     = Lift 'function Dbg(' 'function Dbg(' 0
 $helpers   = Lift '# BOOT REPORTS' '$binDirWin  = Join-Path $game' 1
 $sigbypass = Lift '$binDirWin  = Join-Path $game' '$pakManifestUrl = EnvOr' 2
 $exeCheck  = Lift '$exe = Join-Path $game ''TheIsle\Binaries\Win64\TheIsleServer-Win64-Shipping.exe''' '# Multihome:' 1
@@ -26,7 +27,7 @@ $launch    = Lift 'if ($own.Count -eq 0)' '# Both are OURS' 1
 # The wrapper ends with exit 1 here; in a test job that is a throw this side can read.
 Ok 'the no-process stop still exits 1' ($launch -match 'exit 1')
 $launch    = $launch -replace '\bexit 1\b', "throw 'exit 1'"
-Invoke-Expression $envOr
+Invoke-Expression $envOr; Invoke-Expression $dbgFn
 
 # ---- the plane ----
 $listener = $null
@@ -67,6 +68,7 @@ function Reset-World {
     $script:game = Join-Path $work 'server'; $script:tmpl = Join-Path $work '_primal'
     New-Item -ItemType Directory -Force -Path $script:game, $script:tmpl | Out-Null
     $script:phsk = $KEY; $env:ENABLE_PRIMAL_MOD = '1'; $script:volRoot = $work
+    $script:dbg = Join-Path $work 'debug.log'
     $script:bootReports = @()
     $script:net = @{ manifestFails = 0; manifest = $null; downloadFails = 0; bytes = @{} }
 }
@@ -90,7 +92,7 @@ function Invoke-RestMethod { param([string]$Uri, [int]$TimeoutSec)
     if ($script:net.manifestFails -gt 0) { $script:net.manifestFails--; throw 'The operation has timed out.' }
     return $script:net.manifest
 }
-function Invoke-WebRequest { param([string]$Uri, [string]$OutFile, [switch]$UseBasicParsing)
+function Save-Download { param([string]$Uri, [string]$OutFile)
     if ($script:net.downloadFails -gt 0) { $script:net.downloadFails--; throw "The remote name could not be resolved: 'r2.test'" }
     $name = Split-Path $Uri -Leaf
     [IO.File]::WriteAllText($OutFile, $script:net.bytes[$name], [Text.Encoding]::ASCII)
@@ -143,6 +145,15 @@ $seen = Take 200
 Ok 'a failed download: skipped prepare_failed, naming the error' ($seen -and $seen.json.skipped -eq 'prepare_failed' -and $seen.json.reason -match 'could not be resolved') $seen.raw
 Ok '...and no stale version file claims it is current' (-not (Test-Path (& $verOf)))
 $null = Drain
+Reset-World; $net.manifest = Manifest; Set-Content -Path (& $verOf) -Value '1.1' -Encoding ascii
+New-Item -ItemType Directory -Force -Path (& $binOf) | Out-Null
+Set-Content -Path (Join-Path (& $binOf) 'dsound.dll') -Value 'OLD-DSOUND' -Encoding ascii
+Set-Content -Path (Join-Path (& $binOf) 'UniversalSigBypasser.asi') -Value 'OLD-ASI' -Encoding ascii
+$net.downloadFails = 2
+$out = Invoke-Expression $sigbypass 6>&1 | Out-String
+Ok 'a failed download with the previous copy in place: nothing reaches the plane' ($null -eq (Take 200 2500)) $out
+Ok '...and the version file does not claim the new version' (-not (Test-Path (& $verOf)))
+$null = Drain
 
 Write-Host "`nE - the report is not ack-once"
 Reset-World; $net.manifest = Manifest; $net.bytes['dsound.dll'] = 'TAMPERED'
@@ -170,7 +181,7 @@ Ok '...and nothing reaches the plane' ($null -eq (Take 200 2500))
 Reset-World; $net.manifest = Manifest; $net.bytes['dsound.dll'] = 'TAMPERED'; $env:ENABLE_PRIMAL_MOD = '0'
 $null = Invoke-Expression $sigbypass 6>&1 | Out-String
 Ok 'mod off: nothing reaches the plane' ($null -eq (Take 200 2500))
-Remove-Item Function:\Invoke-RestMethod, Function:\Invoke-WebRequest
+Remove-Item Function:\Invoke-RestMethod, Function:\Save-Download
 
 Write-Host "`nF - the server binary is missing"
 # The refusal posts before the stop, in line, so the check runs in a job and this side plays the plane.

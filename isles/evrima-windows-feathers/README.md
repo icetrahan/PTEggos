@@ -55,6 +55,7 @@ Those three are the images the Linux eggs build from. Push deliberately.
 | `test_bootreport.ps1` | runs the wrapper's real signature-bypass and server-binary lines; each failure reaches a local listener as a boot report (#4288, #4305) |
 | `test_animalroster.ps1` | runs the whole wrapper in render-only mode against a local stand-in for the plane and reads the Engine.ini the game would read (A431) |
 | `test_regionspawn.ps1` | the same render-only run for the three region spawning keys in Game.ini (A836) |
+| `test_dltimeout.ps1` | runs the wrapper's real sigbypass + pak lines against a local server that never answers, stalls or trickles: each boot step returns inside its limit, keeps the old pak and names the file in `wrapper-debug.log` (#4275) |
 
 None of the loose files are read from here by anything — `install.ps1` lives in the
 panel DB, and it writes the other three from base64. They exist so a change is
@@ -165,8 +166,8 @@ python isles/evrima-windows-feathers/embed.py    # re-embed + refresh verify.py'
 python isles/evrima-windows-feathers/verify.py   # the gate
 ```
 
-sha256 of the committed wrapper: **`202bfd238a140e8393df4b66a991423cfd8ba810cbc7aa0b34f9f92e7f387db1`**
-(111,903 B — the region spawning keys, A836), recorded in `verify.py` as `WRAPPER_SHA` and refreshed by `embed.py`.
+sha256 of the committed wrapper: **`ed6aa9ebc8b18826e85145d26839fdf0adbbea2ceb1efd998c6711a861016030`**
+(122,112 B — boot reports for a missing bypass or binary, #4288, and for no server process, #4305), recorded in `verify.py` as `WRAPPER_SHA` and refreshed by `embed.py`.
 ⚠️ **This line was stale by two wrapper versions when it was corrected on 2026-08-12** (it still
 named 46,224 B while the committed wrapper was 59,366 B). `embed.py` refreshes `verify.py` but
 **not this README**, so the drift is silent and recurs — check the byte count against the file,
@@ -215,7 +216,7 @@ that cannot place it still launches, unmodded, and now says so: a console banner
 
 | What happened | Body | Plane |
 |---|---|---|
-| manifest read or a download failed | `stage:"inject"`, `dll:"UniversalSigBypasser.asi"`, `ok:false`, `skipped:"prepare_failed"` | pages; one automatic restart re-fetches |
+| manifest read failed, or a download failed with no previous copy on disk | `stage:"inject"`, `dll:"UniversalSigBypasser.asi"`, `ok:false`, `skipped:"prepare_failed"` | pages; one automatic restart re-fetches |
 | a downloaded file failed its sha256 | same, `skipped:"sha_mismatch"`, the file named | pages at once (a restart reads the same file) |
 | the next boot places it | same `dll`, `ok:true` | resolves |
 | `TheIsleServer-Win64-Shipping.exe` missing | `stage:"start"`, `platform:"windows"`, `ok:false`, `code:"binary_missing"`, sent before the stop | `boot_refused` page |
@@ -224,6 +225,8 @@ that cannot place it still launches, unmodded, and now says so: a console banner
 
 - `primal-sigbypass.version` is written only when every file passed its sha256, and removed on any
   failure, so it never claims a version that is not on disk.
+- A download that fails while the previous copy is on disk keeps that copy and sends no report: the
+  bypass is still in place (#4275).
 - The clearing reports are sent only after a failure (`_primal/primal-sigbypass-report.pending`,
   `_primal/boot-refused.pending`); a healthy boot sends nothing.
 - The bypass report runs in a job like the comm-ban one (never holds the launch, repeats until the
@@ -233,7 +236,7 @@ that cannot place it still launches, unmodded, and now says so: a console banner
   with `OPS_MOD_ABSENT_SCOPE=all`.
 
 `powershell -NoProfile -ExecutionPolicy Bypass -File isles/evrima-windows-feathers/test_bootreport.ps1`
-(34 checks).
+(36 checks).
 
 ## Mass migration and patrol timing (BUGS #3328, #3362)
 
