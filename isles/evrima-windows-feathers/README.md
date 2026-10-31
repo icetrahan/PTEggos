@@ -52,7 +52,7 @@ Those three are the images the Linux eggs build from. Push deliberately.
 | `gate_test.py` | drives `install.ps1`'s failure gate through 9 real states (#346) |
 | `test_carryforward.ps1` | runs the wrapper's real hand-set pak key lines through 20 states (#1137, #3363) |
 | `test_noinject.ps1` | runs the wrapper's real comm-ban "not injecting" lines and its report job against a local listener (#3499) |
-| `test_bootreport.ps1` | runs the wrapper's real signature-bypass and server-binary lines; each failure reaches a local listener as a boot report (#4288) |
+| `test_bootreport.ps1` | runs the wrapper's real signature-bypass and server-binary lines; each failure reaches a local listener as a boot report (#4288, #4305) |
 | `test_animalroster.ps1` | runs the whole wrapper in render-only mode against a local stand-in for the plane and reads the Engine.ini the game would read (A431) |
 | `test_regionspawn.ps1` | the same render-only run for the three region spawning keys in Game.ini (A836) |
 | `test_dltimeout.ps1` | runs the wrapper's real sigbypass + pak lines against a local server that never answers, stalls or trickles: each boot step returns inside its limit, keeps the old pak and names the file in `wrapper-debug.log` (#4275) |
@@ -166,8 +166,8 @@ python isles/evrima-windows-feathers/embed.py    # re-embed + refresh verify.py'
 python isles/evrima-windows-feathers/verify.py   # the gate
 ```
 
-sha256 of the committed wrapper: **`77bcfd260963d70e41c5c64327b57d8388d042d4c7f38b7c9400247740084ae5`**
-(121,793 B — boot reports for a missing bypass or binary, #4288), recorded in `verify.py` as `WRAPPER_SHA` and refreshed by `embed.py`.
+sha256 of the committed wrapper: **`ed6aa9ebc8b18826e85145d26839fdf0adbbea2ceb1efd998c6711a861016030`**
+(122,112 B — boot reports for a missing bypass or binary, #4288, and for no server process, #4305), recorded in `verify.py` as `WRAPPER_SHA` and refreshed by `embed.py`.
 ⚠️ **This line was stale by two wrapper versions when it was corrected on 2026-08-12** (it still
 named 46,224 B while the committed wrapper was 59,366 B). `embed.py` refreshes `verify.py` but
 **not this README**, so the drift is silent and recurs — check the byte count against the file,
@@ -208,7 +208,7 @@ plane answers: a 2xx, or a 4xx no retry can change.
 `powershell -NoProfile -ExecutionPolicy Bypass -File isles/evrima-windows-feathers/test_noinject.ps1`
 runs the wrapper's real lines through 13 boots and posts to a local listener over real HTTP (32 checks).
 
-## A boot without the signature bypass, or without the server binary, reports it (BUGS #4288)
+## A boot without the signature bypass, the server binary or a server process reports it (BUGS #4288, #4305)
 
 The pak mounts only with the bypass (`dsound.dll` + `UniversalSigBypasser.asi`) in place. A boot
 that cannot place it still launches, unmodded, and now says so: a console banner and
@@ -220,7 +220,8 @@ that cannot place it still launches, unmodded, and now says so: a console banner
 | a downloaded file failed its sha256 | same, `skipped:"sha_mismatch"`, the file named | pages at once (a restart reads the same file) |
 | the next boot places it | same `dll`, `ok:true` | resolves |
 | `TheIsleServer-Win64-Shipping.exe` missing | `stage:"start"`, `platform:"windows"`, `ok:false`, `code:"binary_missing"`, sent before the stop | `boot_refused` page |
-| the next boot that launches | `stage:"start"`, `ok:true` | clears `boot_refused` |
+| no server process under the volume appears after launch | same, `code:"no_server_process"`, sent before `exit 1` | `boot_refused` page (generic action text) |
+| the next boot whose server process appears | `stage:"start"`, `ok:true` | clears `boot_refused` |
 
 - `primal-sigbypass.version` is written only when every file passed its sha256, and removed on any
   failure, so it never claims a version that is not on disk.

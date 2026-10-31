@@ -1,5 +1,5 @@
-# Behaviour test: a boot that leaves the signature bypass out, or stops before launch, tells the
-# plane by name (BUGS #4288). Runs the REAL lines lifted from the shipping wrapper; the plane is a
+# Behaviour test: a boot that leaves the signature bypass out, stops before launch, or launches
+# no server process, tells the plane by name (BUGS #4288, #4305). Runs the REAL lines lifted from the shipping wrapper; the plane is a
 # local HttpListener and the report goes to it over real HTTP.
 #   powershell -NoProfile -ExecutionPolicy Bypass -File isles/evrima-windows-feathers/test_bootreport.ps1
 $ErrorActionPreference = 'Stop'
@@ -23,6 +23,10 @@ $helpers   = Lift '# BOOT REPORTS' '$binDirWin  = Join-Path $game' 1
 $sigbypass = Lift '$binDirWin  = Join-Path $game' '$pakManifestUrl = EnvOr' 2
 $exeCheck  = Lift '$exe = Join-Path $game ''TheIsle\Binaries\Win64\TheIsleServer-Win64-Shipping.exe''' '# Multihome:' 1
 $drain     = Lift 'function Show-BootReports {' '$pos = 0' 1
+$launch    = Lift 'if ($own.Count -eq 0)' '# Both are OURS' 1
+# The wrapper ends with exit 1 here; in a test job that is a throw this side can read.
+Ok 'the no-process stop still exits 1' ($launch -match 'exit 1')
+$launch    = $launch -replace '\bexit 1\b', "throw 'exit 1'"
 Invoke-Expression $envOr; Invoke-Expression $dbgFn
 
 # ---- the plane ----
@@ -207,8 +211,9 @@ Set-Content -Path (Join-Path $exeDir 'TheIsleServer-Win64-Shipping.exe') -Value 
 $j = Start-ExeCheck
 $seen = Take 200
 $r = Finish-ExeCheck $j
-Ok 'the next boot that launches reports the start, clearing the page' (-not $r.threw -and $seen -and $seen.json.stage -eq 'start' -and $seen.json.ok -eq $true) "$($r.threw) $($seen.raw)"
-Ok '...and the marker is gone once recorded' (-not (Test-Path (Join-Path $tmpl 'boot-refused.pending'))) $r.out
+Ok 'the next boot with the exe goes on, and does not clear the page before a process runs' (-not $r.threw -and $null -eq $seen) "$($r.threw) $($seen.raw)"
+Ok '...so the marker stays' (Test-Path (Join-Path $tmpl 'boot-refused.pending')) $r.out
+Remove-Item (Join-Path $tmpl 'boot-refused.pending') -ErrorAction SilentlyContinue
 $j = Start-ExeCheck
 $seen = Take 200 4000
 $r = Finish-ExeCheck $j
@@ -223,6 +228,53 @@ $j = Start-ExeCheck
 $seen = Take 200 3000
 $r = Finish-ExeCheck $j
 Ok 'no key: the stop says it was NOT reported, and nothing is sent' ($null -eq $seen -and $r.threw -match 'server binary missing' -and $r.out -match 'NOT reported off-box: no PHSK_KEY') $r.out
+
+Write-Host "`nG - no server process appears after launch"
+function Start-Launch([bool]$appears) {
+    Start-Job -Name 'primal-test-launch' -ArgumentList $envOr, $helpers, $launch, $game, $tmpl, $phsk, $env:PRIMAL_DATA_BASE, $appears, $work -ScriptBlock {
+        param($envOr, $helpers, $launch, $game, $tmpl, $phsk, $base, $appears, $volRoot)
+        $ErrorActionPreference = 'Stop'; $env:PRIMAL_DATA_BASE = $base; $env:PRIMAL_INJECT_WATCH_S = '1'
+        function Dbg($m) { Write-Host "DBG $m" }
+        Invoke-Expression $envOr; Invoke-Expression $helpers
+        $exe = Join-Path $game 'TheIsle\Binaries\Win64\TheIsleServer-Win64-Shipping.exe'
+        $own = @(); if ($appears) { $own = @([pscustomobject]@{ Id = 4242 }) }
+        $out = ''
+        try { Invoke-Expression $launch 6>&1 | ForEach-Object { $out += "$_`n" }; $threw = '' } catch { $threw = "$_" }
+        foreach ($r in @($script:bootReports)) { if ($r) { [void](Wait-Job $r.job -Timeout 20); $out += (Receive-Job $r.job | Out-String) } }
+        @{ threw = $threw; out = $out }
+    }
+}
+Reset-World
+$mark = Join-Path $tmpl 'boot-refused.pending'
+$j = Start-Launch $false
+$seen = Take 200
+$r = Finish-ExeCheck $j
+Ok 'the start still stops (exit 1)' ($r.threw -eq 'exit 1') ($r | Out-String)
+Ok 'the plane was told BEFORE the stop: a refused start' ($seen -and $seen.method -eq 'POST' -and $seen.path -eq '/v1/boot-report' -and $seen.auth -eq "Bearer $KEY" -and $seen.json.stage -eq 'start' -and $seen.json.ok -eq $false -and $seen.json.platform -eq 'windows' -and $seen.json.game -eq 'evrima') $seen.raw
+Ok '...named no_server_process, naming the volume' ($seen.json.code -eq 'no_server_process' -and $seen.json.reason -match 'no server process' -and $seen.json.reason -match [regex]::Escape($work)) $seen.raw
+Ok '...and no key in the body' ($seen.raw -notmatch 'phsk_')
+Ok '...and the console says it was recorded' ($r.out -match 'refused start report: recorded on try 1') $r.out
+Ok 'a refused marker is left, naming the code' ((Test-Path $mark) -and (Get-Content $mark).Trim() -eq 'no_server_process')
+$j = Start-Launch $true
+$seen = Take 200
+$r = Finish-ExeCheck $j
+Ok 'the next boot whose process appears reports the start, clearing the page' (-not $r.threw -and $seen -and $seen.json.stage -eq 'start' -and $seen.json.ok -eq $true -and $null -eq $seen.json.code) "$($r.threw) $($seen.raw)"
+Ok '...and the marker is gone once recorded' (-not (Test-Path $mark)) $r.out
+$j = Start-Launch $true
+$seen = Take 200 4000
+$r = Finish-ExeCheck $j
+Ok 'a normal launch sends nothing' (-not $r.threw -and $null -eq $seen) $seen.raw
+$j = Start-Launch $false
+$first = Take 503; $second = Take 503; $third = Take 503; $fourth = Take 200 6000
+$r = Finish-ExeCheck $j
+Ok 'a plane that cannot record it: three tries, then the stop, saying NOT recorded' ($first -and $second -and $third -and $null -eq $fourth -and $r.threw -eq 'exit 1' -and $r.out -match 'NOT recorded after 3 tries: HTTP 503') $r.out
+Remove-Item $mark -ErrorAction SilentlyContinue
+$phsk = ''
+$j = Start-Launch $false
+$seen = Take 200 3000
+$r = Finish-ExeCheck $j
+Ok 'no key: the stop says it was NOT reported, and nothing is sent' ($null -eq $seen -and $r.threw -eq 'exit 1' -and $r.out -match 'NOT reported off-box: no PHSK_KEY') $r.out
+Ok '...and the marker is still left for the next good boot' (Test-Path $mark)
 
 $listener.Stop()
 Get-Job -Name 'primal-*' -ErrorAction SilentlyContinue | Remove-Job -Force -ErrorAction SilentlyContinue
