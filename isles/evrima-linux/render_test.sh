@@ -70,6 +70,10 @@ render() { # $1 = tag, $2 = "canon" | "nocanon", $3.. = extra NAME=VALUE for the
     cp "$HERE/Game.ini.tmpl" "$HERE/Engine.ini.tmpl" "$T/_primal/"
     cp "$JQ_BIN" "$T/_primal/jq"; chmod +x "$T/_primal/jq"
     [ "$2" = "canon" ] && cp "$HERE/boot-config.fixture.json" "$T/canon/v1/boot-config"
+    # Section 6's volume states: a plane answer changed by a jq filter, a boot cache and a live Engine.ini.
+    [ -n "${RT_BOOT_JQ:-}" ] && [ "$2" = "canon" ] && "$JQ_BIN" "$RT_BOOT_JQ" "$HERE/boot-config.fixture.json" > "$T/canon/v1/boot-config"
+    [ -n "${RT_CACHE:-}" ] && cp "$RT_CACHE" "$T/_primal/boot-config.cache.json"
+    [ -n "${RT_ENGINE:-}" ] && { mkdir -p "$T/TheIsle/Saved/Config/LinuxServer"; cp "$RT_ENGINE" "$T/TheIsle/Saved/Config/LinuxServer/Engine.ini"; }
     # Section 4's two template states: no game-session header, and a hand-set line.
     [ "${RT_NO_SESSION:-}" = "1" ] && sed -i 's#^\[/script/theisle\.tigamesession\]#[/script/theisle.somethingelse]#' "$T/_primal/Game.ini.tmpl"
     [ -n "${RT_TMPL_EXTRA:-}" ] && sed -i "s#^bEnablePatrolZones=.*#&\n${RT_TMPL_EXTRA}#" "$T/_primal/Game.ini.tmpl"
@@ -595,6 +599,121 @@ if grep -vE '^\s*#' "$WRAPPER" | grep -qE '(\|\||&&|;|^)\s*die "'; then
 else
     ok "every fatal exit goes through refuse"
 fi
+
+echo
+echo "== 6. PLAY AS AN ANIMAL (A431) - the panel's pick reaches the pak section, byte for byte =="
+# Egg 40's test_animalroster.ps1 on this wrapper. The pre-fix control: the wrapper without the write,
+#     git show 4f99aba:isles/evrima-linux/start-evrima.sh > /tmp/old.sh
+#     ./render_test.sh /tmp/old.sh        # section 6 must FAIL
+ROSTER_RE='^[[:space:]]*AnimalRoster[[:space:]]*='
+ar_engine() { echo "$1/TheIsle/Saved/Config/LinuxServer/Engine.ini"; }
+ar_pak()    { awk '/^\[/ { on = ($0 == "[/Game/TheIsle/Core/Session/BP_TIGameSession.BP_TIGameSession_C]"); next } on' "$(ar_engine "$1")"; }
+ar_lines()  { grep -E "$ROSTER_RE" "$(ar_engine "$1")"; }
+ar_count()  { grep -cE "$ROSTER_RE" "$(ar_engine "$1")"; }
+ar_note()   { grep -F 'Engine.ini: AnimalRoster ' "$1/boot.log"; }
+ar_boot() { # $1 tag, $2 the JSON value of mod_settings.animalRoster, empty for no such field, $3.. wrapper env
+    local tag="$1" val="$2"; shift 2
+    RT_BOOT_JQ=${val:+".config.mod_settings.animalRoster = $val"} render "ar-$tag" canon "$@"
+}
+ar_snap() { # $1 run folder, $2 name: keep a run's file past the next boot of the same tag
+    cp "$(ar_engine "$1")" "$RUN_T/$2"
+}
+
+echo "-- 6a. the pick is the line --"
+T=$(ar_boot a '"Boar,Deer"')
+if ar_pak "$T" | grep -qxF 'AnimalRoster=Boar,Deer'; then ok "pick Boar,Deer renders AnimalRoster=Boar,Deer in the pak section"
+else bad "no AnimalRoster=Boar,Deer in the pak section"; fi
+[ "$(ar_count "$T")" = "1" ] && ok "exactly one AnimalRoster line in the file" || bad "$(ar_count "$T") AnimalRoster line(s), want 1"
+want "the boot names the pick and who owns the key" "(config) Engine.ini: AnimalRoster Boar,Deer (the panel's pick). The panel owns this key (A431)" "$T/boot.log"
+[ "$(ar_pak "$T" | sed -n 1s/=.*//p)" = "ApiToken" ] && [ "$(ar_pak "$T" | sed -n 2s/=.*//p)" = "PollURL" ] \
+    && ok "the token and the poll URL are still the first two keys" || bad "the pak section no longer starts with the token and the poll URL"
+if grep -q $'\r' "$(ar_engine "$T")"; then bad "a CR in Engine.ini"; else ok "Engine.ini is LF only"; fi
+ALL='Boar,Deer,Chicken,Rabbit,Seaturtle,GoatBaby'
+T=$(ar_boot a2 "\"$ALL\"")
+wantline "all six offered animals render in the owner's order" "AnimalRoster=$ALL" "$(ar_engine "$T")"
+T=$(ar_boot a3 '"GoatBaby"')
+wantline "one animal renders alone" 'AnimalRoster=GoatBaby' "$(ar_engine "$T")"
+LONGEST=$(printf 'Boar,%.0s' $(seq 1 32)); LONGEST=${LONGEST%,}
+T=$(ar_boot a4 "\"$LONGEST\"")
+wantline "32 names is the most the shape allows, and it renders" "AnimalRoster=$LONGEST" "$(ar_engine "$T")"
+
+T=$(RT_BOOT_JQ='.config.mod_settings.speciesCapList = ["Rabbit:1","Boar:2"]' render ar-a5 canon)
+wantline "A925: an animal cap is an ordinary SpeciesCapList entry" 'SpeciesCapList=Rabbit:1,Boar:2' "$(ar_engine "$T")"
+
+echo "-- 6b. no pick writes nothing, and says so --"
+T=$(ar_boot b1 ''); ar_snap "$T" ar-none
+[ "$(ar_count "$T")" = "0" ] && ok "no animalRoster field => no line" || bad "a line with no pick"
+want "the boot says so, and does not call it a pick" "(config) Engine.ini: AnimalRoster not rendered - this boot's config carries no animal pick, so the game's own roster stands. The panel owns this key (A431)" "$T/boot.log"
+for V in '""' 'null'; do
+    T=$(ar_boot b2 "$V")
+    [ "$(ar_count "$T")" = "0" ] && ar_note "$T" | grep -q 'not rendered' && ! ar_note "$T" | grep -q SKIPPED \
+        && ok "$V => no line, and it is not reported as a refusal" || bad "$V: $(ar_note "$T")"
+done
+T=$(ar_boot b1 '"Boar"')
+if [ -s "$RUN_T/ar-none" ] && diff <(grep -vxF 'AnimalRoster=Boar' "$(ar_engine "$T")") "$RUN_T/ar-none" >/dev/null && [ "$(ar_count "$T")" = "1" ]; then
+    ok "a pick adds ONE line and changes no other byte of Engine.ini"
+else bad "a pick changed more of Engine.ini than its own line"; fi
+
+echo "-- 6c. the key is owned: clearing the pick clears the line --"
+T=$(ar_boot c '"Boar,Deer"'); ar_snap "$T" ar-boot1
+T=$(RT_ENGINE="$RUN_T/ar-boot1" ar_boot c ''); ar_snap "$T" ar-boot2
+[ "$(ar_count "$T")" = "0" ] && ok "pick cleared, same volume => the line is gone" || bad "the old pick survived: $(ar_lines "$T")"
+nowant "...and it is not carried as a hand-set key" 'carried forward' "$T/boot.log"
+T=$(RT_ENGINE="$RUN_T/ar-boot2" ar_boot c '"Chicken"')
+[ "$(ar_lines "$T")" = "AnimalRoster=Chicken" ] && ok "a new pick => one line, the new value" || bad "wrong lines: $(ar_lines "$T")"
+SEC='[/Game/TheIsle/Core/Session/BP_TIGameSession.BP_TIGameSession_C]'
+printf '%s\nApiToken=old\nAnimalRoster=Bullfrog\nIrisCensusEvery=77\n' "$SEC" > "$RUN_T/ar-hand"
+T=$(RT_ENGINE="$RUN_T/ar-hand" ar_boot c2 '')
+[ "$(ar_count "$T")" = "0" ] && ok "no pick => a hand-set AnimalRoster=Bullfrog is dropped" || bad "the hand-set line survived: $(ar_lines "$T")"
+wantline "the hand-set IrisCensusEvery=77 beside it survives" 'IrisCensusEvery=77' "$(ar_engine "$T")"
+T=$(RT_ENGINE="$RUN_T/ar-hand" ar_boot c3 '"Boar"')
+[ "$(ar_lines "$T")" = "AnimalRoster=Boar" ] && ok "a pick beats a hand-set line: one line, the panel's" || bad "wrong lines: $(ar_lines "$T")"
+printf '%s\nanimalroster = Bullfrog\n' "$SEC" > "$RUN_T/ar-case"
+T=$(RT_ENGINE="$RUN_T/ar-case" ar_boot c4 '')
+if grep -qi 'bullfrog' "$(ar_engine "$T")"; then bad "a hand-set key in other case and spacing survived"; else ok "ownership ignores the key's case and spacing, as the game does"; fi
+
+echo "-- 6d. a value that is not a plain name list is refused whole, and said --"
+n=0
+while IFS= read -r V; do
+    n=$((n + 1))
+    T=$(ar_boot d$n "$V")
+    if [ "$(ar_count "$T")" = "0" ] && [ "$(grep -cE '^[[:space:]]*ApiToken[[:space:]]*=' "$(ar_engine "$T")")" = "1" ] \
+        && ! grep -q stolen "$(ar_engine "$T")" && ar_note "$T" | grep -q 'AnimalRoster SKIPPED - the plane.s value (length [0-9]*) is not a plain comma-separated list of names'; then
+        ok "refused and said: $V"
+    else bad "not refused cleanly: $V ($(ar_note "$T"))"; fi
+done <<'CASES'
+"Boar\nApiToken=stolen"
+"Boar\n"
+"Boar\u0000"
+"Boar\r\nDeer"
+"Boar,,Deer"
+"Boar,"
+" Boar"
+"Boar, Deer"
+"Boar;Deer"
+"[Core.Log]"
+"Boar=1"
+["Boar","Deer"]
+{"a":"Boar"}
+7
+true
+CASES
+T=$(ar_boot d65 "\"$(printf 'B%.0s' $(seq 1 65))\"")
+ar_note "$T" | grep -q SKIPPED && [ "$(ar_count "$T")" = "0" ] && ok "refused and said: a 65-character name" || bad "a 65-character name: $(ar_note "$T")"
+T=$(ar_boot d33 "\"$LONGEST,Boar\"")
+ar_note "$T" | grep -q SKIPPED && [ "$(ar_count "$T")" = "0" ] && ok "refused and said: 33 names" || bad "33 names: $(ar_note "$T")"
+
+echo "-- 6e. a plane outage does not strip the roster --"
+T=$(ar_boot e1 '"Boar,Deer"'); cp "$T/_primal/boot-config.cache.json" "$RUN_T/ar-cache"
+T=$(RT_CACHE="$RUN_T/ar-cache" render ar-e2 nocanon)
+want "plane unreachable => rendered from the cache, and said" 'source=cache' "$T/boot.log"
+wantline "...with the last fetched pick" 'AnimalRoster=Boar,Deer' "$(ar_engine "$T")"
+T=$(render ar-e3 nocanon)
+[ "$(ar_count "$T")" = "0" ] && ar_note "$T" | grep -q 'not rendered' && ok "no plane, no cache => no line, and said" || bad "first boot: $(ar_note "$T")"
+
+echo "-- 6f. mod off: no pak section, so no line and no claim of one --"
+T=$(ar_boot f '"Boar"' ENABLE_PRIMAL_MOD=0)
+[ "$(ar_count "$T")" = "0" ] && [ -z "$(ar_note "$T")" ] && ok "ENABLE_PRIMAL_MOD=0 => no line, no AnimalRoster log line" || bad "mod off: $(ar_note "$T")"
 
 echo
 echo "render_test: $PASS passed, $FAIL failed"

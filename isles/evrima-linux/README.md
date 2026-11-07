@@ -171,6 +171,23 @@ only when the egg JSON is re-imported. A new wrapper on the old egg sees the
 variable unset and says `left to the game`. `render_test.sh` section 4 and
 `verify.py` gate 8 cover it.
 
+### `AnimalRoster` is the panel's pick (A431)
+
+Play as an animal, as egg 40 does it (`isles/evrima-windows-feathers/README.md`).
+The plane serves `mod_settings.animalRoster`, one csv string, only while animals
+are picked; the wrapper writes it into the pak section byte for byte, or not at
+all. It owns the key, so a cleared pick clears the line and a hand-set line is
+dropped. Every boot with the mod on prints one line:
+
+- `(config) Engine.ini: AnimalRoster Boar,Deer (the panel's pick). ...`
+- `(config) Engine.ini: AnimalRoster not rendered - this boot's config carries no animal pick, ...`
+- `(config) Engine.ini: AnimalRoster SKIPPED - the plane's value (length N) is not a plain comma-separated list of names, ...`
+
+The plane's Play as an animal card reads this script on the volume
+(`ROSTER_WRITE_MARK`), so it unlocks at the first boot on a wrapper with the
+write. `render_test.sh` section 6 is the proof. `SpeciesCapList` (animal caps,
+A925) needs nothing here: animal entries are ordinary `Species:N` entries.
+
 ### The fleet's two timing constants (BUGS #3631)
 
 The wrapper also writes two constants into the same section on every boot, the

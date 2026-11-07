@@ -177,6 +177,14 @@ def main() -> int:
         "PAK_EXTRA[AIMaxCount]" in wrapper and "speciesCapEvery" in wrapper
         and "speciesCapList" in wrapper,
     )
+    # A431: the plane's volume check unlocks Play as an animal on this write, and a key the script
+    # does not own could never be cleared.
+    check(
+        "the panel's animal pick is written and owned",
+        'SESS_BLOCK+="AnimalRoster=$PAK_ANIMAL_ROSTER"' in wrapper
+        and "c_has mod_settings animalRoster" in wrapper
+        and re.search(r'PAK_MANAGED="[^"]* animalroster ', wrapper) is not None,
+    )
     # #1071: a numeric pak key without its paired sentinel silently does nothing.
     check(
         "#1071 sentinels are derived beside their numeric",
