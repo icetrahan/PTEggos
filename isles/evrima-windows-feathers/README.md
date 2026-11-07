@@ -358,7 +358,7 @@ Every boot with the mod on prints one line:
 | `(config) Engine.ini: AnimalRoster SKIPPED - the plane's value (length N) is not a plain ...` | the value was refused, no line |
 
 `test_animalroster.ps1` runs the real wrapper through 39 checks of the above.
-⚠️ The Linux egg (`evrima-linux`) does not write this key.
+The Linux egg (`evrima-linux`) writes this key the same way, with the same three lines.
 
 ## `PRIMAL_FORCE_DINO` (id 296)
 

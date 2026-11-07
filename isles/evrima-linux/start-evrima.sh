@@ -1332,6 +1332,28 @@ if [ -n "$CANON" ] && c_has mod_settings forceDinoList; then
     PAK_FORCE_DINO=$(mod_csv_shaped "$(c_list mod_settings forceDinoList)" "ForceDinoList" 0)
 fi
 
+# AnimalRoster (A431): the plane sends one csv, already limited to the animals it offers, only while
+# animals are picked. Rendered byte for byte or not at all, so the pick and the key cannot drift.
+# The shape check refuses a line break (an Engine.ini line injection). It runs inside jq because a
+# command substitution would drop a trailing line break or a NUL before bash could see it; \z, never
+# $, catches the trailing one.
+PAK_ANIMAL_ROSTER=""
+ANIMAL_ROSTER_NOTE="not rendered - this boot's config carries no animal pick, so the game's own roster stands"
+if [ -n "$CANON" ] && c_has mod_settings animalRoster; then
+    AR_READ=$(cj '.config.mod_settings.animalRoster
+        | if . == null or . == "" then "none"
+          elif type == "string" and test("\\A[A-Za-z0-9_]{1,64}(,[A-Za-z0-9_]{1,64}){0,31}\\z") then "pick:" + .
+          else "bad:" + (tostring | length | tostring) end')
+    case "$AR_READ" in
+        none) ;;
+        pick:*)
+            PAK_ANIMAL_ROSTER="${AR_READ#pick:}"
+            ANIMAL_ROSTER_NOTE="$PAK_ANIMAL_ROSTER (the panel's pick)" ;;
+        *)
+            ANIMAL_ROSTER_NOTE="SKIPPED - the plane's value (length ${AR_READ#bad:}) is not a plain comma-separated list of names, so the line is NOT rendered and the game's own roster stands. Re-save the pick in the panel" ;;
+    esac
+fi
+
 if [ "${ENABLE_PRIMAL_MOD:-0}" = "1" ] && [ -n "$PHSK" ]; then
     SESS_BLOCK="[/Game/TheIsle/Core/Session/BP_TIGameSession.BP_TIGameSession_C]"$'\n'
     SESS_BLOCK+="ApiToken=$PHSK"$'\n'
@@ -1340,6 +1362,7 @@ if [ "${ENABLE_PRIMAL_MOD:-0}" = "1" ] && [ -n "$PHSK" ]; then
     for K in "${PAK_EXTRA_ORDER[@]}"; do
         SESS_BLOCK+="$K=${PAK_EXTRA[$K]}"$'\n'
     done
+    [ -n "$PAK_ANIMAL_ROSTER" ] && SESS_BLOCK+="AnimalRoster=$PAK_ANIMAL_ROSTER"$'\n'
 
     # --- CARRY FORWARD every hand-set pak key this script does not own (#1137) -
     # The emit REPLACES the whole section, so any key not re-emitted is destroyed
@@ -1348,16 +1371,16 @@ if [ "${ENABLE_PRIMAL_MOD:-0}" = "1" ] && [ -n "$PHSK" ]; then
     # pattern: hand-added, worked for one boot, then reverted).
     #
     # The set below is "keys this script OWNS", NOT "keys it emitted this boot",
-    # and that distinction is the whole correctness of this block: ForceDinoList
-    # and SpeciesCapList are deliberately OMITTED when empty, so judging by what
-    # was emitted would carry their OLD value forward for ever and make them
-    # silently un-clearable.
+    # and that distinction is the whole correctness of this block: ForceDinoList,
+    # SpeciesCapList and AnimalRoster are deliberately OMITTED when empty, so
+    # judging by what was emitted would carry their OLD value forward for ever and
+    # make them silently un-clearable.
     #
     # A carried key is operator-writable through the file manager, so the pak
     # must never read a key whose VALUE is a console command - config selects
     # from a CLOSED SET the pak owns. That rule lives with the pak; it is stated
     # here because this is where the persistence it depends on is introduced.
-    PAK_MANAGED=" apitoken polluri pollurl forcedinolist speciescaplist "
+    PAK_MANAGED=" apitoken polluri pollurl forcedinolist speciescaplist animalroster "
     for K in "${PAK_EXTRA_ORDER[@]}"; do
         PAK_MANAGED="$PAK_MANAGED$(echo "$K" | tr '[:upper:]' '[:lower:]') "
     done
@@ -1394,6 +1417,8 @@ if [ "${ENABLE_PRIMAL_MOD:-0}" = "1" ] && [ -n "$PHSK" ]; then
     PAK_KV=""
     for K in "${PAK_EXTRA_ORDER[@]}"; do PAK_KV+="$K=${PAK_EXTRA[$K]} "; done
     log "Engine.ini: pak keys (source=$CFG_SOURCE) ForceDinoList=$PAK_FORCE_DINO $PAK_KV"
+    # Rule 13: one line every boot, so no pick, the pick and a refused value never share a silence.
+    log "(config) Engine.ini: AnimalRoster $ANIMAL_ROSTER_NOTE. The panel owns this key (A431)"
     [ "$CARRIED_N" -gt 0 ] && log "Engine.ini: carried forward $CARRIED_N hand-set pak key(s) this script does not own (#1137)"
 else
     log "Engine.ini: no Primal session block (mod disabled or no PHSK_KEY)"
