@@ -868,7 +868,7 @@ if ($mhIp -and $mhIp -ne '0.0.0.0' -and $mhIp -match '^\d{1,3}(\.\d{1,3}){3}$') 
     } else {
         Write-Host "(start) multihome OFF (MULTIHOME_IP empty, MULTIHOME_AUTO=0) - binding ALL INTERFACES on 0.0.0.0:$queryPort"
     }
-    Write-Host "(start)   #1832: on 0.0.0.0 the query port is a BOX-WIDE namespace - the first Legacy server on this box owns $queryPort on every IP, and a later server given the same port on its OWN ip will fail Steam init and never list."
+    Write-Host "(start)   On 0.0.0.0 the query port is a BOX-WIDE namespace - the first Legacy server on this box owns $queryPort on every IP, and a later server given the same port on its OWN ip will fail Steam init and never list."
 }
 
 # Foreground launch: if Legacy runs in-process, this BLOCKS for the server's whole
@@ -901,7 +901,7 @@ function Show-InjectVerdict {
             Write-Host "(primal-mod) *** MOD NOT LOADED: $v"
             Write-Host '(primal-mod) *** The game is running WITHOUT the Primal mod: no telemetry, admin,'
             Write-Host '(primal-mod) *** storage or anticheat. The wrapper keeps retrying every 60 s and the'
-            Write-Host '(primal-mod) *** plane has been told; read _primal/primal-inject.log. (#2700, A230)'
+            Write-Host '(primal-mod) *** plane has been told; read _primal/primal-inject.log.'
             Write-Host '(primal-mod) ****************************************************************'
         }
     }

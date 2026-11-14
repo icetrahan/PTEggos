@@ -192,6 +192,7 @@ want "and said"                            'Game.ini: MassMigrationDisableTime=2
 E2="$T2/TheIsle/Saved/Config/LinuxServer/Engine.ini"
 want "no plane => AnimMaxAnimated=999"     'AnimMaxAnimated=999'               "$E2"
 want "no plane => AnimWriteHz=10"          'AnimWriteHz=10'                    "$E2"
+wantline "no plane => body sweep off"      'BodySweepOn=False'                 "$E2"
 
 echo
 echo "== 3. THE BINARY PAIRING LADDER (#2337) - PAIRED / CACHED / DIE =="
@@ -207,7 +208,7 @@ echo "== 3. THE BINARY PAIRING LADDER (#2337) - PAIRED / CACHED / DIE =="
 #     git show bdd15d6:isles/evrima-linux/start-evrima.sh > /tmp/old.sh
 #     ./render_test.sh /tmp/old.sh        # section 3 must FAIL
 # It cannot pass: it has no cache, no pairing record and no degraded rung, and
-# it talks to api.primalheaven.com.
+# it talks to the retired Heaven backend.
 # ---------------------------------------------------------------------------
 BIN_PASS=0
 

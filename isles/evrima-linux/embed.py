@@ -4,6 +4,7 @@ into the egg JSON (the fixer; verify.py is the judge).
 
 Two levels of nesting, same as egg 40:
     start-evrima.sh / Game.ini.tmpl / Engine.ini.tmpl
+        -> their ship copies (strip_comments.py: the wrapper without comments)
         -> base64 blobs inside install.sh (between B64_* heredoc markers,
            with a sha256 recorded beside each so the installer can verify
            its own decode)
@@ -25,6 +26,8 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent))
+from strip_comments import ship_copy  # noqa: E402  the egg ships the wrapper without comments
 EGG_JSON = HERE / "egg-evrima-linux.json"
 INSTALL = HERE / "install.sh"
 
@@ -67,7 +70,7 @@ def main() -> int:
         text = text.replace("\r\n", "\n").replace("\r", "\n")
 
     for marker, (fname, sha_token) in BLOBS.items():
-        data = loose[fname]
+        data = ship_copy(fname, loose[fname])
         sha = hashlib.sha256(data).hexdigest()
         b64 = wrap76(base64.b64encode(data).decode("ascii"))
 

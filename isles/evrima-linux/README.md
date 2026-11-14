@@ -35,8 +35,8 @@ This egg's images are NOT in that matrix — but push deliberately anyway.
 1. **Wrapper self-update** from R2 (sha-verified, `bash -n` parse-gated,
    `.prev` rollback copy, `PRIMAL_WRAPPER_PIN` / `PRIMAL_WRAPPER_AUTOUPDATE=0`
    escape hatches; any failure boots the current version).
-2. **Update gate** — `api.primalheaven.com/api/updates/server-status` (fail-open;
-   needs `SERVER_ID` + `API_KEY`).
+2. **No outside start gate.** The boot depends only on the product's own
+   services (#2337).
 3. **SteamCMD** app 412680 `-beta evrima` validate. When Steam's evrima build
    differs from `_primal/primal-clean-build.txt` (the build last pulled clean), the
    boot pulls clean: `Binaries` set aside, `steamapps` deleted, files the pull does

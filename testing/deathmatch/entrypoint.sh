@@ -42,21 +42,12 @@ PANEL_STARTUP_CMD="${STARTUP:-}"
 # =============================================================================
 # Update Manager Configuration
 # =============================================================================
-API_BASE_URL=${API_BASE_URL:-"https://api.primalheaven.com"}
-# ── THE BINARY LANE IS THE PRODUCT'S, NOT THE GAME COMMUNITY'S (#2337) ───────
-# Split from API_BASE_URL on purpose. The modded-binary check/download move to
-# Primal Hosted's own lane (repo primal_binaries, R2-backed on the Cloudflare
-# edge), which speaks the identical wire shapes. api.primalheaven.com went down
-# on 2026-09-14 and boot-looped a paying customer's only server for nine hours;
-# no server's boot should depend on that box again.
-#
-# API_BASE_URL below stays ONLY for Heaven's update-manager calls
-# (/api/updates/server-status, /api/updates/confirm-startup). The product lane
-# deliberately does NOT serve those - they are Primal HEAVEN fleet management,
-# they are guarded by SERVER_ID, and no live server on this image sets it, so
-# they never fire. ⛔ Do not "fix" that by setting SERVER_ID: for a server not
-# in Heaven's registry the route returns Heaven's own global modPending flag as
-# `blocked`, which would hand Heaven a kill switch over this server (#2342).
+# Heaven's update manager has no default host: the image calls it only when
+# both SERVER_ID and API_BASE_URL are set, and says so when it skips.
+# ⛔ Do not set SERVER_ID for a server outside Heaven's registry: the route
+# answers with Heaven's global modPending flag, a kill switch over it (#2342).
+API_BASE_URL=${API_BASE_URL:-""}
+# The modded-binary lane is the product's own, separate from API_BASE_URL (#2337).
 PRIMAL_BINARY_BASE=${PRIMAL_BINARY_BASE:-"https://binaries.primalhosted.com"}
 PRIMAL_BINARY_BASE="${PRIMAL_BINARY_BASE%/}"
 # No default: this is a PUBLIC repo (#1064) - the key comes from the egg env or
@@ -300,7 +291,7 @@ if [ ! -z "$SERVER_ID" ] && [ ! -z "$API_BASE_URL" ]; then
         exit 1
     fi
 else
-    echo "⚠️ SERVER_ID not set - skipping update manager check"
+    echo "Update manager check skipped: SERVER_ID or API_BASE_URL is not set."
 fi
 
 # Set environment for Steam Proton
@@ -507,6 +498,8 @@ if [ ! -z "$SERVER_ID" ] && [ ! -z "$API_BASE_URL" ]; then
     else
         echo "⚠️ Failed to confirm startup (HTTP $HTTP_CODE) - continuing anyway"
     fi
+else
+    echo "Startup report skipped: SERVER_ID or API_BASE_URL is not set."
 fi
 
 # =============================================================================
