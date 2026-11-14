@@ -1240,7 +1240,7 @@ declare -A PAK_EXTRA=()
 # Order is egg 40's `$modDefaults` order - the cutover proof is a byte-diff and
 # a reordering diff is noise that hides a real one.
 PAK_EXTRA_ORDER=("BodySweepOn" "BodySweepList" "BodyHoldSec" "BodySweepLiftZ" "TreeKnockdownOn" "AIMaxCount" "SpeciesCapEvery" "AnimMaxAnimated" "AnimWriteHz")
-PAK_EXTRA[BodySweepOn]="True"
+PAK_EXTRA[BodySweepOn]="False"
 PAK_EXTRA[BodySweepList]="Triceratops"
 PAK_EXTRA[BodyHoldSec]="10.0"
 PAK_EXTRA[BodySweepLiftZ]="150000"

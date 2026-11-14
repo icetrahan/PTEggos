@@ -601,9 +601,8 @@ $eng = Get-Content (Join-Path $tmpl 'Engine.ini.tmpl') -Raw
 # ⭐ THESE WERE FLEET-WIDE LITERALS UNTIL 2026-08-10. Ice ruled them PER-SERVER
 # (*"yes, with defaults: treeknockdownon = false and well... the rest whatever we
 # has set now is defaults"*), so they now come from the data plane's
-# `mod_settings` block. The values below are the FIRST-BOOT fallback and are
-# byte-identical to what this script used to hardcode - a server that has never
-# reached the plane still renders exactly the Engine.ini it rendered before.
+# `mod_settings` block. The values below are the FIRST-BOOT fallback, used only
+# by a server that has never reached the plane; body sweep is off there.
 #
 # ⛔⛔ `BodyHoldSet` / `BSLiftSet` ARE NOT SETTINGS AND ARE NOT IN THE BLOCK.
 # They are #1071 WIRE SENTINELS: the pak reads a numeric key as UNSET (keeping
@@ -612,7 +611,7 @@ $eng = Get-Content (Join-Path $tmpl 'Engine.ini.tmpl') -Raw
 # SILENTLY do nothing - #1071 re-created, customer-facing. They are DERIVED
 # below: emit the number => emit its sentinel, always, together, never apart.
 $modDefaults = [ordered]@{
-    BodySweepOn     = 'True'
+    BodySweepOn     = 'False'
     BodySweepList   = 'Triceratops'
     BodyHoldSec     = '10.0'
     BodySweepLiftZ  = '150000'
