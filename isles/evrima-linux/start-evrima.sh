@@ -1172,12 +1172,13 @@ for FLEET_KV in MassMigrationDisableTime=2700 IndividualPatrolTime=300; do
     GI=${GI/"$MASS_HDR"/"$MASS_HDR"$'\n'"$FLEET_KV"}
 done
 
-# PRIMAL_MASS_MIGRATION_TIME: seconds from boot to the game's own mass-migration
-# check. No DLL starts a mass on this egg, so a value above the restart gap means
-# no mass at all and every zone stays open. Empty keeps the game's 12 h (#3604).
+# PRIMAL_MASS_MIGRATION_TIME: seconds of uptime before each of the game's own mass
+# checks. The fleet's 18000 (every 5 h) keeps every mass clear of the restart on each
+# schedule the fleet runs (#3600); a value above the restart gap means no mass at all.
+# Empty keeps the game's 12 h (#3604).
 MASS_ASKED=$(echo -n "${PRIMAL_MASS_MIGRATION_TIME:-}" | tr -d '[:space:]')
 MASS_T=""
-if [[ "$MASS_ASKED" =~ ^[1-9][0-9]{4,7}$ ]] && [ "$MASS_ASKED" -gt 86400 ] && [ "$MASS_ASKED" -le 31536000 ]; then
+if [[ "$MASS_ASKED" =~ ^[1-9][0-9]{3,7}$ ]] && [ "$MASS_ASKED" -ge 3600 ] && [ "$MASS_ASKED" -le 31536000 ]; then
     MASS_T="$MASS_ASKED"
     MASS_LINE="$MASS_HDR"$'\n'"MassMigrationTime=$MASS_T"
     GI=$(sed '/^[[:space:]]*MassMigrationTime[[:space:]]*=/d' <<<"$GI")
@@ -1193,7 +1194,7 @@ if [ -n "$MASS_T" ] && [ "$(grep -cE '^[[:space:]]*MassMigrationTime[[:space:]]*
 elif [ -n "$MASS_T" ]; then
     warn "Game.ini: MassMigrationTime=$MASS_T NOT WRITTEN (no $MASS_HDR section) - the game's own 12 h mass-migration check stands"
 elif [ -n "$MASS_ASKED" ]; then
-    warn "PRIMAL_MASS_MIGRATION_TIME='${MASS_ASKED:0:24}' REFUSED (want a whole number of seconds, 86401 to 31536000) - the game's own 12 h mass-migration check stands"
+    warn "PRIMAL_MASS_MIGRATION_TIME='${MASS_ASKED:0:24}' REFUSED (want a whole number of seconds, 3600 to 31536000) - the game's own 12 h mass-migration check stands"
 else
     log "Game.ini: MassMigrationTime left to the game (12 h) - PRIMAL_MASS_MIGRATION_TIME is empty"
 fi
