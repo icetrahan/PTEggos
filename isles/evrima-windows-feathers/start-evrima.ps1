@@ -1176,7 +1176,20 @@ function Hold-PrimalPak([string]$paksDir, [string]$binDirWin, [string]$heldDir, 
     return $off
 }
 
-$pm = $null; $pmWhy = ''; $pmVer = ''
+# The kept list describes the pak ON DISK, so it is written only once that pak is the manifest's.
+function Save-PakProof([string]$ver, $builds) {
+    if ($null -eq $builds) { return }
+    try { @{ version = $ver; gameBuilds = @($builds) } | ConvertTo-Json -Compress | Set-Content -Path $pakProofFile -Encoding ascii } catch { }
+}
+# The kept gameBuilds for pak $ver, or $null when none was kept for that version.
+function Read-PakProof([string]$ver) {
+    if (-not $ver) { return $null }
+    try { $k = Get-Content $pakProofFile -Raw -ErrorAction Stop | ConvertFrom-Json } catch { return $null }
+    if (("" + $k.version) -eq $ver -and $null -ne $k.gameBuilds) { return ,@($k.gameBuilds) }
+    return $null
+}
+
+$pm = $null; $pmWhy = ''; $pmVer = ''; $pmBuilds = $null
 $pakGate = @{ open = $false; code = 'mod_off'; why = 'ENABLE_PRIMAL_MOD != 1' }
 if ($env:ENABLE_PRIMAL_MOD -eq '1') {
     $pakManifestUrl = EnvOr $env:PRIMAL_MOD_MANIFEST 'https://pub-fb6fdcc2ce914775ba41c9813f80dc10.r2.dev/primal-mod-evrima-pak/latest.json'
@@ -1188,7 +1201,7 @@ if ($env:ENABLE_PRIMAL_MOD -eq '1') {
     $pmVer = if ($pm) { [string]$pm.version } else { '' }
     if ($pm) {
         $builds = if ($pm.PSObject.Properties.Name -contains 'gameBuilds') { @($pm.gameBuilds) } else { $null }
-        try { @{ version = $pmVer; gameBuilds = $builds } | ConvertTo-Json -Compress | Set-Content -Path $pakProofFile -Encoding ascii } catch { }
+        $pmBuilds = $builds
     } else {
         # Unreachable manifest: the list kept with the pak on disk still decides, never a guess.
         $builds = $null; $proofFrom = 'no manifest and no kept list'
@@ -1348,16 +1361,26 @@ if ($pakGate.open) {
                     Move-Item -Force (Join-Path $stage $fi.name) (Join-Path $paksDir $fi.name)
                 }
                 Set-Content -Path $pakVerFile -Value $pm.version -Encoding ascii
+                Save-PakProof ([string]$pm.version) $pmBuilds
                 Write-Host "(primal-pak) pak $($pm.version) ready ($($pm.build)) -> $paksDir"
             } elseif ($haveVer -and $haveVer -ne [string]$pm.version) {
-                # The gate proved the manifest's pak, not the older one still on disk.
-                Write-Host "(primal-pak) update discarded (a download or sha check failed) - pak $haveVer on disk is not the one proven on this game build: holding it, VANILLA this boot"
-                try { $heldOff = @(Hold-PrimalPak $paksDir $binDirWin $pakHeldDir @($pakVerFile, $sbVerFile)); Write-Host "(pak-gate) took off: $($heldOff -join ', ')" } catch { Write-Host "(pak-gate) *** HOLD FAILED: $_" }
+                # The gate proved the manifest's pak; the older one still on disk mounts only on its own kept list.
+                $own = Get-PakGate $gameBid (Read-PakProof $haveVer)
+                if ($own.open) {
+                    Write-Host "(primal-pak) update discarded (a download or sha check failed) - pak $haveVer stays in use: its kept list says $($own.why)"
+                } else {
+                    Write-Host "(primal-pak) update discarded (a download or sha check failed) - pak $haveVer on disk is not proven on this game build ($($own.code)): holding it, VANILLA this boot"
+                    $holdErr = ''
+                    try { $heldOff = @(Hold-PrimalPak $paksDir $binDirWin $pakHeldDir @($pakVerFile, $sbVerFile)); Write-Host "(pak-gate) took off: $($heldOff -join ', ')" } catch { $holdErr = "$_"; Write-Host "(pak-gate) *** HOLD FAILED: $holdErr" }
+                    try { Set-Content -Path $pakGateMark -Value $own.code -Encoding ascii } catch { }
+                    Start-BootReport 'pakgate' @{ stage = 'inject'; game = 'evrima'; ok = $false; attempts = 0; skipped = $own.code; reason = "update to pak $($pm.version) failed; pak ${haveVer}: $($own.why)$(if ($holdErr) { "; HOLD FAILED: $holdErr" })"; pid = $null; exePath = ''; dll = 'pakchunk50'; volume = $root; gameBuild = $gameBid; pakVersion = $haveVer } ''
+                }
             } else {
                 Write-Host "(primal-pak) update discarded (a download or sha check failed) - keeping the existing pak (if any)"
             }
             Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
         } else {
+            Save-PakProof $haveVer $pmBuilds
             Write-Host "(primal-pak) up to date ($haveVer)"
         }
     } catch {

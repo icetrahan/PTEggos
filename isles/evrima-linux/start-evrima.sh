@@ -1543,7 +1543,16 @@ report_pakgate() { # $1 = true|false, $2 = code, $3 = reason, $4 = mark to clear
       done ) >/dev/null 2>&1 &
 }
 
-PM=""; PM_VER=""
+# The kept list describes the pak ON DISK, so it is written only once that pak is the manifest's.
+save_pak_proof() { [ "$PM_LIST" = listed ] && printf '%s\n%s\n%s\n' "$1" "$PM_LIST" "$PM_BUILDS" > "$PAK_PROOF_FILE" 2>/dev/null; return 0; }
+# Prints "listed" + the kept builds for pak $1, or "none" when none was kept for that version.
+read_pak_proof() {
+    if [ -n "$1" ] && [ "$(head -n1 "$PAK_PROOF_FILE" 2>/dev/null)" = "$1" ] && [ "$(sed -n 2p "$PAK_PROOF_FILE" 2>/dev/null)" = "listed" ]; then
+        echo listed; tail -n +3 "$PAK_PROOF_FILE"
+    else echo none; fi
+}
+
+PM=""; PM_VER=""; PM_LIST=none; PM_BUILDS=""
 PAK_GATE="closed mod_off ENABLE_PRIMAL_MOD != 1"
 if [ "${ENABLE_PRIMAL_MOD:-0}" = "1" ]; then
     PAK_MANIFEST_URL=$(env_or "${PRIMAL_MOD_MANIFEST:-}" "$R2_BASE/primal-mod-evrima-pak/latest.json")
@@ -1552,7 +1561,7 @@ if [ "${ENABLE_PRIMAL_MOD:-0}" = "1" ]; then
     if [ -n "$PM" ]; then
         PM_VER=$(m_field "$PM" version)
         if BUILDS=$(printf '%s' "$PM" | game_builds); then HAVE_LIST=listed; else HAVE_LIST=none; BUILDS=""; fi
-        printf '%s\n%s\n%s\n' "$PM_VER" "$HAVE_LIST" "$BUILDS" > "$PAK_PROOF_FILE" 2>/dev/null
+        PM_LIST=$HAVE_LIST; PM_BUILDS=$BUILDS
     else
         # Unreachable manifest: the list kept with the pak on disk still decides, never a guess.
         HAVE_LIST=none; BUILDS=""; PROOF_FROM="no manifest and no kept list"
@@ -1619,16 +1628,32 @@ if [ "${PAK_GATE%% *}" = "open" ]; then
                     mv -f "$STAGE/${P_NAMES[$i]}" "$PAKS_DIR/${P_NAMES[$i]}"
                 done
                 echo "$PM_VER" > "$PAK_VER_FILE"
+                save_pak_proof "$PM_VER"
                 log "primal-pak: pak $PM_VER ready ($PM_BUILD) -> $PAKS_DIR"
             elif [ -n "$HAVE_VER" ] && [ "$HAVE_VER" != "$PM_VER" ]; then
-                # The gate proved the manifest's pak, not the older one still on disk.
-                HELD_OFF=$(hold_pak) && log "primal-pak: update discarded on verify failure - pak $HAVE_VER on disk is not the one proven on this game build: took off $HELD_OFF, no Primal pak this boot" \
-                    || warn "primal-pak: update discarded AND the hold of pak $HAVE_VER FAILED - it may mount on a game build it is not proven on"
+                # The gate proved the manifest's pak; the older one still on disk mounts only on its own kept list.
+                OWN=$(read_pak_proof "$HAVE_VER")
+                OWN_GATE=$(printf '%s\n' "$OWN" | tail -n +2 | pak_gate "$GAME_BID" "$(printf '%s\n' "$OWN" | head -n1)")
+                OWN_CODE=$(echo "$OWN_GATE" | cut -d' ' -f2); OWN_WHY=$(echo "$OWN_GATE" | cut -d' ' -f3-)
+                if [ "${OWN_GATE%% *}" = "open" ]; then
+                    log "primal-pak: update discarded on verify failure - pak $HAVE_VER stays in use: its kept list says $OWN_WHY"
+                else
+                    HELD_ERR=""
+                    HELD_OFF=$(hold_pak) || HELD_ERR="still in Paks after the hold"
+                    if [ -z "$HELD_ERR" ]; then
+                        log "primal-pak: update discarded on verify failure - pak $HAVE_VER on disk is not proven on this game build ($OWN_CODE): took off $HELD_OFF, no Primal pak this boot"
+                    else
+                        warn "primal-pak: update discarded AND the hold of pak $HAVE_VER FAILED - it may mount on a game build it is not proven on"
+                    fi
+                    echo "$OWN_CODE" > "$PAK_GATE_MARK" 2>/dev/null
+                    report_pakgate false "$OWN_CODE" "update to pak $PM_VER failed; pak $HAVE_VER: $OWN_WHY${HELD_ERR:+; HOLD FAILED: $HELD_ERR}" ""
+                fi
             else
                 log "primal-pak: update discarded on verify failure - keeping the existing pak (if any)"
             fi
             rm -rf "$STAGE"
         else
+            save_pak_proof "$HAVE_VER"
             log "primal-pak: up to date ($HAVE_VER)"
         fi
     fi

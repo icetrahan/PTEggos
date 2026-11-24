@@ -7,6 +7,10 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 WRAPPER=${1:-$HERE/start-evrima.sh}
 BLOCK=$(sed -n '/^PAK_HELD_DIR=/,/^if \[ "\${PAK_GATE%% \*}" = "open" \]; then/p' "$WRAPPER" | sed '$d')
 [ -n "$BLOCK" ] || { echo "FAIL anchor not found in $WRAPPER (no pak gate)"; exit 1; }
+# The download step that follows the gate, up to its closing fi.
+DL=$(awk '/^if \[ "\$\{PAK_GATE%% \*\}" = "open" \]; then$/{f=1} /^# CONFIRM-STARTUP IS GONE/{f=0} f' "$WRAPPER")
+while [ -n "$DL" ] && [ "$(printf '%s\n' "$DL" | tail -n1)" != "fi" ]; do DL=$(printf '%s\n' "$DL" | sed '$d'); done
+[ -n "$DL" ] || { echo "FAIL anchor not found in $WRAPPER (no pak download step)"; exit 1; }
 
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
@@ -17,10 +21,15 @@ warn() { echo "[primal] WARN: $*"; }
 env_or() { [ -n "$1" ] && echo "$1" || echo "$2"; }
 m_field() { grep -o "\"$2\" *: *\"[^\"]*\"" <<<"$1" | head -1 | sed 's/.*: *"//; s/"$//'; }
 manifest_buildid() { grep -o '"buildid"[[:space:]]*"[0-9]*"' "$1" 2>/dev/null | head -n1 | grep -o '[0-9][0-9]*'; }
-# The manifest GET answers $FAKE_MANIFEST (empty = unreachable); a boot-report POST is recorded.
+m_fields() { grep -o "\"$2\" *: *\"[^\"]*\"" <<<"$1" | sed 's/.*: *"//; s/"$//'; }
+sha256_of() { [ -f "$1" ] && sha256sum "$1" | awk '{print $1}' || echo ""; }
+# The manifest GET answers $FAKE_MANIFEST (empty = unreachable); a download (-o) writes $FAKE_BODY;
+# a boot-report POST is recorded.
 curl() {
     case " $* " in
         *" -X POST "*) printf '%s\n' "$*" | grep -o '{"stage".*}' >> "$REPORTS"; printf '{"ok":true,"recorded":true}\n200'; return 0 ;;
+        *" -o "*) local a prev="" out=""; for a in "$@"; do [ "$prev" = "-o" ] && out=$a; prev=$a; done
+                  printf '%s' "$FAKE_BODY" > "$out"; return 0 ;;
     esac
     [ -n "$FAKE_MANIFEST" ] || return 22
     printf '%s' "$FAKE_MANIFEST"
@@ -43,7 +52,7 @@ run_case() {
     [ -n "${KEPT:-}" ] && printf '%s' "$KEPT" > "$PRIM/primal-pak.gamebuilds"
     [ -n "${MARK:-}" ] && echo pak_game_build_unproven > "$PRIM/primal-pakgate.pending"
     FAKE_MANIFEST="$2"; ENABLE_PRIMAL_MOD="$3"
-    OUT=$(eval "$BLOCK"; wait; echo "GATE=$PAK_GATE")
+    OUT=$(eval "$BLOCK"; [ -n "${WITH_DL:-}" ] && eval "$DL"; wait; echo "GATE=$PAK_GATE")
 }
 mounted() { [ -f "$PAKS_DIR/pakchunk50-Windows_P.ucas" ] && [ -f "$PAKS_DIR/pakchunk50-Windows_P.utoc" ]; }
 held()    { [ -f "$PRIM/pak-held/pakchunk50-Windows_P.ucas" ] && ! ls "$PAKS_DIR"/pakchunk50-Windows_P.* >/dev/null 2>&1 && [ ! -f "$PAK_VER_FILE" ]; }
@@ -96,6 +105,33 @@ grep -q '"ok":true' "$REPORTS"; ok "the reopening boot tells the plane" $? "$(ca
 
 run_case 26883482 "$(man 193 '["2688348"]')" 1
 held; ok "a listed prefix of the build is not the build" $?
+
+# The download step: a failed update falls back to the pak on disk only when that pak's own kept list proves it.
+man_sha() { printf '{"version":"%s","build":"BUILD %s","gameBuilds":%s,"files":[{"name":"pakchunk50-Windows_P.ucas","url":"u","sha256":"%s","size":1}]}' "$1" "$1" "$2" "$3"; }
+NEW_SHA=$(printf 'NEW' | sha256sum | awk '{print $1}'); OLD_SHA=$(printf 'old\n' | sha256sum | awk '{print $1}')
+
+WITH_DL=1 FAKE_BODY=junk KEPT=$'193\nlisted\n26883482' run_case 26883482 "$(man_sha 194 '["26883482"]' "$NEW_SHA")" 1
+mounted && [ "$(cat "$PAK_VER_FILE")" = 193 ]; ok "failed update, pak 193 proven by its kept list: 193 stays in use" $? "$OUT"
+echo "$OUT" | grep -q 'pak 193 stays in use: its kept list says proven on game build 26883482'; ok "the log says the kept list keeps it" $? "$OUT"
+[ "$(head -n1 "$PRIM/primal-pak.gamebuilds")" = 193 ]; ok "the kept list still describes 193, never the failed 194" $?
+[ ! -s "$REPORTS" ]; ok "a pak that stays in use reports nothing" $? "$(cat "$REPORTS" 2>/dev/null)"
+
+WITH_DL=1 FAKE_BODY=junk run_case 26883482 "$(man_sha 194 '["26883482"]' "$NEW_SHA")" 1
+held; ok "failed update, pak 193 with no kept list: held" $? "$OUT"
+echo "$OUT" | grep -q 'pak 193 on disk is not proven on this game build (pak_proof_missing)'; ok "the log says why" $? "$OUT"
+grep -q '"skipped":"pak_proof_missing"' "$REPORTS" && grep -q 'update to pak 194 failed' "$REPORTS"; ok "the held boot is reported to the plane" $? "$(cat "$REPORTS" 2>/dev/null)"
+[ "$(cat "$PRIM/primal-pakgate.pending" 2>/dev/null)" = pak_proof_missing ]; ok "the held boot leaves the mark the reopening boot clears" $?
+
+WITH_DL=1 FAKE_BODY=junk KEPT=$'193\nlisted\n24664709' run_case 26883482 "$(man_sha 194 '["26883482"]' "$NEW_SHA")" 1
+held; ok "failed update, pak 193 kept-proven on another build only: held" $? "$OUT"
+grep -q '"skipped":"pak_game_build_unproven"' "$REPORTS"; ok "reported as pak_game_build_unproven" $? "$(cat "$REPORTS" 2>/dev/null)"
+
+WITH_DL=1 FAKE_BODY=NEW run_case 26883482 "$(man_sha 194 '["26883482"]' "$NEW_SHA")" 1
+[ "$(cat "$PAKS_DIR/pakchunk50-Windows_P.ucas")" = NEW ] && [ "$(cat "$PAK_VER_FILE")" = 194 ]; ok "a verified update places pak 194" $? "$OUT"
+[ "$(head -n1 "$PRIM/primal-pak.gamebuilds")" = 194 ] && [ "$(tail -n1 "$PRIM/primal-pak.gamebuilds")" = 26883482 ]; ok "the kept list moves to 194 once 194 is placed" $?
+
+WITH_DL=1 run_case 26883482 "$(man_sha 193 '["24664709","26883482"]' "$OLD_SHA")" 1
+echo "$OUT" | grep -q 'up to date (193)' && [ "$(head -n1 "$PRIM/primal-pak.gamebuilds")" = 193 ]; ok "an up-to-date pak gets its kept list refreshed" $? "$OUT"
 
 echo "pak gate (linux): $PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ]
