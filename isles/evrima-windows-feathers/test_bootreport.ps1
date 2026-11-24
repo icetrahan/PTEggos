@@ -20,7 +20,13 @@ function Lift([string]$from, [string]$to, [int]$dropLast) {
 $envOr     = Lift 'function EnvOr(' 'function EnvOr(' 0
 $dbgFn     = Lift 'function Dbg(' 'function Dbg(' 0
 $helpers   = Lift '# BOOT REPORTS' '$binDirWin  = Join-Path $game' 1
-$sigbypass = Lift '$binDirWin  = Join-Path $game' '$pakManifestUrl = EnvOr' 2
+# The bypass block runs only when the pak gate is open; test_pakgate.ps1 owns the gate, so here it opens
+# exactly when ENABLE_PRIMAL_MOD=1 and the block between the variables and the bypass is skipped.
+$sbVars    = Lift '$binDirWin  = Join-Path $game' '# PAK GATE: the pak mounts only' 1
+$sbStarts  = @($lines | Select-String -Pattern '^if \(\$pakGate\.open\) \{' | ForEach-Object { $_.LineNumber })
+if ($sbStarts.Count -lt 2) { Ok 'the bypass and pak blocks both open on $pakGate.open' $false; $sbBody = '$null = 0' }
+else { $sbBody = ($lines[($sbStarts[0]-1)..($sbStarts[1]-2)] -join "`n") }
+$sigbypass = $sbVars + "`n`$pakGate = @{ open = (`$env:ENABLE_PRIMAL_MOD -eq '1'); code = 'test' }`n" + $sbBody
 $exeCheck  = Lift '$exe = Join-Path $game ''TheIsle\Binaries\Win64\TheIsleServer-Win64-Shipping.exe''' '# Multihome:' 1
 $drain     = Lift 'function Show-BootReports {' '$pos = 0' 1
 $launch    = Lift 'if ($own.Count -eq 0)' '# Both are OURS' 1

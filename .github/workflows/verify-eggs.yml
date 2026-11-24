@@ -42,6 +42,9 @@ jobs:
         run: |
           bash isles/evrima-linux/test_treeaicap.sh
           pwsh -NoProfile -File isles/evrima-windows-feathers/test_treeaicap.ps1
+      - name: egg 42 — the pak mounts only on a game build it is proven on
+        if: always()
+        run: bash isles/evrima-linux/test_pakgate.sh
       - name: image deathmatch — patched locally, the lane is the fallback
         if: always()
         run: bash .github/scripts/test_image_localpatch.sh

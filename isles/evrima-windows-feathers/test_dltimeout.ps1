@@ -15,6 +15,10 @@ function Lift([string]$from, [string]$to, [int]$dropLast) {
 }
 $envOr = Lift 'function EnvOr(' 'function EnvOr(' 0
 $dbgFn = Lift 'function Dbg(' 'function Dbg(' 0
+# The pak gate inside the block mounts only on a game build the manifest lists: every boot here has one installed,
+# and every manifest lists it, so the downloads are what is under test.
+$readBid = Lift 'function Read-ManifestBuildId([string]$path) {' '# force | new-build = clean pull' 1
+$GAMEBID = '26883482'
 $block = Lift '$paksDir    = Join-Path $game' '# PRIMAL COMM-BAN DLL' 2
 Write-Host "lifted: $(($block -split "`n").Count) lines (sigbypass + pak)`n"
 
@@ -85,7 +89,7 @@ function Manifest([string]$ver, [object[]]$files) {
         $script:state.files[$_.name] = $_.bytes
         [ordered]@{ name = $_.name; url = "$base/f/$($_.mode)/$($_.name)"; sha256 = (Sha $_.bytes); size = $_.bytes.Length }
     })
-    return (@{ version = $ver; build = "BUILD $ver"; files = $list } | ConvertTo-Json -Depth 5)
+    return (@{ version = $ver; build = "BUILD $ver"; gameBuilds = @($GAMEBID); files = $list } | ConvertTo-Json -Depth 5)
 }
 function F([string]$name, [string]$text, [string]$mode = 'ok') { return @{ name = $name; bytes = (Bytes $text); mode = $mode } }
 
@@ -93,7 +97,8 @@ function F([string]$name, [string]$text, [string]$mode = 'ok') { return @{ name 
 function Run-Boot([string]$label, [hashtable]$have) {
     $root = Join-Path $work ([guid]::NewGuid().ToString('N').Substring(0, 6))
     $game = Join-Path $root 'server'; $tmpl = Join-Path $root '_primal'
-    New-Item -ItemType Directory -Force -Path $game, $tmpl | Out-Null
+    New-Item -ItemType Directory -Force -Path $game, $tmpl, (Join-Path $game 'steamapps') | Out-Null
+    [IO.File]::WriteAllText((Join-Path $game 'steamapps\appmanifest_412680.acf'), "`"AppState`"`n{`n`t`"buildid`"`t`t`"$GAMEBID`"`n}`n", [Text.Encoding]::ASCII)
     foreach ($k in $have.Keys) {
         $p = Join-Path $root $k
         New-Item -ItemType Directory -Force -Path (Split-Path $p) | Out-Null
@@ -109,7 +114,7 @@ function Run-Boot([string]$label, [hashtable]$have) {
         "`$env:PRIMAL_SIGBYPASS_MANIFEST = '$base/sb.json'; `$env:PRIMAL_MOD_MANIFEST = '$base/pak.json'",
         "`$env:PRIMAL_DL_STALL_S = '$STALL'; `$env:PRIMAL_DL_MAX_S = '$MAX'"
     ) -join "`n"
-    Set-Content -Path $child -Value ($prelude + "`n" + $envOr + "`n" + $dbgFn + "`n" + $block + "`n'BLOCK-DONE'") -Encoding ascii
+    Set-Content -Path $child -Value ($prelude + "`n" + $envOr + "`n" + $dbgFn + "`n" + $readBid + "`n" + $block + "`n'BLOCK-DONE'") -Encoding ascii
     $out = Join-Path $root 'out.txt'
     $sw = [Diagnostics.Stopwatch]::StartNew()
     $p = Start-Process powershell -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $child) -RedirectStandardOutput $out -RedirectStandardError "$out.err" -NoNewWindow -PassThru
@@ -135,12 +140,15 @@ $VER = '_primal\primal-pak.version'
 $sbOld = @{ "$WIN\dsound.dll" = 'SB-DSOUND' }
 $state.sb = Manifest 'sb1' @((F 'dsound.dll' 'SB-DSOUND'))
 $oldPak = @{ "$PAK\pakchunk50-Windows_P.pak" = 'OLD-PAK-BYTES'; "$PAK\pakchunk50-Windows_P.ucas" = 'OLD-UCAS-BYTES'; $VER = '173' }
+# Pak 173's own kept list proves it on this build, so a failed update leaves it in use.
+$PROOF = '_primal\primal-pak.gamebuilds'
+$oldProof = @{ $PROOF = "{`"version`":`"173`",`"gameBuilds`":[`"$GAMEBID`"]}" }
 
 foreach ($mode in @('silent', 'stall', 'trickle')) {
     Write-Host "`nA/$mode - the pak server $(switch ($mode) { 'silent' { 'never answers' } 'stall' { 'sends headers + 10 bytes, then nothing' } 'trickle' { 'sends one byte every 300 ms, forever' } })"
     $state.pak = Manifest '174' @((F 'pakchunk50-Windows_P.pak' 'NEW-PAK-BYTES-0123456789'), (F 'pakchunk50-Windows_P.ucas' 'NEW-UCAS-BYTES-0123456789' $mode))
     $state.hits.Clear()
-    $r = Run-Boot $mode ($sbOld + $oldPak)
+    $r = Run-Boot $mode ($sbOld + $oldPak + $oldProof)
     Ok "the wrapper really asked for the $mode file" ($state.hits -contains "/f/$mode/pakchunk50-Windows_P.ucas") "hits=$($state.hits -join ',')"
     Ok "the step returns before the $BUDGET s budget" (-not $r.hung) "(hung)"
     Ok "the step returns within the stall/whole-file limit (+ startup)" ($r.secs -le ($MAX + 10)) "($($r.secs) s)"
@@ -149,7 +157,19 @@ foreach ($mode in @('silent', 'stall', 'trickle')) {
     Ok "the old .ucas is untouched" ((Read-At $r "$PAK\pakchunk50-Windows_P.ucas") -eq 'OLD-UCAS-BYTES')
     Ok "the version record still says the old pak" ((Read-At $r $VER) -match '^173')
     Ok "wrapper-debug.log names the file that timed out and the pak in use" ($r.dbg -match 'pakchunk50-Windows_P\.ucas.*timed out.*previous pak 173 stays in use') "dbg=[$($r.dbg.Trim())]"
+    Ok "the log says the kept list keeps pak 173 in use" ($r.out -match 'pak 173 stays in use: its kept list says proven on game build') "out=[$($r.out.Trim())]"
+    Ok "the kept list still describes pak 173 (never the failed 174)" ((Read-At $r $PROOF) -match '"version":"173"')
 }
+
+Write-Host "`nA2 - the update stalls and pak 173 has no kept list: it is proven on nothing, so it is held"
+$state.pak = Manifest '174' @((F 'pakchunk50-Windows_P.pak' 'NEW-PAK-BYTES-0123456789'), (F 'pakchunk50-Windows_P.ucas' 'NEW-UCAS-BYTES-0123456789' 'stall'))
+$r = Run-Boot 'stall, unproven old pak' ($sbOld + $oldPak)
+Ok "the step returns before the budget" (-not $r.hung)
+Ok "the old pak is off Paks" (-not (Test-Path (Join-Path $r.root "$PAK\pakchunk50-Windows_P.ucas")))
+Ok "the old pak is kept in _primal\pak-held" ((Read-At $r '_primal\pak-held\pakchunk50-Windows_P.ucas') -eq 'OLD-UCAS-BYTES')
+Ok "the log says VANILLA and why" ($r.out -match 'pak 173 on disk is not proven on this game build \(pak_proof_missing\): holding it, VANILLA') "out=[$($r.out.Trim())]"
+Ok "the boot is marked for the plane with the gate's code" ((Read-At $r '_primal\primal-pakgate.pending') -match 'pak_proof_missing')
+Ok "the report path ran (no key here, so it says it did not report)" ($r.out -match '\(pakgate\) \*\*\* NOT reported off-box') "out=[$($r.out.Trim())]"
 
 Write-Host "`nB - no pak on disk yet, and the download stalls"
 $state.pak = Manifest '174' @((F 'pakchunk50-Windows_P.pak' 'NEW-PAK-BYTES-0123456789' 'stall'))
@@ -177,6 +197,7 @@ Ok "the new .pak is placed" ((Read-At $r "$PAK\pakchunk50-Windows_P.pak") -eq 'N
 Ok "the new .ucas is placed" ((Read-At $r "$PAK\pakchunk50-Windows_P.ucas") -eq 'NEW-UCAS-BYTES-0123456789')
 Ok "the sigbypass file is placed" ((Read-At $r "$WIN\dsound.dll") -eq 'SB-DSOUND')
 Ok "the version record moves to 174" ((Read-At $r $VER) -match '^174')
+Ok "the kept list moves to 174 only once 174 is placed" ((Read-At $r $PROOF) -match '"version":"174"')
 Ok "no timeout line is written" ($r.dbg -notmatch 'timed out') "dbg=[$($r.dbg.Trim())]"
 
 $listener.Stop(); try { [void]$ps.EndInvoke($srv) } catch {}; $ps.Dispose()

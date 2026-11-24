@@ -240,7 +240,9 @@ that cannot place it still launches, unmodded, and now says so: a console banner
 
 ## Mass migration and patrol timing (BUGS #3328, #3362, #3600)
 
-Ice's ruling (2026-11-24): the game's own mass migration runs every 5 h of uptime. Game 0.22.157 removed
+**Parked again (park-back branch):** on 0.22.157 a mass shuts every other zone, sanctuaries included, and they
+stay shut after it ends, so the default is back to `172800` (48 h, longer than any run). Ice's ruling
+(2026-11-24) had the game's own mass migration every 5 h of uptime. Game 0.22.157 removed
 the function `commban.dll`'s mass rung used to start and move a mass, so the DLL no longer starts one,
 and the game's own check is the only mass there is. Its default is 12 h, and most servers restart every
 6-12 h, so with the default most runs would end before a mass and a run that lives a few seconds past
@@ -253,7 +255,7 @@ The wrapper writes three `[/script/theisle.tigamesession]` keys into the rendere
 |---|---|---|
 | `MassMigrationDisableTime` | `2700` (45 min) | every boot |
 | `IndividualPatrolTime` | `300` (the game ignores it since 0.22.157, which removed patrol zones) | every boot |
-| `MassMigrationTime` | `18000` (every 5 h); the plane's `server_settings.massMigrationTime` when it serves one (whole seconds, 3600 to 172800); `172800` (a 48 h park) only when THIS boot loads a commban.dll whose manifest declares `"mass_rung": true` | every boot |
+| `MassMigrationTime` | `172800` (parked 48 h); the plane's `server_settings.massMigrationTime` when it serves one (whole seconds, 3600 to 172800); `172800` (a 48 h park) only when THIS boot loads a commban.dll whose manifest declares `"mass_rung": true` | every boot |
 
 ⛔ `MassMigrationTime` must never be parked on a server whose DLL does not start the mass: that server
 would never get one. That is why the park keys on the manifest's own declaration, not on the DLL's
@@ -263,7 +265,7 @@ and that a mass is never open at the end of a 4.5, 6, 7.5, 8, 11, 12, 13, 16 or 
 Every boot says which way it went:
 
 - `(config) Game.ini: MassMigrationDisableTime=2700 IndividualPatrolTime=300`
-- `(config) Game.ini: MassMigrationTime=18000 - fleet default, every 5 h`, `... - the plane`, or
+- `(config) Game.ini: MassMigrationTime=172800 - fleet default, parked 48 h`, `... - the plane`, or
   `... MassMigrationTime=172800 - commban v<x> starts this run's mass itself`
 - `(config) Game.ini: WARNING the plane's massMigrationTime '<v>' is refused (...)` for a value out of range
 

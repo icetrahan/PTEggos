@@ -474,6 +474,7 @@ for a in "\$@"; do
         *"/api/binary/latest/linux")      [ -f "$T/lane_latest" ] || exit 7; cat "$T/lane_latest"; exit 0 ;;
         *"/commands/binary/download/"*)   exit 7 ;;
         *"/v1/boot-report")
+            exec 9>"$T/plane_lock"; flock 9   # the pak gate reports from the background, so two calls can overlap
             n=\$(( \$(cat "$T/plane_calls") + 1 )); echo \$n > "$T/plane_calls"
             printf '%s\n' "\$@" > "$T/plane_req.\$n"
             case "\$(cat "$T/plane_mode")" in
@@ -500,6 +501,9 @@ SHIM
 rcalls() { cat "$1/plane_calls"; }
 rbody()  { awk 'prev == "-d" { print; exit } { prev = $0 }' "$1/plane_req.${2:-1}" 2>/dev/null; }
 rjq()    { rbody "$1" "${3:-1}" | "$JQ_BIN" -e "$2" >/dev/null 2>&1; }
+# Start-stage reports only: a mod-off boot also sends the pak gate's own mod_off report (test_pakgate.sh covers that).
+rstarts() { local n=0 i; for i in $(seq 1 "$(rcalls "$1")"); do rjq "$1" '.stage == "start"' "$i" && n=$((n + 1)); done; echo $n; }
+rstart1() { local i; for i in $(seq 1 "$(rcalls "$1")"); do rjq "$1" '.stage == "start"' "$i" && { echo "$i"; return; }; done; echo 0; }
 
 echo "-- 5a. the lane ANSWERS and has no modded binary -> reported, by code, with the server's key --"
 T=$(rep_render a vanilla_unknown recorded ok ""); L="$T/boot.log"
@@ -567,20 +571,21 @@ env -i PATH="$T/shim:/usr/local/bin:/usr/bin:/bin" HOME=/tmp PRIMAL_ROOT="$T" PR
     PRIMAL_ALLOW_VANILLA=0 ENABLE_PRIMAL_MOD=0 SERVER_PORT=7777 PRIMAL_DATA_BASE="file://$T/canon" PHSK_KEY="$REP_KEY" \
     bash "$T/_primal/start-evrima.sh" > "$T/boot2.log" 2>&1
 echo $? > "$T/exit"; L="$T/boot2.log"
-[ "$(rcalls "$T")" = "1" ] && ok "one report on the launch" || bad "$(rcalls "$T") report(s), want 1"
-rjq "$T" '.stage == "start" and .ok == true and (has("code") | not)' && ok "the body says ok true, with no code" || bad "wrong body: $(rbody "$T")"
-want "with the server's OWN key"           "Authorization: Bearer $REP_KEY"        "$T/plane_req.1"
+[ "$(rstarts "$T")" = "1" ] && ok "one start report on the launch" || bad "$(rstarts "$T") start report(s), want 1"
+S=$(rstart1 "$T")
+rjq "$T" '.stage == "start" and .ok == true and (has("code") | not)' "$S" && ok "the body says ok true, with no code" || bad "wrong body: $(rbody "$T" "$S")"
+want "with the server's OWN key"           "Authorization: Bearer $REP_KEY"        "$T/plane_req.$S"
 want "the log says the plane was told"     'told the data plane this server is launching again after a refused start' "$L"
 [ ! -f "$T/_primal/boot-refused.pending" ] && ok "the marker is gone" || bad "the marker is still there"
 want "⭐ and the game was launched"         'FAKE-GAME-LAUNCHED'                    "$L"
 [ "$(bexit "$T")" = "0" ] && ok "exit 0" || bad "exit $(bexit "$T"), want 0"
 
 echo "-- 5k. the next launch, with no marker, sends nothing --"
-echo 0 > "$T/plane_calls"
+echo 0 > "$T/plane_calls"; rm -f "$T"/plane_req.*
 env -i PATH="$T/shim:/usr/local/bin:/usr/bin:/bin" HOME=/tmp PRIMAL_ROOT="$T" PRIMAL_WRAPPER_AUTOUPDATE=0 AUTO_UPDATE=0 \
     PRIMAL_ALLOW_VANILLA=0 ENABLE_PRIMAL_MOD=0 SERVER_PORT=7777 PRIMAL_DATA_BASE="file://$T/canon" PHSK_KEY="$REP_KEY" \
     bash "$T/_primal/start-evrima.sh" > "$T/boot3.log" 2>&1
-[ "$(rcalls "$T")" = "0" ] && ok "a server that did not refuse reports nothing" || bad "$(rcalls "$T") report(s), want 0"
+[ "$(rstarts "$T")" = "0" ] && ok "a server that did not refuse sends no start report" || bad "$(rstarts "$T") start report(s), want 0"
 want "and it launched"                     'FAKE-GAME-LAUNCHED'                    "$T/boot3.log"
 
 echo "-- 5l. a launch the plane could not be told about KEEPS the marker, and still launches --"
