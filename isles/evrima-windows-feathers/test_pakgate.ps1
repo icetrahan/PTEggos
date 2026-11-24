@@ -95,7 +95,8 @@ try {
 
     Run-Case '26883482' (New-TestManifest '194' '["26883482"]') '0'
     Ok 'ENABLE_PRIMAL_MOD=0 takes a pak and bypass left on disk off too' (Held)
-    Ok 'mod off is not reported as a gate failure' ($reports.Count -eq 0)
+    Ok 'mod off is reported as mod_off, so the plane does not restart it to bring the pak back' (@($reports | Where-Object { $_.body.skipped -eq 'mod_off' -and -not $_.body.ok }).Count -eq 1)
+    Ok 'mod off prints no vanilla banner' ($out -notmatch 'BOOTING VANILLA')
 
     Run-Case '26883482' (New-TestManifest '194' '["26883482"]') '1' @{ mark = $true }
     Ok 'a proven pak mounts again after a held boot' (Mounted)

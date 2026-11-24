@@ -86,7 +86,8 @@ held; ok "manifest unreachable and nothing kept: held" $?
 
 run_case 26883482 "$(man 194 '["26883482"]')" 0
 held; ok "ENABLE_PRIMAL_MOD=0 takes a pak left on disk off too" $?
-[ ! -s "$REPORTS" ]; ok "mod off is not reported as a gate failure" $?
+grep -q '"skipped":"mod_off"' "$REPORTS"; ok "mod off is reported as mod_off, so the plane does not restart it to bring the pak back" $? "$(cat "$REPORTS" 2>/dev/null)"
+! echo "$OUT" | grep -q 'BOOTING WITHOUT'; ok "mod off prints no gate banner" $? "$OUT"
 
 MARK=1 run_case 26883482 "$(man 194 '["26883482"]')" 1
 mounted; ok "a proven pak mounts again after a held boot" $?

@@ -1210,10 +1210,11 @@ if (-not $pakGate.open) {
         Write-Host '(pak-gate) ****************************************************************'
         Write-Host "(pak-gate) *** BOOTING VANILLA ($($pakGate.code)): no telemetry, admin or storage this boot."
         Write-Host '(pak-gate) ****************************************************************'
-        try { Set-Content -Path $pakGateMark -Value $pakGate.code -Encoding ascii } catch { }
-        $gateReason = "$($pakGate.why)$(if ($holdErr) { "; HOLD FAILED: $holdErr" })"
-        Start-BootReport 'pakgate' @{ stage = 'inject'; game = 'evrima'; ok = $false; attempts = 0; skipped = $pakGate.code; reason = $gateReason; pid = $null; exePath = ''; dll = 'pakchunk50'; volume = $root; gameBuild = $gameBid; pakVersion = $pmVer } ''
     }
+    # mod_off is reported too: the plane must know the pak is off on purpose, or it restarts the server to bring it back.
+    try { Set-Content -Path $pakGateMark -Value $pakGate.code -Encoding ascii } catch { }
+    $gateReason = "$($pakGate.why)$(if ($holdErr) { "; HOLD FAILED: $holdErr" })"
+    Start-BootReport 'pakgate' @{ stage = 'inject'; game = 'evrima'; ok = $false; attempts = 0; skipped = $pakGate.code; reason = $gateReason; pid = $null; exePath = ''; dll = 'pakchunk50'; volume = $root; gameBuild = $gameBid; pakVersion = $pmVer } ''
 } elseif (Test-Path $pakGateMark) {
     Start-BootReport 'pakgate' @{ stage = 'inject'; game = 'evrima'; ok = $true; attempts = 0; reason = "pak $pmVer $($pakGate.why)"; pid = $null; exePath = ''; dll = 'pakchunk50'; volume = $root; gameBuild = $gameBid; pakVersion = $pmVer } $pakGateMark
 }

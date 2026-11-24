@@ -1571,11 +1571,10 @@ if [ "${PAK_GATE%% *}" != "open" ]; then
     HELD_OFF=$(hold_pak) || HELD_ERR="still in Paks after the hold: $(ls "$PAKS_DIR"/pakchunk50-Windows_P.* 2>/dev/null | xargs -r -n1 basename | tr '\n' ' ')"
     [ -n "$HELD_ERR" ] && warn "pak-gate: *** HOLD FAILED: $HELD_ERR - the pak may still mount on a game build it is not proven on"
     [ -n "$HELD_OFF" ] && log "pak-gate: took off: $HELD_OFF (kept in _primal/pak-held)"
-    if [ "$GATE_CODE" != "mod_off" ]; then
-        warn "pak-gate: *** BOOTING WITHOUT THE PRIMAL PAK ($GATE_CODE): no telemetry, admin or storage this boot."
-        echo "$GATE_CODE" > "$PAK_GATE_MARK" 2>/dev/null
-        report_pakgate false "$GATE_CODE" "$GATE_WHY${HELD_ERR:+; HOLD FAILED: $HELD_ERR}" ""
-    fi
+    [ "$GATE_CODE" != "mod_off" ] && warn "pak-gate: *** BOOTING WITHOUT THE PRIMAL PAK ($GATE_CODE): no telemetry, admin or storage this boot."
+    # mod_off is reported too: the plane must know the pak is off on purpose, or it restarts the server to bring it back.
+    echo "$GATE_CODE" > "$PAK_GATE_MARK" 2>/dev/null
+    report_pakgate false "$GATE_CODE" "$GATE_WHY${HELD_ERR:+; HOLD FAILED: $HELD_ERR}" ""
 elif [ -f "$PAK_GATE_MARK" ]; then
     report_pakgate true "" "pak ${PM_VER:-?} $GATE_WHY" "$PAK_GATE_MARK"
 fi
