@@ -589,8 +589,7 @@ if ($aiOn -match '^(1|true|yes|on)$' -and $aiUpload -and $aiManifest) {
 }
 
 # Mass migration + patrol timing, fleet constants (Ice's ruling; BUGS #3328, #3362).
-# MassMigrationTime is set after the commban block: only a boot whose DLL starts the run's mass
-# itself may park the game's own check, or that server never gets a mass at all.
+# MassMigrationTime is set after the commban block, whose manifest decides whether it is parked.
 function Set-SessionKey([string]$ini, [string]$key, [string]$value) {
     $ini = [regex]::Replace($ini, "(?mi)^[ \t]*$([regex]::Escape($key))[ \t]*=.*\r?\n", '')
     $re = New-Object System.Text.RegularExpressions.Regex('(?mi)^\[/script/theisle\.tigamesession\][ \t]*\r?\n')
@@ -1418,18 +1417,24 @@ if ($cbOn) {
     Write-Host "(commban) off (PRIMAL_COMMBAN != 1)"
 }
 
-# MassMigrationTime = 48 h (above every restart gap) only when THIS boot loads a commban.dll whose
-# mass rung (>= 1.3.0) starts the run's one mass; otherwise the game's own 12 h check stands.
-$cbMassVer = 0
-if ($cbReady -and $cm -and (('' + $cm.version) -match '^(\d+)\.(\d+)')) { $cbMassVer = [int]$Matches[1] * 1000 + [int]$Matches[2] }
-$giPath = Join-Path $cfgDir 'Game.ini'
-if ($cbMassVer -ge 1003) {
-    $gi = Set-SessionKey (Get-Content $giPath -Raw) 'MassMigrationTime' '172800'
-    Set-Content -Path $giPath -Value $gi -Encoding ascii
-    Write-Host "(config) Game.ini: MassMigrationTime=172800 - commban v$($cm.version) starts this run's mass itself"
-} else {
-    Write-Host "(config) Game.ini: MassMigrationTime left to the game (12 h) - no commban mass rung this boot (ready=$cbReady, v=$(if ($cm) { $cm.version } else { 'none' }))"
+# MassMigrationTime = seconds of uptime before each of the game's own mass checks. 18000 (every 5 h)
+# keeps every 45-min mass clear of the restart on each schedule the fleet runs (6/8/11/12/13/16/24 h);
+# a mass still open at a restart is carried into the next run with every other zone shut (BUGS #3600).
+# The plane may serve a per-server value (server_settings.massMigrationTime, whole seconds 3600-172800).
+# 172800 (a 48 h park) only when THIS boot loads a commban.dll whose manifest declares a live mass rung
+# (mass_rung: true): that DLL starts the run's mass itself.
+$massT = '18000'; $massWhy = 'fleet default, every 5 h'
+if (Has $ss 'massMigrationTime') {
+    $pv = ('' + $ss.massMigrationTime).Trim()
+    if ($pv -match '^\d{4,6}$' -and [int]$pv -ge 3600 -and [int]$pv -le 172800) { $massT = $pv; $massWhy = 'the plane' }
+    else { Write-Host "(config) Game.ini: WARNING the plane's massMigrationTime '$pv' is refused (whole seconds 3600-172800); the fleet default stands" }
 }
+if ($cbReady -and $cm -and (Has $cm 'mass_rung') -and ($cm.mass_rung -eq $true)) { $massT = '172800'; $massWhy = "commban v$($cm.version) starts this run's mass itself" }
+$giPath = Join-Path $cfgDir 'Game.ini'
+$gi = Set-SessionKey (Get-Content $giPath -Raw) 'MassMigrationTime' $massT
+Set-Content -Path $giPath -Value $gi -Encoding ascii
+if ($gi -match "(?m)^MassMigrationTime=$massT\r?$") { Write-Host "(config) Game.ini: MassMigrationTime=$massT - $massWhy" }
+else { Write-Host "(config) Game.ini: WARNING MassMigrationTime NOT set (no [/script/theisle.tigamesession] section) - the game's own 12 h check applies" }
 
 # ---------------------------------------------------------------------------
 # primal-loader: THE GAME LOADS ITS OWN COMM-BAN DLL (A230, 2026-09-25).

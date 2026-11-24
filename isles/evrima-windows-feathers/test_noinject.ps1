@@ -13,7 +13,7 @@ function Lift([string]$from, [string]$to, [int]$dropLast) {
     return (($lines[($a-1)..($a+$b-2)] | Select-Object -SkipLast $dropLast) -join "`n")
 }
 $envOr    = Lift 'function EnvOr(' 'function EnvOr(' 0
-$decide   = Lift 'function Invoke-Retried(' '# MassMigrationTime = 48 h' 1
+$decide   = Lift 'function Invoke-Retried(' '# MassMigrationTime = seconds of uptime' 1
 $report   = Lift '$cbHist = Join-Path $tmpl' 'Dbg "launching (server will detach' 1
 $drain    = Lift 'function Show-SkipReport {' '$pos = 0' 1
 Write-Host "lifted: decide $(($decide -split "`n").Count) lines, report $(($report -split "`n").Count), drain $(($drain -split "`n").Count)`n"
