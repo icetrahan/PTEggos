@@ -1163,6 +1163,26 @@ else
     log "Game.ini: GlobalAISpawnLimit not set - $AI_CAP_WHY"
 fi
 
+# Gore (A1173): the game's own bite wounds, dismemberment and loose chunks, from server_settings. Off is the game's
+# default, so the section is written only when an owner turns one on. A player sees bite wounds and loose chunks
+# only when their own game has bite gore on too: the client checks its own copy of the switch before drawing.
+GORE_HDR='[/Script/TheIsle.TIRuntimeGoreSettings]'
+GI=$(awk -v h="$GORE_HDR" '{ l = tolower($0); sub(/[ \t\r]+$/, "", l) } /^\[/ { skip = (l == tolower(h)) } !skip' <<<"$GI")
+GORE_LINES=""; GORE_ON=""
+for GORE_KV in bEnableRuntimeBiteGore=enableBiteGore bEnableDismemberment=enableDismemberment bSpawnLooseChunks=spawnLooseChunks; do
+    if [ "$(cj "if .config.server_settings.${GORE_KV#*=} == true then \"1\" else \"\" end")" = "1" ]; then
+        GORE_LINES+="${GORE_KV%%=*}=True"$'\n'; GORE_ON+="${GORE_ON:+, }${GORE_KV%%=*}"
+    else
+        GORE_LINES+="${GORE_KV%%=*}=False"$'\n'
+    fi
+done
+if [ -n "$GORE_ON" ]; then
+    GI+=$'\n\n'"$GORE_HDR"$'\n'"${GORE_LINES%$'\n'}"
+    log "Game.ini: gore on: $GORE_ON"
+else
+    log "Game.ini: gore off (the game's default, no gore section)"
+fi
+
 MASS_HDR='[/script/theisle.tigamesession]'
 
 # Fleet constants, the same on every egg and never an owner's field: a mass
