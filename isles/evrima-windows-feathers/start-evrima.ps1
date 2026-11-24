@@ -98,7 +98,7 @@ $defaultClasses = @(
     'Tenontosaurus','Carnotaurus','Ceratosaurus','Deinosuchus','Dilophosaurus',
     'Herrerasaurus','Omniraptor','Pteranodon','Troodon','Beipiaosaurus','Gallimimus',
     'Diabloceratops','Triceratops','Allosaurus','Tyrannosaurus','Kentrosaurus',
-    'Austroraptor'
+    'Austroraptor','Oviraptor'
 )
 $cfg = @{
     ServerName            = 'Primal Heaven Evrima'
@@ -1136,7 +1136,89 @@ $sbVerFile  = Join-Path $tmpl 'primal-sigbypass.version'
 $sbDll      = 'UniversalSigBypasser.asi'
 $sbSkip     = $null
 
+# ---------------------------------------------------------------------------
+# PAK GATE: the pak mounts only on a game build it is proven on.
+# The pak manifest's `gameBuilds` lists the Steam buildids the pak is proven on; ["*"] marks a lab
+# manifest that mounts on any build. A build not listed, a manifest with no list, or an install whose
+# build cannot be read boots this server VANILLA: the pak triplet moves to _primal/pak-held, the
+# bypass comes off, the log says why and the plane is told (`skipped` = the gate's code). A manifest
+# that lists this build mounts the pak again on the next boot, with no hand revert.
+# ⛔ ENABLE_PRIMAL_MOD=0 takes them off the same way: a pak left on disk mounts whenever the bypass is there.
+# ---------------------------------------------------------------------------
+$pakHeldDir   = Join-Path $tmpl 'pak-held'
+$pakProofFile = Join-Path $tmpl 'primal-pak.gamebuilds'
+$pakGateMark  = Join-Path $tmpl 'primal-pakgate.pending'
+$gameBid      = Read-ManifestBuildId (Join-Path $game 'steamapps\appmanifest_412680.acf')
+
+# $builds = $null when no list was read at all.
+function Get-PakGate([string]$gameBid, $builds) {
+    if ($null -eq $builds) { return @{ open = $false; code = 'pak_proof_missing'; why = 'the pak manifest lists no gameBuilds, so this pak is proven on no game build' } }
+    $list = @(@($builds) | ForEach-Object { ("" + $_).Trim() } | Where-Object { $_ })
+    if ($list -contains '*') { return @{ open = $true; code = 'any_build'; why = 'lab manifest: gameBuilds ["*"] mounts on any game build' } }
+    if (-not $gameBid) { return @{ open = $false; code = 'game_build_unknown'; why = "the installed game build could not be read from steamapps/appmanifest_412680.acf (pak proven on: $(EnvOr ($list -join ', ') 'none'))" } }
+    if ($list -contains $gameBid) { return @{ open = $true; code = 'proven'; why = "proven on game build $gameBid" } }
+    return @{ open = $false; code = 'pak_game_build_unproven'; why = "game build $gameBid is not one this pak is proven on ($(EnvOr ($list -join ', ') 'none'))" }
+}
+
+# Moves the pak triplet aside and removes the bypass; returns what it took off.
+function Hold-PrimalPak([string]$paksDir, [string]$binDirWin, [string]$heldDir, [string[]]$verFiles) {
+    $off = @()
+    foreach ($f in @(Get-ChildItem -LiteralPath $paksDir -Filter 'pakchunk50-Windows_P.*' -File -ErrorAction SilentlyContinue)) {
+        New-Item -ItemType Directory -Force -Path $heldDir | Out-Null
+        Move-Item -LiteralPath $f.FullName -Destination (Join-Path $heldDir $f.Name) -Force
+        $off += $f.Name
+    }
+    $asi = Join-Path $binDirWin 'UniversalSigBypasser.asi'
+    if (Test-Path -LiteralPath $asi) { Remove-Item -LiteralPath $asi -Force; $off += 'UniversalSigBypasser.asi' }
+    foreach ($v in $verFiles) { Remove-Item -LiteralPath $v -Force -ErrorAction SilentlyContinue }
+    $left = @(Get-ChildItem -LiteralPath $paksDir -Filter 'pakchunk50-Windows_P.*' -File -ErrorAction SilentlyContinue) + @(Get-ChildItem -LiteralPath $binDirWin -Filter 'UniversalSigBypasser.asi' -File -ErrorAction SilentlyContinue)
+    if ($left.Count) { throw "still on disk after the hold: $(($left | ForEach-Object { $_.Name }) -join ', ')" }
+    return $off
+}
+
+$pm = $null; $pmWhy = ''; $pmVer = ''
+$pakGate = @{ open = $false; code = 'mod_off'; why = 'ENABLE_PRIMAL_MOD != 1' }
 if ($env:ENABLE_PRIMAL_MOD -eq '1') {
+    $pakManifestUrl = EnvOr $env:PRIMAL_MOD_MANIFEST 'https://pub-fb6fdcc2ce914775ba41c9813f80dc10.r2.dev/primal-mod-evrima-pak/latest.json'
+    try {
+        $ProgressPreference = 'SilentlyContinue'
+        $pm = Invoke-RestMethod -Uri $pakManifestUrl -TimeoutSec 20
+    } catch { $pm = $null; $pmWhy = "$_" }
+    $proofFrom = 'the manifest'
+    $pmVer = if ($pm) { [string]$pm.version } else { '' }
+    if ($pm) {
+        $builds = if ($pm.PSObject.Properties.Name -contains 'gameBuilds') { @($pm.gameBuilds) } else { $null }
+        try { @{ version = $pmVer; gameBuilds = $builds } | ConvertTo-Json -Compress | Set-Content -Path $pakProofFile -Encoding ascii } catch { }
+    } else {
+        # Unreachable manifest: the list kept with the pak on disk still decides, never a guess.
+        $builds = $null; $proofFrom = 'no manifest and no kept list'
+        $haveVer = if (Test-Path $pakVerFile) { (Get-Content $pakVerFile -Raw).Trim() } else { '' }
+        try {
+            $kept = Get-Content $pakProofFile -Raw -ErrorAction Stop | ConvertFrom-Json
+            if ($haveVer -and ("" + $kept.version) -eq $haveVer -and $null -ne $kept.gameBuilds) { $builds = @($kept.gameBuilds); $proofFrom = "the list kept with pak $haveVer (manifest unreachable)" }
+        } catch { }
+    }
+    $pakGate = Get-PakGate $gameBid $builds
+    Write-Host "(pak-gate) game build $(EnvOr $gameBid 'UNKNOWN'), pak $(EnvOr $pmVer '?') from $proofFrom -> $(if ($pakGate.open) { 'MOUNT' } else { 'VANILLA' }) ($($pakGate.code)): $($pakGate.why)"
+}
+if (-not $pakGate.open) {
+    $heldOff = @(); $holdErr = ''
+    try { $heldOff = @(Hold-PrimalPak $paksDir $binDirWin $pakHeldDir @($pakVerFile, $sbVerFile)) } catch { $holdErr = "$_" }
+    if ($holdErr) { Write-Host "(pak-gate) *** HOLD FAILED: $holdErr - the pak may still mount on a game build it is not proven on" }
+    elseif ($heldOff.Count) { Write-Host "(pak-gate) took off: $($heldOff -join ', ') (pak triplet kept in _primal\pak-held)" }
+    if ($pakGate.code -ne 'mod_off') {
+        Write-Host '(pak-gate) ****************************************************************'
+        Write-Host "(pak-gate) *** BOOTING VANILLA ($($pakGate.code)): no telemetry, admin or storage this boot."
+        Write-Host '(pak-gate) ****************************************************************'
+        try { Set-Content -Path $pakGateMark -Value $pakGate.code -Encoding ascii } catch { }
+        $gateReason = "$($pakGate.why)$(if ($holdErr) { "; HOLD FAILED: $holdErr" })"
+        Start-BootReport 'pakgate' @{ stage = 'inject'; game = 'evrima'; ok = $false; attempts = 0; skipped = $pakGate.code; reason = $gateReason; pid = $null; exePath = ''; dll = 'pakchunk50'; volume = $root; gameBuild = $gameBid; pakVersion = $pmVer } ''
+    }
+} elseif (Test-Path $pakGateMark) {
+    Start-BootReport 'pakgate' @{ stage = 'inject'; game = 'evrima'; ok = $true; attempts = 0; reason = "pak $pmVer $($pakGate.why)"; pid = $null; exePath = ''; dll = 'pakchunk50'; volume = $root; gameBuild = $gameBid; pakVersion = $pmVer } $pakGateMark
+}
+
+if ($pakGate.open) {
     $sbManifestUrl = EnvOr $env:PRIMAL_SIGBYPASS_MANIFEST 'https://pub-fb6fdcc2ce914775ba41c9813f80dc10.r2.dev/primal-sigbypass/latest.json'
     try {
         $ProgressPreference = 'SilentlyContinue'
@@ -1208,15 +1290,15 @@ if ($env:ENABLE_PRIMAL_MOD -eq '1') {
     } elseif (Test-Path $sbMark) {
         Start-BootReport 'sigbypass' @{ stage = 'inject'; game = 'evrima'; ok = $true; attempts = 0; reason = "sigbypass v$($sm.version) in place, sha-verified"; pid = $null; exePath = ''; dll = $sbDll; volume = $root } $sbMark
     }
+} elseif ($env:ENABLE_PRIMAL_MOD -eq '1') {
+    Write-Host "(sigbypass) off: the pak gate holds the pak this boot ($($pakGate.code))"
 } else {
     Write-Host "(sigbypass) disabled (ENABLE_PRIMAL_MOD != 1)"
 }
 
-if ($env:ENABLE_PRIMAL_MOD -eq '1') {
-    $pakManifestUrl = EnvOr $env:PRIMAL_MOD_MANIFEST 'https://pub-fb6fdcc2ce914775ba41c9813f80dc10.r2.dev/primal-mod-evrima-pak/latest.json'
+if ($pakGate.open) {
     try {
-        $ProgressPreference = 'SilentlyContinue'
-        $pm = Invoke-RestMethod -Uri $pakManifestUrl -TimeoutSec 20
+        if (-not $pm) { throw "manifest unreachable ($pmWhy)" }
         $pakFiles = @($pm.files)
         if (-not $pakFiles -or $pakFiles.Count -lt 1) { throw 'manifest carries no files[]' }
 
@@ -1266,6 +1348,10 @@ if ($env:ENABLE_PRIMAL_MOD -eq '1') {
                 }
                 Set-Content -Path $pakVerFile -Value $pm.version -Encoding ascii
                 Write-Host "(primal-pak) pak $($pm.version) ready ($($pm.build)) -> $paksDir"
+            } elseif ($haveVer -and $haveVer -ne [string]$pm.version) {
+                # The gate proved the manifest's pak, not the older one still on disk.
+                Write-Host "(primal-pak) update discarded (a download or sha check failed) - pak $haveVer on disk is not the one proven on this game build: holding it, VANILLA this boot"
+                try { $heldOff = @(Hold-PrimalPak $paksDir $binDirWin $pakHeldDir @($pakVerFile, $sbVerFile)); Write-Host "(pak-gate) took off: $($heldOff -join ', ')" } catch { Write-Host "(pak-gate) *** HOLD FAILED: $_" }
             } else {
                 Write-Host "(primal-pak) update discarded (a download or sha check failed) - keeping the existing pak (if any)"
             }
@@ -1282,6 +1368,8 @@ if ($env:ENABLE_PRIMAL_MOD -eq '1') {
     if (-not $env:PHSK_KEY) {
         Write-Host "(primal-pak) WARNING: no PHSK_KEY set - the pak will load but cannot authenticate to the data plane"
     }
+} elseif ($env:ENABLE_PRIMAL_MOD -eq '1') {
+    Write-Host "(primal-pak) held by the pak gate ($($pakGate.code)) - VANILLA this boot"
 } else {
     Write-Host "(primal-pak) disabled (ENABLE_PRIMAL_MOD != 1)"
 }

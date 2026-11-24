@@ -907,7 +907,7 @@ fi
 # ---------------------------------------------------------------------------
 # RENDER Game.ini  (defaults byte-matched to egg 40's; THE DATA PLANE overrides)
 # ---------------------------------------------------------------------------
-DEFAULT_CLASSES="Dryosaurus,Hypsilophodon,Maiasaura,Pachycephalosaurus,Stegosaurus,Tenontosaurus,Carnotaurus,Ceratosaurus,Deinosuchus,Dilophosaurus,Herrerasaurus,Omniraptor,Pteranodon,Troodon,Beipiaosaurus,Gallimimus,Diabloceratops,Triceratops,Allosaurus,Tyrannosaurus,Kentrosaurus,Austroraptor"
+DEFAULT_CLASSES="Dryosaurus,Hypsilophodon,Maiasaura,Pachycephalosaurus,Stegosaurus,Tenontosaurus,Carnotaurus,Ceratosaurus,Deinosuchus,Dilophosaurus,Herrerasaurus,Omniraptor,Pteranodon,Troodon,Beipiaosaurus,Gallimimus,Diabloceratops,Triceratops,Allosaurus,Tyrannosaurus,Kentrosaurus,Austroraptor,Oviraptor"
 
 # THESE ARE FIRST-BOOT FALLBACKS, NOT THE SOURCE OF TRUTH. They are byte-matched
 # to egg 40's `$cfg` table AND to the plane's own
@@ -1480,9 +1480,107 @@ log "wrote Engine.ini (LF endings; a CR would land inside the token - 401)"
 # - it boots with whatever pak is already on disk (possibly none).
 # ---------------------------------------------------------------------------
 PAK_VER_FILE="$PRIM/primal-pak.version"
+
+# ---------------------------------------------------------------------------
+# PAK GATE: the pak mounts only on a game build it is proven on. The manifest's
+# `gameBuilds` lists the Steam buildids it is proven on; ["*"] marks a lab
+# manifest that mounts on any build. A build not listed, no list, or an install
+# whose build cannot be read: the pak triplet moves to _primal/pak-held, the log
+# says why and the plane is told (`skipped` = the gate's code). The binary stays
+# patched (the vanilla binary is never launched); only our pak is off. A manifest
+# that lists this build mounts the pak again on the next boot.
+# ⛔ ENABLE_PRIMAL_MOD=0 takes the pak off the same way: a pak left on disk mounts on the patched binary.
+# ---------------------------------------------------------------------------
+PAK_HELD_DIR="$PRIM/pak-held"
+PAK_PROOF_FILE="$PRIM/primal-pak.gamebuilds"
+PAK_GATE_MARK="$PRIM/primal-pakgate.pending"
+GAME_BID=$(manifest_buildid "$ROOT/steamapps/appmanifest_412680.acf")
+
+# stdin: a manifest. Prints one listed build per line; exit 1 when there is no gameBuilds list.
+game_builds() {
+    local arr
+    arr=$(tr -d '\r\n' | grep -o '"gameBuilds"[[:space:]]*:[[:space:]]*\[[^]]*\]') || return 1
+    printf '%s' "${arr#*[}" | grep -o '"[^"]*"' | tr -d '"' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -v '^$'
+    return 0
+}
+# $1 = installed build, $2 = "listed" or "none", stdin = the listed builds. Prints "open|closed code why".
+pak_gate() {
+    local bid="$1" have="$2" list
+    list=$(cat | tr '\n' ' ' | sed 's/ *$//')
+    if [ "$have" != "listed" ]; then echo "closed pak_proof_missing the pak manifest lists no gameBuilds, so this pak is proven on no game build"; return; fi
+    if printf ' %s ' "$list" | grep -q ' \* '; then echo "open any_build lab manifest: gameBuilds [\"*\"] mounts on any game build"; return; fi
+    if [ -z "$bid" ]; then echo "closed game_build_unknown the installed game build could not be read from steamapps/appmanifest_412680.acf (pak proven on: ${list:-none})"; return; fi
+    if printf ' %s ' "$list" | grep -q " $bid "; then echo "open proven proven on game build $bid"; return; fi
+    echo "closed pak_game_build_unproven game build $bid is not one this pak is proven on (${list:-none})"
+}
+hold_pak() { # moves the triplet aside; prints what it took off, exit 1 if any of it is still in Paks
+    local f off=""
+    for f in "$PAKS_DIR"/pakchunk50-Windows_P.*; do
+        [ -f "$f" ] || continue
+        mkdir -p "$PAK_HELD_DIR" && mv -f "$f" "$PAK_HELD_DIR/" && off="$off $(basename "$f")"
+    done
+    rm -f "$PAK_VER_FILE"
+    printf '%s' "${off# }"
+    ! ls "$PAKS_DIR"/pakchunk50-Windows_P.* >/dev/null 2>&1
+}
+report_pakgate() { # $1 = true|false, $2 = code, $3 = reason, $4 = mark to clear once recorded; retried in the background
+    [ -n "$PHSK" ] || { warn "pak-gate: NOT reported off-box: no PHSK_KEY on this server"; return 0; }
+    local reason body
+    reason=$(printf '%s' "$3" | tr -d '"\\' | tr -c '\40-\176' ' ' | cut -c1-480)
+    if [ "$1" = "true" ]; then
+        body="{\"stage\":\"inject\",\"game\":\"evrima\",\"ok\":true,\"attempts\":0,\"reason\":\"${reason}\",\"dll\":\"pakchunk50\",\"volume\":\"$ROOT\",\"gameBuild\":\"${GAME_BID}\",\"pakVersion\":\"${PM_VER:-}\"}"
+    else
+        body="{\"stage\":\"inject\",\"game\":\"evrima\",\"ok\":false,\"attempts\":0,\"skipped\":\"$2\",\"reason\":\"${reason}\",\"dll\":\"pakchunk50\",\"volume\":\"$ROOT\",\"gameBuild\":\"${GAME_BID}\",\"pakVersion\":\"${PM_VER:-}\"}"
+    fi
+    ( n=0; while [ "$n" -lt 30 ]; do
+        n=$((n + 1))
+        resp=$(curl -sS --max-time 10 -w '\n%{http_code}' -X POST -H "Authorization: Bearer $PHSK" \
+            -H "Content-Type: application/json" -d "$body" "$DATA_BASE/v1/boot-report" 2>/dev/null)
+        if [ "$(printf '%s' "$resp" | tail -n1)" = "200" ] && printf '%s' "$resp" | grep -Eq '"recorded"[[:space:]]*:[[:space:]]*true'; then
+            [ -n "$4" ] && rm -f "$4"; exit 0
+        fi
+        sleep 60
+      done ) >/dev/null 2>&1 &
+}
+
+PM=""; PM_VER=""
+PAK_GATE="closed mod_off ENABLE_PRIMAL_MOD != 1"
 if [ "${ENABLE_PRIMAL_MOD:-0}" = "1" ]; then
     PAK_MANIFEST_URL=$(env_or "${PRIMAL_MOD_MANIFEST:-}" "$R2_BASE/primal-mod-evrima-pak/latest.json")
     PM=$(curl -fsS --max-time 20 "$PAK_MANIFEST_URL" 2>/dev/null)
+    PROOF_FROM="the manifest"
+    if [ -n "$PM" ]; then
+        PM_VER=$(m_field "$PM" version)
+        if BUILDS=$(printf '%s' "$PM" | game_builds); then HAVE_LIST=listed; else HAVE_LIST=none; BUILDS=""; fi
+        printf '%s\n%s\n%s\n' "$PM_VER" "$HAVE_LIST" "$BUILDS" > "$PAK_PROOF_FILE" 2>/dev/null
+    else
+        # Unreachable manifest: the list kept with the pak on disk still decides, never a guess.
+        HAVE_LIST=none; BUILDS=""; PROOF_FROM="no manifest and no kept list"
+        HAVE_VER=$(cat "$PAK_VER_FILE" 2>/dev/null | tr -d '[:space:]')
+        if [ -n "$HAVE_VER" ] && [ "$(head -n1 "$PAK_PROOF_FILE" 2>/dev/null)" = "$HAVE_VER" ] && [ "$(sed -n 2p "$PAK_PROOF_FILE" 2>/dev/null)" = "listed" ]; then
+            HAVE_LIST=listed; BUILDS=$(tail -n +3 "$PAK_PROOF_FILE"); PROOF_FROM="the list kept with pak $HAVE_VER (manifest unreachable)"
+        fi
+    fi
+    PAK_GATE=$(printf '%s\n' "$BUILDS" | pak_gate "$GAME_BID" "$HAVE_LIST")
+    GATE_CODE=$(echo "$PAK_GATE" | cut -d' ' -f2); GATE_WHY=$(echo "$PAK_GATE" | cut -d' ' -f3-)
+    log "pak-gate: game build ${GAME_BID:-UNKNOWN}, pak ${PM_VER:-?} from $PROOF_FROM -> $( [ "${PAK_GATE%% *}" = open ] && echo MOUNT || echo VANILLA) ($GATE_CODE): $GATE_WHY"
+fi
+GATE_CODE=$(echo "$PAK_GATE" | cut -d' ' -f2); GATE_WHY=$(echo "$PAK_GATE" | cut -d' ' -f3-)
+if [ "${PAK_GATE%% *}" != "open" ]; then
+    HELD_ERR=""
+    HELD_OFF=$(hold_pak) || HELD_ERR="still in Paks after the hold: $(ls "$PAKS_DIR"/pakchunk50-Windows_P.* 2>/dev/null | xargs -r -n1 basename | tr '\n' ' ')"
+    [ -n "$HELD_ERR" ] && warn "pak-gate: *** HOLD FAILED: $HELD_ERR - the pak may still mount on a game build it is not proven on"
+    [ -n "$HELD_OFF" ] && log "pak-gate: took off: $HELD_OFF (kept in _primal/pak-held)"
+    if [ "$GATE_CODE" != "mod_off" ]; then
+        warn "pak-gate: *** BOOTING WITHOUT THE PRIMAL PAK ($GATE_CODE): no telemetry, admin or storage this boot."
+        echo "$GATE_CODE" > "$PAK_GATE_MARK" 2>/dev/null
+        report_pakgate false "$GATE_CODE" "$GATE_WHY${HELD_ERR:+; HOLD FAILED: $HELD_ERR}" ""
+    fi
+elif [ -f "$PAK_GATE_MARK" ]; then
+    report_pakgate true "" "pak ${PM_VER:-?} $GATE_WHY" "$PAK_GATE_MARK"
+fi
+
+if [ "${PAK_GATE%% *}" = "open" ]; then
     if [ -z "$PM" ]; then
         log "primal-pak: manifest unreachable ($PAK_MANIFEST_URL) - booting with existing pak (if any)"
     else
@@ -1523,6 +1621,10 @@ if [ "${ENABLE_PRIMAL_MOD:-0}" = "1" ]; then
                 done
                 echo "$PM_VER" > "$PAK_VER_FILE"
                 log "primal-pak: pak $PM_VER ready ($PM_BUILD) -> $PAKS_DIR"
+            elif [ -n "$HAVE_VER" ] && [ "$HAVE_VER" != "$PM_VER" ]; then
+                # The gate proved the manifest's pak, not the older one still on disk.
+                HELD_OFF=$(hold_pak) && log "primal-pak: update discarded on verify failure - pak $HAVE_VER on disk is not the one proven on this game build: took off $HELD_OFF, no Primal pak this boot" \
+                    || warn "primal-pak: update discarded AND the hold of pak $HAVE_VER FAILED - it may mount on a game build it is not proven on"
             else
                 log "primal-pak: update discarded on verify failure - keeping the existing pak (if any)"
             fi
@@ -1536,6 +1638,8 @@ if [ "${ENABLE_PRIMAL_MOD:-0}" = "1" ]; then
     # places dsound.dll + UniversalSigBypasser.asi; here the signature bypass is
     # inside the modded binary fetched above (which is why vanilla is forbidden).
     log "sigbypass: not needed on Linux (built into the modded binary; see README)"
+elif [ "${ENABLE_PRIMAL_MOD:-0}" = "1" ]; then
+    log "primal-pak: held by the pak gate ($GATE_CODE) - no Primal pak this boot"
 else
     log "primal-pak: disabled (ENABLE_PRIMAL_MOD != 1)"
 fi
