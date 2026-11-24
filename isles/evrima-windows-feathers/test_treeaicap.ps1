@@ -112,6 +112,8 @@ Ok 'the cap is set before Game.ini is written' ($iA -gt 0 -and $iW -gt $iA)
 $iB = $all.IndexOf('# Tree knockdown: the switch the pak reads'); $iMod = $all.IndexOf("if (`$env:ENABLE_PRIMAL_MOD -eq '1' -and `$phsk) {`n    `$dataBase")
 $iE = $all.IndexOf("[System.IO.File]::WriteAllText((Join-Path `$cfgDir 'Engine.ini')")
 Ok 'the tree line is inside the mod-on session branch, before Engine.ini is written' ($iMod -gt 0 -and $iB -gt $iMod -and $iE -gt $iB)
+$fallback = [regex]::Match($all, "(?m)^\s*TreeKnockdownOn = '(\w+)'").Groups[1].Value
+Ok 'with no plane config the wrapper falls back to tree knockdown on (the game''s default)' ($fallback -eq 'True') "fallback '$fallback'"
 
 Remove-Item Env:ENABLE_PRIMAL_MOD -ErrorAction SilentlyContinue
 Write-Host ("{0} {1} passed, {2} failed" -f $(if ($fail) { 'FAIL' } else { 'PASS' }), $pass, $fail)

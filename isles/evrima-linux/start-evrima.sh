@@ -1293,7 +1293,7 @@ PAK_EXTRA[BodySweepOn]="True"
 PAK_EXTRA[BodySweepList]="Triceratops"
 PAK_EXTRA[BodyHoldSec]="10.0"
 PAK_EXTRA[BodySweepLiftZ]="150000"
-PAK_EXTRA[TreeKnockdownOn]="False"
+PAK_EXTRA[TreeKnockdownOn]="True"
 PAK_EXTRA[AIMaxCount]="40"
 PAK_EXTRA[SpeciesCapEvery]="30"
 # A168 (Ice 2026-09-21: "idk why we're even putting a cap in the first place") -

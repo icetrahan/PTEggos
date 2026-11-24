@@ -92,6 +92,8 @@ nB=$(grep -nF '# Tree knockdown: the switch the pak reads' "$WRAPPER" | head -1 
 nE=$(grep -nF '> "$CONFIG_DIR/Engine.ini"' "$WRAPPER" | head -1 | cut -d: -f1)
 ok "the cap is set before Game.ini is written" '[ "${nA:-0}" -gt 0 ] && [ "${nW:-0}" -gt "$nA" ]'
 ok "the tree line is inside the mod-on session branch, before Engine.ini is written" '[ "${nM:-0}" -gt 0 ] && [ "${nB:-0}" -gt "$nM" ] && [ "${nE:-0}" -gt "$nB" ]'
+FB=$(grep -oE '^PAK_EXTRA\[TreeKnockdownOn\]="[A-Za-z]+"' "$WRAPPER" | head -1 | cut -d'"' -f2)
+ok "with no plane config the wrapper falls back to tree knockdown on (the game's default)" '[ "$FB" = True ]'
 
 if [ "$FAIL" -gt 0 ]; then echo "FAIL $PASS passed, $FAIL failed"; exit 1; fi
 echo "PASS $PASS passed, $FAIL failed"

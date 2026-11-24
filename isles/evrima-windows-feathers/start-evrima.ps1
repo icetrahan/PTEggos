@@ -648,7 +648,7 @@ $modDefaults = [ordered]@{
     BodySweepList   = 'Triceratops'
     BodyHoldSec     = '10.0'
     BodySweepLiftZ  = '150000'
-    TreeKnockdownOn = 'False'
+    TreeKnockdownOn = 'True'
     AIMaxCount      = '40'
     SpeciesCapEvery = '30'
     # A168 (Ice 2026-09-21: "idk why we're even putting a cap in the first place") -
