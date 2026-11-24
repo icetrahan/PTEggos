@@ -37,6 +37,11 @@ jobs:
       - name: egg 42 — the binary is patched locally, the lane is the fallback
         if: always()
         run: bash isles/evrima-linux/test_localpatch.sh
+      - name: eggs 40 + 42 — tree knockdown and the game's AI cap follow the panel
+        if: always()
+        run: |
+          bash isles/evrima-linux/test_treeaicap.sh
+          pwsh -NoProfile -File isles/evrima-windows-feathers/test_treeaicap.ps1
       - name: image deathmatch — patched locally, the lane is the fallback
         if: always()
         run: bash .github/scripts/test_image_localpatch.sh

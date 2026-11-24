@@ -1136,6 +1136,33 @@ if [ -z "$(echo -n "$CFG_AISpawnInterval" | tr -d '[:space:]')" ]; then
     GI=$(sed '/^[[:space:]]*AISpawnInterval[[:space:]]*=[[:space:]]*$/d' <<<"$GI")
 fi
 
+# GlobalAISpawnLimit, the game's own AI cap, follows the panel's "Most AI alive at once" (mod_settings.aiMaxCount).
+# The pak writes the same limit every minute as max(AIMaxCount - AI the spawner does not track, 1), so this line
+# holds it from boot and both carry one number. Never 0: the game reads 0 as no cap, the pak as almost no AI.
+# Only with our mod on: a server without it keeps the game's own default.
+AI_CAP=""
+AI_CAP_WHY="our mod is off, so the game keeps its own default (no cap)"
+if [ "${ENABLE_PRIMAL_MOD:-0}" = "1" ] && [ -n "$PHSK" ]; then
+    if ! c_has mod_settings aiMaxCount; then
+        AI_CAP_WHY="no plane config this boot; the pak sets it a minute after boot"
+    else
+        AI_CAP_RAW=$(c_str mod_settings aiMaxCount)
+        AI_CAP=$(LC_ALL=C awk -v v="$AI_CAP_RAW" 'BEGIN { if (v ~ /^-?[0-9]+(\.[0-9]+)?$/) { n = int(v); if (n < 1) n = 1; print n } }')
+        [ -z "$AI_CAP" ] && AI_CAP_WHY="aiMaxCount '${AI_CAP_RAW:0:24}' is not a number; the pak sets it a minute after boot"
+    fi
+fi
+if [ -n "$AI_CAP" ]; then
+    GI=$(sed '/^[[:space:]]*[Gg][Ll][Oo][Bb][Aa][Ll][Aa][Ii][Ss][Pp][Aa][Ww][Nn][Ll][Ii][Mm][Ii][Tt][[:space:]]*=/d' <<<"$GI")
+    if grep -qF '[/script/theisle.tigamesession]' <<<"$GI"; then
+        GI=${GI/"[/script/theisle.tigamesession]"/"[/script/theisle.tigamesession]"$'\n'"GlobalAISpawnLimit=$AI_CAP"}
+        log "Game.ini: GlobalAISpawnLimit=$AI_CAP (Most AI alive at once)"
+    else
+        warn "Game.ini: no [/script/theisle.tigamesession] section - GlobalAISpawnLimit NOT set"
+    fi
+else
+    log "Game.ini: GlobalAISpawnLimit not set - $AI_CAP_WHY"
+fi
+
 MASS_HDR='[/script/theisle.tigamesession]'
 
 # Fleet constants, the same on every egg and never an owner's field: a mass
@@ -1420,6 +1447,20 @@ if [ "${ENABLE_PRIMAL_MOD:-0}" = "1" ] && [ -n "$PHSK" ]; then
     # Rule 13: one line every boot, so no pick, the pick and a refused value never share a silence.
     log "(config) Engine.ini: AnimalRoster $ANIMAL_ROSTER_NOTE. The panel owns this key (A431)"
     [ "$CARRIED_N" -gt 0 ] && log "Engine.ini: carried forward $CARRIED_N hand-set pak key(s) this script does not own (#1137)"
+
+    # Tree knockdown: the switch the pak reads (TreeKnockdownOn) also sets the game's own master cvar, which covers
+    # bumps, ability hits and destruction. Off renders ti.TreeDestruction.Enabled=0; on omits it (the game's default 1).
+    ENG=$(sed '/^[[:space:]]*[Tt][Ii]\.[Tt][Rr][Ee][Ee][Dd][Ee][Ss][Tt][Rr][Uu][Cc][Tt][Ii][Oo][Nn]\.[Ee][Nn][Aa][Bb][Ll][Ee][Dd][[:space:]]*=/d' <<<"$ENG")
+    if [ "${PAK_EXTRA[TreeKnockdownOn]}" = "False" ]; then
+        if grep -qx '\[ConsoleVariables\][[:space:]]*' <<<"$ENG"; then
+            ENG=${ENG/"[ConsoleVariables]"/"[ConsoleVariables]"$'\n'"ti.TreeDestruction.Enabled=0"}
+            log "Engine.ini: ti.TreeDestruction.Enabled=0 (Tree knockdown off: no tree falls or breaks)"
+        else
+            warn "Engine.ini: no [ConsoleVariables] section - tree knockdown NOT turned off"
+        fi
+    else
+        log "Engine.ini: tree knockdown on (the game's own default)"
+    fi
 else
     log "Engine.ini: no Primal session block (mod disabled or no PHSK_KEY)"
 fi

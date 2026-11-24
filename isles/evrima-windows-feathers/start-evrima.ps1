@@ -489,6 +489,34 @@ if ([string]::IsNullOrWhiteSpace($cfg.AISpawnInterval)) {
     $gi = $gi -replace "(?m)^\s*AISpawnInterval\s*=\s*\r?\n", ''
 }
 
+# GlobalAISpawnLimit, the game's own AI cap, follows the panel's "Most AI alive at once" (mod_settings.aiMaxCount).
+# The pak writes the same limit every minute as max(AIMaxCount - AI the spawner does not track, 1), so this line
+# holds it from boot and both carry one number. Never 0: the game reads 0 as no cap, the pak as almost no AI.
+# Only with our mod on: a server without it keeps the game's own default.
+$aiCap = $null; $aiCapWhy = 'our mod is off, so the game keeps its own default (no cap)'
+if ($phsk -and $env:ENABLE_PRIMAL_MOD -eq '1') {
+    $aiCapD = 0.0
+    if (-not (Has $ms 'aiMaxCount')) {
+        $aiCapWhy = 'no plane config this boot; the pak sets it a minute after boot'
+    } elseif (-not [double]::TryParse([string]$ms.aiMaxCount, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$aiCapD)) {
+        $aiCapWhy = "aiMaxCount '$($ms.aiMaxCount)' is not a number; the pak sets it a minute after boot"
+    } else {
+        $aiCap = [string][Math]::Max(1, [int][Math]::Floor($aiCapD))
+    }
+}
+if ($null -ne $aiCap) {
+    $gi = [regex]::Replace($gi, "(?mi)^[ \t]*GlobalAISpawnLimit[ \t]*=.*\r?\n", '')
+    $aiCapRe = New-Object System.Text.RegularExpressions.Regex('(?mi)^\[/script/theisle\.tigamesession\][ \t]*\r?\n')
+    if ($aiCapRe.IsMatch($gi)) {
+        $gi = $aiCapRe.Replace($gi, ('$0' + "GlobalAISpawnLimit=$aiCap`r`n"), 1)
+        Write-Host "(config) Game.ini: GlobalAISpawnLimit=$aiCap (Most AI alive at once)"
+    } else {
+        Write-Host "(config) Game.ini: WARNING no [/script/theisle.tigamesession] section - GlobalAISpawnLimit NOT set"
+    }
+} else {
+    Write-Host "(config) Game.ini: GlobalAISpawnLimit not set - $aiCapWhy"
+}
+
 # --- AI LEARNING (#1099) -----------------------------------------------------
 # The Isle ships this subsystem with every gate TRUE and the upload endpoint
 # baked at a third party (#877). Our servers point it at our own capture worker.
@@ -923,6 +951,21 @@ if ($env:ENABLE_PRIMAL_MOD -eq '1' -and $phsk) {
     Write-Host "(config) Engine.ini: pak keys ForceDinoList=$pakForceDino $(($pakExtra.Keys | ForEach-Object { "$_=$($pakExtra[$_])" }) -join ' ')"
     # Rule 13: one line every boot, so no pick, the pick and a refused value never share a silence.
     Write-Host "(config) Engine.ini: AnimalRoster $animalRosterNote. The panel owns this key (A431)"
+
+    # Tree knockdown: the switch the pak reads (TreeKnockdownOn) also sets the game's own master cvar, which covers
+    # bumps, ability hits and destruction. Off renders ti.TreeDestruction.Enabled=0; on omits it (the game's default 1).
+    $eng = [regex]::Replace($eng, "(?mi)^[ \t]*ti\.TreeDestruction\.Enabled[ \t]*=.*\r?\n", '')
+    if ($pakExtra['TreeKnockdownOn'] -eq 'False') {
+        $treeRe = New-Object System.Text.RegularExpressions.Regex('(?mi)^\[ConsoleVariables\][ \t]*\r?\n')
+        if ($treeRe.IsMatch($eng)) {
+            $eng = $treeRe.Replace($eng, ('$0' + "ti.TreeDestruction.Enabled=0`r`n"), 1)
+            Write-Host "(config) Engine.ini: ti.TreeDestruction.Enabled=0 (Tree knockdown off: no tree falls or breaks)"
+        } else {
+            Write-Host "(config) Engine.ini: WARNING no [ConsoleVariables] section - tree knockdown NOT turned off"
+        }
+    } else {
+        Write-Host "(config) Engine.ini: tree knockdown on (the game's own default)"
+    }
 } else {
     Write-Host "(config) Engine.ini: no Primal session block (mod disabled or no PHSK_KEY)"
 }
