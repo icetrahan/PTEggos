@@ -1173,9 +1173,9 @@ for FLEET_KV in MassMigrationDisableTime=2700 IndividualPatrolTime=300; do
 done
 
 # PRIMAL_MASS_MIGRATION_TIME: seconds of uptime before each of the game's own mass
-# checks. The fleet's 18000 (every 5 h) keeps every mass clear of the restart on each
-# schedule the fleet runs (#3600); a value above the restart gap means no mass at all.
-# Empty keeps the game's 12 h (#3604).
+# checks. The egg default 172800 is above every restart gap, so no mass runs: on
+# 0.22.157 a mass shuts every other zone, sanctuaries included, until the restart.
+# A shorter value must keep each mass clear of the restart (#3600). Empty keeps the game's 12 h (#3604).
 MASS_ASKED=$(echo -n "${PRIMAL_MASS_MIGRATION_TIME:-}" | tr -d '[:space:]')
 MASS_T=""
 if [[ "$MASS_ASKED" =~ ^[1-9][0-9]{3,7}$ ]] && [ "$MASS_ASKED" -ge 3600 ] && [ "$MASS_ASKED" -le 31536000 ]; then

@@ -1529,13 +1529,13 @@ if ($cbOn) {
     Write-Host "(commban) off (PRIMAL_COMMBAN != 1)"
 }
 
-# MassMigrationTime = seconds of uptime before each of the game's own mass checks. 18000 (every 5 h)
-# keeps every 45-min mass clear of the restart on each schedule the fleet runs (6/8/11/12/13/16/24 h);
-# a mass still open at a restart is carried into the next run with every other zone shut (BUGS #3600).
+# MassMigrationTime = seconds of uptime before each of the game's own mass checks. 172800 (48 h) parks it:
+# no fleet run lasts 48 h, so the game's own mass never starts. On 0.22.157 a mass shuts every other zone,
+# sanctuaries included, and they stay shut after it ends.
 # The plane may serve a per-server value (server_settings.massMigrationTime, whole seconds 3600-172800).
 # 172800 (a 48 h park) only when THIS boot loads a commban.dll whose manifest declares a live mass rung
 # (mass_rung: true): that DLL starts the run's mass itself.
-$massT = '18000'; $massWhy = 'fleet default, every 5 h'
+$massT = '172800'; $massWhy = 'fleet default, parked 48 h'
 if (Has $ss 'massMigrationTime') {
     $pv = ('' + $ss.massMigrationTime).Trim()
     if ($pv -match '^\d{4,6}$' -and [int]$pv -ge 3600 -and [int]$pv -le 172800) { $massT = $pv; $massWhy = 'the plane' }

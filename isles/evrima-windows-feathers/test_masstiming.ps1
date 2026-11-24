@@ -51,24 +51,24 @@ $out = Invoke-Expression $blockA 6>&1 | Out-String
 Ok 'no session section: said, not silent' ($out -match 'WARNING no \[/script/theisle.tigamesession\] section')
 Ok '...and nothing was added' ((Count $gi '(?mi)^IndividualPatrolTime=') -eq 0)
 
-Write-Host "B - MassMigrationTime: every 5 h, the plane's value, or a 48 h park for a declared mass rung"
+Write-Host "B - MassMigrationTime: parked 48 h by default, the plane's value, or 48 h for a declared mass rung"
 $cfgDir = Join-Path $env:TEMP ('mt_' + [guid]::NewGuid().ToString('N').Substring(0,8))
 New-Item -ItemType Directory -Path $cfgDir | Out-Null
 $rung = [pscustomobject]@{ version = '1.5.0'; mass_rung = $true }
 $cases = @(
-    @{ n = 'commban 1.4.4, no plane value';    ready = $true;  cm = [pscustomobject]@{ version = '1.4.4' }; ss = $null;                                         want = '18000';  say = 'fleet default' },
-    @{ n = 'commban off, no plane value';      ready = $false; cm = $null;                                  ss = [pscustomobject]@{ maxPlayers = 100 };     want = '18000';  say = 'fleet default' },
+    @{ n = 'commban 1.4.4, no plane value';    ready = $true;  cm = [pscustomobject]@{ version = '1.4.4' }; ss = $null;                                         want = '172800'; say = 'parked 48 h' },
+    @{ n = 'commban off, no plane value';      ready = $false; cm = $null;                                  ss = [pscustomobject]@{ maxPlayers = 100 };     want = '172800'; say = 'parked 48 h' },
     @{ n = 'plane 36000';                      ready = $true;  cm = [pscustomobject]@{ version = '1.4.4' }; ss = [pscustomobject]@{ massMigrationTime = 36000 };   want = '36000';  say = 'the plane' },
     @{ n = 'plane padded string';              ready = $false; cm = $null;                                  ss = [pscustomobject]@{ massMigrationTime = ' 21600 ' }; want = '21600';  say = 'the plane' },
     @{ n = 'plane 3600 (the floor)';           ready = $false; cm = $null;                                  ss = [pscustomobject]@{ massMigrationTime = 3600 };    want = '3600';   say = 'the plane' },
-    @{ n = 'plane 3599 refused';               ready = $false; cm = $null;                                  ss = [pscustomobject]@{ massMigrationTime = 3599 };    want = '18000';  say = 'refused' },
-    @{ n = 'plane 172801 refused';             ready = $false; cm = $null;                                  ss = [pscustomobject]@{ massMigrationTime = 172801 };  want = '18000';  say = 'refused' },
-    @{ n = 'plane fraction refused';           ready = $false; cm = $null;                                  ss = [pscustomobject]@{ massMigrationTime = 3600.5 };  want = '18000';  say = 'refused' },
-    @{ n = 'plane text refused';               ready = $false; cm = $null;                                  ss = [pscustomobject]@{ massMigrationTime = 'soon' };  want = '18000';  say = 'refused' },
+    @{ n = 'plane 3599 refused';               ready = $false; cm = $null;                                  ss = [pscustomobject]@{ massMigrationTime = 3599 };    want = '172800'; say = 'refused' },
+    @{ n = 'plane 172801 refused';             ready = $false; cm = $null;                                  ss = [pscustomobject]@{ massMigrationTime = 172801 };  want = '172800'; say = 'refused' },
+    @{ n = 'plane fraction refused';           ready = $false; cm = $null;                                  ss = [pscustomobject]@{ massMigrationTime = 3600.5 };  want = '172800'; say = 'refused' },
+    @{ n = 'plane text refused';               ready = $false; cm = $null;                                  ss = [pscustomobject]@{ massMigrationTime = 'soon' };  want = '172800'; say = 'refused' },
     @{ n = 'declared mass rung parks';         ready = $true;  cm = $rung;                                  ss = [pscustomobject]@{ massMigrationTime = 36000 };   want = '172800'; say = 'starts this run' },
-    @{ n = 'declared rung, DLL not armed';     ready = $false; cm = $rung;                                  ss = $null;                                         want = '18000';  say = 'fleet default' },
-    @{ n = 'mass_rung "false" does not park';  ready = $true;  cm = [pscustomobject]@{ version = '1.5.0'; mass_rung = 'false' }; ss = $null;                     want = '18000';  say = 'fleet default' },
-    @{ n = 'old 1.3+ version alone no park';   ready = $true;  cm = [pscustomobject]@{ version = '1.3.2' }; ss = $null;                                         want = '18000';  say = 'fleet default' }
+    @{ n = 'declared rung, DLL not armed';     ready = $false; cm = $rung;                                  ss = $null;                                         want = '172800'; say = 'parked 48 h' },
+    @{ n = 'mass_rung "false" does not park';  ready = $true;  cm = [pscustomobject]@{ version = '1.5.0'; mass_rung = 'false' }; ss = $null;                     want = '172800'; say = 'parked 48 h' },
+    @{ n = 'old 1.3+ version alone no park';   ready = $true;  cm = [pscustomobject]@{ version = '1.3.2' }; ss = $null;                                         want = '172800'; say = 'parked 48 h' }
 )
 foreach ($c in $cases) {
     $gi = $TMPL
@@ -82,7 +82,7 @@ foreach ($c in $cases) {
     Ok "$($c.n): exactly one line" ((Count $after '(?mi)^MassMigrationTime=') -eq 1)
     Ok "$($c.n): D and patrol time kept" ($after -match '(?m)^MassMigrationDisableTime=2700\r?$' -and $after -match '(?m)^IndividualPatrolTime=300\r?$')
     Ok "$($c.n): the boot says why ($($c.say))" ($out -match [regex]::Escape($c.say)) $out
-    Ok "$($c.n): never the old 172800 unless a rung is declared" (($c.want -eq '172800') -or ($after -notmatch '172800'))
+    Ok "$($c.n): never the 5 h value" ($after -notmatch '(?m)^MassMigrationTime=18000\r?$')
 }
 
 $gi = $TMPL.Replace('bEnablePatrolZones={{EnablePatrolZones}}', "bEnablePatrolZones={{EnablePatrolZones}}`nmassmigrationtime = 43200")
