@@ -517,6 +517,21 @@ if ($null -ne $aiCap) {
     Write-Host "(config) Game.ini: GlobalAISpawnLimit not set - $aiCapWhy"
 }
 
+# Gore (A1173): the game's own bite wounds, dismemberment and loose chunks, from server_settings. Off is the game's
+# default, so the section is written only when an owner turns one on. The game reads it from Saved Game.ini.
+# A player sees bite wounds and loose chunks only when their own game has bite gore on too: the client checks its
+# own copy of the switch before drawing. Dismemberment is decided here and sent to every player.
+$goreKeys = [ordered]@{ bEnableRuntimeBiteGore = 'enableBiteGore'; bEnableDismemberment = 'enableDismemberment'; bSpawnLooseChunks = 'spawnLooseChunks' }
+$goreOn = @($goreKeys.Keys | Where-Object { (Has $ss $goreKeys[$_]) -and ($ss.($goreKeys[$_]) -is [bool]) -and $ss.($goreKeys[$_]) })
+$gi = [regex]::Replace($gi, '(?mi)^\[/Script/TheIsle\.TIRuntimeGoreSettings\][ \t]*\r?\n(?:(?!\[).*(?:\r?\n|$))*', '')
+if ($goreOn.Count) {
+    $goreLines = @($goreKeys.Keys | ForEach-Object { "$_=" + (PsBool ($goreOn -contains $_)) })
+    $gi = $gi.TrimEnd("`r", "`n") + "`r`n`r`n[/Script/TheIsle.TIRuntimeGoreSettings]`r`n" + ($goreLines -join "`r`n") + "`r`n"
+    Write-Host "(config) Game.ini: gore on: $($goreOn -join ', ')"
+} else {
+    Write-Host "(config) Game.ini: gore off (the game's default, no gore section)"
+}
+
 # --- AI LEARNING (#1099) -----------------------------------------------------
 # The Isle ships this subsystem with every gate TRUE and the upload endpoint
 # baked at a third party (#877). Our servers point it at our own capture worker.
