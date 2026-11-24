@@ -155,16 +155,17 @@ see nor edit it). The wrapper writes it as the first line of
 
 | Value | Game.ini | Players get |
 |---|---|---|
-| `172800` (the egg default) | `MassMigrationTime=172800` | no mass migration: 48 h is above the longest daily restart gap (24 h), so every migration zone and sanctuary stays open all run |
+| `18000` (the egg default, Ice 2026-11-24) | `MassMigrationTime=18000` | a 45-min mass every 5 h of uptime, clear of the restart on every schedule the fleet runs (6/8/11/12/13/16/24 h), so none is carried into the next run |
+| `172800` | `MassMigrationTime=172800` | no mass migration: 48 h is above the longest daily restart gap (24 h), so every migration zone and sanctuary stays open all run |
 | empty | no `MassMigrationTime` line | the game's own check at 12 h |
-| another whole number, 86401 to 31536000 | that number | the game's check that long after boot |
+| another whole number, 3600 to 31536000 | that number | the game's check that long after boot |
 | anything else | no line, and a `REFUSED` warning naming the value | the game's own check at 12 h |
 
 Every boot says which, read back from the rendered file, never from the variable:
 
 - `Game.ini: MassMigrationTime=172800 (PRIMAL_MASS_MIGRATION_TIME) - the game's own mass-migration check is 172800 s after boot`
 - `Game.ini: MassMigrationTime left to the game (12 h) - PRIMAL_MASS_MIGRATION_TIME is empty`
-- `WARN: PRIMAL_MASS_MIGRATION_TIME='…' REFUSED (want a whole number of seconds, 86401 to 31536000) - …`
+- `WARN: PRIMAL_MASS_MIGRATION_TIME='…' REFUSED (want a whole number of seconds, 3600 to 31536000) - …`
 
 The wrapper half ships with `publish_wrapper.py`; the variable reaches a server
 only when the egg JSON is re-imported. A new wrapper on the old egg sees the

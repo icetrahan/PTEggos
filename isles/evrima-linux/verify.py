@@ -236,9 +236,9 @@ def main() -> int:
         bool(mass) and not mass["user_viewable"] and not mass["user_editable"],
     )
     check(
-        "its panel range is the wrapper's (86401 to 31536000)",
-        bool(mass) and mass["rules"] == "nullable|integer|between:86401,31536000"
-        and '[ "$MASS_ASKED" -gt 86400 ]' in wrapper
+        "its panel range is the wrapper's (3600 to 31536000)",
+        bool(mass) and mass["rules"] == "nullable|integer|between:3600,31536000"
+        and '[ "$MASS_ASKED" -ge 3600 ]' in wrapper
         and '[ "$MASS_ASKED" -le 31536000 ]' in wrapper,
     )
     check(

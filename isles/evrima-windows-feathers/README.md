@@ -238,40 +238,37 @@ that cannot place it still launches, unmodded, and now says so: a console banner
 `powershell -NoProfile -ExecutionPolicy Bypass -File isles/evrima-windows-feathers/test_bootreport.ps1`
 (36 checks).
 
-## Mass migration and patrol timing (BUGS #3328, #3362)
+## Mass migration and patrol timing (BUGS #3328, #3362, #3600)
 
-Ice's ruling: one mass migration per run, 15 minutes after every boot, started by `commban.dll`'s mass
-rung (1.3.0+). The game's own mass check runs `MassMigrationTime` after boot, 12 h by default. On a
-12 h restart schedule it lands on the restart itself: a run that lives a few seconds past 12 h starts a
-mass in its last moment, the save keeps it, and the next run opens inside it (#3600). The Linux egg has
-no DLL and parks the check with an egg variable instead (`isles/evrima-linux`, #3604).
+Ice's ruling (2026-11-24): the game's own mass migration runs every 5 h of uptime. Game 0.22.157 removed
+the function `commban.dll`'s mass rung used to start and move a mass, so the DLL no longer starts one,
+and the game's own check is the only mass there is. Its default is 12 h, and most servers restart every
+6-12 h, so with the default most runs would end before a mass and a run that lives a few seconds past
+12 h would start one in its last moment; the save keeps it and the next run opens inside it with every
+other zone shut (#3600). 5 h keeps every mass clear of the restart on every schedule the fleet runs.
 
 The wrapper writes three `[/script/theisle.tigamesession]` keys into the rendered Game.ini:
 
 | Key | Value | When |
 |---|---|---|
 | `MassMigrationDisableTime` | `2700` (45 min) | every boot |
-| `IndividualPatrolTime` | `300` (a patrol zone handed out every 5 min, not 20) | every boot |
-| `MassMigrationTime` | `172800` (48 h, above every restart gap, so the game's own check never fires) | only when THIS boot loads a commban.dll whose manifest version is 1.3.0 or newer |
+| `IndividualPatrolTime` | `300` (the game ignores it since 0.22.157, which removed patrol zones) | every boot |
+| `MassMigrationTime` | `18000` (every 5 h); the plane's `server_settings.massMigrationTime` when it serves one (whole seconds, 3600 to 172800); `172800` (a 48 h park) only when THIS boot loads a commban.dll whose manifest declares `"mass_rung": true` | every boot |
 
 ⛔ `MassMigrationTime` must never be parked on a server whose DLL does not start the mass: that server
-would never get one. The game also requires T > 1.1 × D, or a mass never ends; `test_masstiming.ps1`
-asserts both.
-
-A mass that is running at a restart comes back from the save with no end timer. The DLL replaces it at
-+15 min (`[MASS] … loaded from the last run's save … replacing it`); without the DLL it stays open until
-the game's own next check.
+would never get one. That is why the park keys on the manifest's own declaration, not on the DLL's
+version. The game also requires T > 1.1 × D, or a mass never ends. `test_masstiming.ps1` asserts both,
+and that a mass is never open at the end of a 4.5, 6, 7.5, 8, 11, 12, 13, 16 or 24 h run.
 
 Every boot says which way it went:
 
 - `(config) Game.ini: MassMigrationDisableTime=2700 IndividualPatrolTime=300`
-- `(config) Game.ini: MassMigrationTime=172800 - commban v<x> starts this run's mass itself`, or
-  `(config) Game.ini: MassMigrationTime left to the game (12 h) - no commban mass rung this boot (...)`
-- the DLL's own `[MASS]` lines in `Win64\commban.log` (`started at +<s> s … zone=…`, `ended by …`, or
-  `SKIPPED` / `FAILED` / `NO SEAM` with the reason).
+- `(config) Game.ini: MassMigrationTime=18000 - fleet default, every 5 h`, `... - the plane`, or
+  `... MassMigrationTime=172800 - commban v<x> starts this run's mass itself`
+- `(config) Game.ini: WARNING the plane's massMigrationTime '<v>' is refused (...)` for a value out of range
 
 `powershell -ExecutionPolicy Bypass -File isles/evrima-windows-feathers/test_masstiming.ps1` runs the
-real lines lifted from the wrapper (42 checks).
+real lines lifted from the wrapper (86 checks).
 
 ## 🔴 ASCII ONLY in `start-evrima.ps1` **and `install.ps1`**
 

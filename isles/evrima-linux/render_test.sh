@@ -378,19 +378,21 @@ done
 echo "-- 4b. surrounding blanks are trimmed; the edges of the range --"
 T=$(render m-ws canon "PRIMAL_MASS_MIGRATION_TIME= 172800 ")
 want "a padded value is written"           'MassMigrationTime=172800'         "$T/TheIsle/Saved/Config/LinuxServer/Game.ini"
-T=$(render m-lo canon PRIMAL_MASS_MIGRATION_TIME=86401)
-want "86401 is written"                    'MassMigrationTime=86401'          "$T/TheIsle/Saved/Config/LinuxServer/Game.ini"
+T=$(render m-lo canon PRIMAL_MASS_MIGRATION_TIME=3600)
+want "3600 is written"                     'MassMigrationTime=3600'           "$T/TheIsle/Saved/Config/LinuxServer/Game.ini"
+T=$(render m-fleet canon PRIMAL_MASS_MIGRATION_TIME=18000)
+want "the fleet's 18000 is written"        'MassMigrationTime=18000'          "$T/TheIsle/Saved/Config/LinuxServer/Game.ini"
 T=$(render m-hi canon PRIMAL_MASS_MIGRATION_TIME=31536000)
 want "31536000 is written"                 'MassMigrationTime=31536000'       "$T/TheIsle/Saved/Config/LinuxServer/Game.ini"
 
 echo "-- 4c. anything else is REFUSED by name, and the game's own check stands --"
 N=0
-for BAD in 86400 43200 0 31536001 0172800 172800.5 -172800 1e5 abc '172800;id' '172800 MassMigrationTime=5' '172800x'; do
+for BAD in 3599 999 0 31536001 0172800 172800.5 -172800 1e5 abc '172800;id' '172800 MassMigrationTime=5' '172800x'; do
     N=$((N+1))
     T=$(render "m-bad$N" canon "PRIMAL_MASS_MIGRATION_TIME=$BAD")
     G="$T/TheIsle/Saved/Config/LinuxServer/Game.ini"; L="$T/boot.log"
     if [ "$(mass_lines "$G")" = "0" ] && grep -qF "PRIMAL_MASS_MIGRATION_TIME='" "$L" \
-            && grep -qF 'REFUSED (want a whole number of seconds, 86401 to 31536000)' "$L" \
+            && grep -qF 'REFUSED (want a whole number of seconds, 3600 to 31536000)' "$L" \
             && ! grep -qF '(PRIMAL_MASS_MIGRATION_TIME) - the game' "$L"; then
         ok "refused, nothing written: '$BAD'"
     else
