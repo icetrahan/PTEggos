@@ -1587,6 +1587,18 @@ if [ "${PAK_GATE%% *}" != "open" ]; then
 elif [ -f "$PAK_GATE_MARK" ]; then
     report_pakgate true "" "pak ${PM_VER:-?} $GATE_WHY" "$PAK_GATE_MARK"
 fi
+# Once the gate opens, a held triplet that is not the manifest's pak (by sha256) goes: the download fetches the manifest's own.
+if [ "${PAK_GATE%% *}" = "open" ] && [ -n "$PM" ] && [ -d "$PAK_HELD_DIR" ]; then
+    HELD_SAME=1
+    mapfile -t H_NAMES < <(m_fields "$PM" name)
+    mapfile -t H_SHAS < <(m_fields "$PM" sha256)
+    for i in "${!H_NAMES[@]}"; do
+        [ "$(sha256_of "$PAK_HELD_DIR/${H_NAMES[$i]}")" = "${H_SHAS[$i]}" ] || { HELD_SAME=0; break; }
+    done
+    if [ "$HELD_SAME" = 0 ]; then
+        if rm -rf "$PAK_HELD_DIR"; then log "pak-gate: cleared _primal/pak-held: it held another pak than ${PM_VER:-?}"; else warn "pak-gate: could not clear _primal/pak-held"; fi
+    fi
+fi
 
 if [ "${PAK_GATE%% *}" = "open" ]; then
     if [ -z "$PM" ]; then

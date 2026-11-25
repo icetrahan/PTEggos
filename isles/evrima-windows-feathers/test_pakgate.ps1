@@ -22,9 +22,15 @@ function EnvOr([string]$v, [string]$fb) { if ([string]::IsNullOrWhiteSpace($v)) 
 # The manifest GET answers $script:fakeManifest ($null = unreachable); boot reports are recorded.
 function Invoke-RestMethod { param([string]$Uri, [int]$TimeoutSec) if ($null -eq $script:fakeManifest) { throw 'unreachable' }; return ($script:fakeManifest | ConvertFrom-Json) }
 function Start-BootReport([string]$label, [hashtable]$body, [string]$clearMark) { $script:reports += , @{ label = $label; body = $body; clear = $clearMark } }
-function New-TestManifest([string]$ver, [string]$builds) {
+function New-TestManifest([string]$ver, [string]$builds, [string]$sha = 'x') {
     $gb = if ($builds) { ",`"gameBuilds`":$builds" } else { '' }
-    return "{`"version`":`"$ver`",`"build`":`"BUILD $ver`"$gb,`"files`":[{`"name`":`"pakchunk50-Windows_P.ucas`",`"url`":`"u`",`"sha256`":`"x`",`"size`":1}]}"
+    return "{`"version`":`"$ver`",`"build`":`"BUILD $ver`"$gb,`"files`":[{`"name`":`"pakchunk50-Windows_P.ucas`",`"url`":`"u`",`"sha256`":`"$sha`",`"size`":1}]}"
+}
+# The sha256 of a file Set-Content writes with $text, the way Run-Case writes a held triplet.
+function Sha-Of([string]$text) {
+    New-Item -ItemType Directory -Force -Path $work | Out-Null
+    $f = Join-Path $work 'sha.tmp'; Set-Content $f $text
+    return (Get-FileHash $f -Algorithm SHA256).Hash.ToLower()
 }
 
 $work = Join-Path ([IO.Path]::GetTempPath()) ("pakgate-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
@@ -43,6 +49,7 @@ function Run-Case([string]$installed, $manifest, [string]$modOn, [hashtable]$opt
     if ($installed) { Set-Content (Join-Path $game 'steamapps\appmanifest_412680.acf') "`"AppState`" { `"buildid`"  `"$installed`" }" }
     if ($opt.kept) { Set-Content (Join-Path $tmpl 'primal-pak.gamebuilds') $opt.kept }
     if ($opt.mark) { Set-Content (Join-Path $tmpl 'primal-pakgate.pending') 'pak_game_build_unproven' }
+    if ($opt.held) { New-Item -ItemType Directory -Force -Path (Join-Path $tmpl 'pak-held') | Out-Null; Set-Content (Join-Path $tmpl 'pak-held\pakchunk50-Windows_P.ucas') $opt.held }
     $script:fakeManifest = $manifest; $env:ENABLE_PRIMAL_MOD = $modOn; $env:PRIMAL_MOD_MANIFEST = ''
     $script:reports = @()
     $script:out = (& { . ([scriptblock]::Create($gate)); "GATE=$($pakGate.open) $($pakGate.code)" } *>&1 | Out-String)
@@ -104,6 +111,22 @@ try {
 
     Run-Case '26883482' (New-TestManifest '193' '["2688348"]') '1'
     Ok 'a listed prefix of the build is not the build' (Held)
+
+    $heldDir = { Join-Path $tmpl 'pak-held' }
+    Run-Case '26883482' (New-TestManifest '194' '["26883482"]') '1' @{ held = 'pak 193 bytes' }
+    Ok 'an open gate clears a held triplet of another pak' (-not (Test-Path (& $heldDir))) $out
+    Ok 'the clearing is in the log, naming the manifest pak' ($out -match [regex]::Escape('(pak-gate) cleared _primal\pak-held: it held another pak than 194')) $out
+    Ok 'clearing pak-held leaves the mounted pak alone' (Mounted)
+
+    Run-Case '26883482' (New-TestManifest '194' '["26883482"]' (Sha-Of 'pak 194 bytes')) '1' @{ held = 'pak 194 bytes' }
+    Ok 'an open gate keeps a held triplet that is the manifest''s own pak' (Test-Path (Join-Path (& $heldDir) 'pakchunk50-Windows_P.ucas')) $out
+    Ok 'a kept pak-held is not reported as cleared' ($out -notmatch 'cleared _primal') $out
+
+    Run-Case '26883482' $null '1' @{ kept = '{"version":"193","gameBuilds":["26883482"]}'; held = 'pak 190 bytes' }
+    Ok 'manifest unreachable: pak-held is left as it is (nothing to compare with)' (Test-Path (Join-Path (& $heldDir) 'pakchunk50-Windows_P.ucas')) $out
+
+    Run-Case '26883482' (New-TestManifest '193' '["24664709"]') '1' @{ held = 'pak 190 bytes' }
+    Ok 'a held boot over an older pak-held still holds (the triplet is moved over it)' (Held)
 } finally {
     Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
     $env:ENABLE_PRIMAL_MOD = $null; $env:PRIMAL_MOD_MANIFEST = $null

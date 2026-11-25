@@ -1231,6 +1231,18 @@ if (-not $pakGate.open) {
 } elseif (Test-Path $pakGateMark) {
     Start-BootReport 'pakgate' @{ stage = 'inject'; game = 'evrima'; ok = $true; attempts = 0; reason = "pak $pmVer $($pakGate.why)"; pid = $null; exePath = ''; dll = 'pakchunk50'; volume = $root; gameBuild = $gameBid; pakVersion = $pmVer } $pakGateMark
 }
+# Once the gate opens, a held triplet that is not the manifest's pak (by sha256) goes: the pak lane fetches the manifest's own.
+if ($pakGate.open -and $pm -and (Test-Path -LiteralPath $pakHeldDir)) {
+    $heldSame = $true
+    foreach ($fi in @($pm.files)) {
+        $h = Join-Path $pakHeldDir $fi.name
+        if (-not (Test-Path -LiteralPath $h) -or (Get-FileHash -LiteralPath $h -Algorithm SHA256).Hash.ToLower() -ne ("" + $fi.sha256).ToLower()) { $heldSame = $false; break }
+    }
+    if (-not $heldSame) {
+        try { Remove-Item -LiteralPath $pakHeldDir -Recurse -Force -ErrorAction Stop; Write-Host "(pak-gate) cleared _primal\pak-held: it held another pak than $pmVer" }
+        catch { Write-Host "(pak-gate) could not clear _primal\pak-held: $_" }
+    }
+}
 
 if ($pakGate.open) {
     $sbManifestUrl = EnvOr $env:PRIMAL_SIGBYPASS_MANIFEST 'https://pub-fb6fdcc2ce914775ba41c9813f80dc10.r2.dev/primal-sigbypass/latest.json'

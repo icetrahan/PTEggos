@@ -51,6 +51,7 @@ run_case() {
     [ -n "$1" ] && echo "\"AppState\" { \"buildid\"  \"$1\" }" > "$ROOT/steamapps/appmanifest_412680.acf"
     [ -n "${KEPT:-}" ] && printf '%s' "$KEPT" > "$PRIM/primal-pak.gamebuilds"
     [ -n "${MARK:-}" ] && echo pak_game_build_unproven > "$PRIM/primal-pakgate.pending"
+    [ -n "${HELD:-}" ] && mkdir -p "$PRIM/pak-held" && echo "$HELD" > "$PRIM/pak-held/pakchunk50-Windows_P.ucas"
     FAKE_MANIFEST="$2"; ENABLE_PRIMAL_MOD="$3"
     OUT=$(eval "$BLOCK"; [ -n "${WITH_DL:-}" ] && eval "$DL"; wait; echo "GATE=$PAK_GATE")
 }
@@ -132,6 +133,23 @@ WITH_DL=1 FAKE_BODY=NEW run_case 26883482 "$(man_sha 194 '["26883482"]' "$NEW_SH
 
 WITH_DL=1 run_case 26883482 "$(man_sha 193 '["24664709","26883482"]' "$OLD_SHA")" 1
 echo "$OUT" | grep -q 'up to date (193)' && [ "$(head -n1 "$PRIM/primal-pak.gamebuilds")" = 193 ]; ok "an up-to-date pak gets its kept list refreshed" $? "$OUT"
+
+# Once the gate opens, a held triplet that is not the manifest's pak goes; the manifest's own pak, or no manifest, keeps it.
+HELD="pak 193 bytes" run_case 26883482 "$(man_sha 194 '["26883482"]' "$NEW_SHA")" 1
+[ ! -d "$PRIM/pak-held" ]; ok "an open gate clears a held triplet of another pak" $? "$OUT"
+echo "$OUT" | grep -q 'cleared _primal/pak-held: it held another pak than 194'; ok "the clearing is in the log, naming the manifest pak" $? "$OUT"
+mounted; ok "clearing pak-held leaves the mounted pak alone" $?
+
+HELD_SHA=$(printf 'pak 194 bytes\n' | sha256sum | awk '{print $1}')
+HELD="pak 194 bytes" run_case 26883482 "$(man_sha 194 '["26883482"]' "$HELD_SHA")" 1
+[ -f "$PRIM/pak-held/pakchunk50-Windows_P.ucas" ]; ok "an open gate keeps a held triplet that is the manifest's own pak" $? "$OUT"
+! echo "$OUT" | grep -q 'cleared _primal'; ok "a kept pak-held is not reported as cleared" $? "$OUT"
+
+HELD="pak 190 bytes" KEPT=$'193\nlisted\n26883482' run_case 26883482 "" 1
+[ -f "$PRIM/pak-held/pakchunk50-Windows_P.ucas" ]; ok "manifest unreachable: pak-held is left as it is (nothing to compare with)" $? "$OUT"
+
+HELD="pak 190 bytes" run_case 26883482 "$(man 193 '["24664709"]')" 1
+held; ok "a held boot over an older pak-held still holds (the triplet is moved over it)" $?
 
 echo "pak gate (linux): $PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ]
